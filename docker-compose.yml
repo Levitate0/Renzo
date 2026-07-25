@@ -1,0 +1,20 @@
+# =============================================================================
+#  Renzo — private, per-user anime streaming & downloads via Real-Debrid.
+#  Standalone single-service deployment. Web UI on http://<host>:8787
+# =============================================================================
+services:
+  renzo:
+    build: .
+    image: renzo:latest
+    container_name: renzo
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      LIBRARY_DIR: /library
+      PORT: 8787
+    ports:
+      - "${PORT:-8787}:8787"
+    volumes:
+      - ./data:/data          # json db + state
+      - ./library:/library    # per-user downloads (u/<userId>/<folder>/…)

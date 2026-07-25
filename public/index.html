@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Renzo · anime</title>
+  <meta name="theme-color" content="#0b0c10" />
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="/brand/renzo-logo.png" alt="" class="brand-mark" /><span class="brand-name">Renzo</span></div>
+    <nav class="tabs">
+      <button data-tab="discover" class="active">Discover</button>
+      <button data-tab="library">Library</button>
+      <button data-tab="downloads">Downloads <span id="dlBadge" class="badge hidden">0</span></button>
+    </nav>
+    <div class="search">
+      <input id="search" type="search" placeholder="Search anime…" autocomplete="off" />
+      <select id="searchType" title="Type">
+        <option value="">All</option>
+        <option value="series">Series</option>
+        <option value="movie">Movies</option>
+      </select>
+    </div>
+    <div class="status" id="status" title="Service status">…</div>
+    <div class="acct">
+      <button id="acctBtn" class="avatar avatar-btn" aria-label="Account menu">·</button>
+      <div id="acctMenu" class="acct-menu hidden">
+        <div class="who">
+          <div class="n" id="acctMenuName">—</div>
+          <div class="r" id="acctMenuRole"></div>
+        </div>
+        <button id="settingsBtn">⚙&nbsp; Settings</button>
+        <button id="logoutBtn" class="danger">⎋&nbsp; Log out</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="view-discover" class="view active">
+      <h2 id="discoverHeading">Trending</h2>
+      <div id="discoverGrid" class="grid"></div>
+    </section>
+
+    <section id="view-library" class="view">
+      <div class="library-head">
+        <h2>My Library</h2>
+        <button id="importBtn" class="ghost">⟳ Import AniList / MAL</button>
+      </div>
+      <div id="folderChips" class="chips folders-row"></div>
+      <div id="listChips" class="chips"></div>
+      <div id="libraryGrid" class="grid"></div>
+    </section>
+
+    <section id="view-downloads" class="view">
+      <h2>Downloads</h2>
+      <div id="autodlBar" class="autodl">
+        <span id="autodlText">Auto-downloader…</span>
+        <button id="autodlRun" class="ghost">Run now</button>
+      </div>
+      <div id="jobsList" class="jobs"></div>
+    </section>
+  </main>
+
+  <!-- Title detail -->
+  <div id="detail" class="modal hidden">
+    <div class="modal-card detail-card">
+      <button class="close" data-close>✕</button>
+      <div class="detail-banner" id="detailBanner"></div>
+      <div class="detail-body">
+        <img id="detailPoster" class="detail-poster" alt="" />
+        <div class="detail-meta">
+          <h1 id="detailTitle"></h1>
+          <div id="detailTags" class="tags"></div>
+          <p id="detailDesc" class="desc"></p>
+          <div class="detail-actions">
+            <button id="watchlistBtn" class="ghost">☆ Watchlist</button>
+            <button id="favBtn" class="ghost">♡ Favorite</button>
+            <button id="seasonBtn" class="ghost hidden">⬇ Download season</button>
+            <button id="autoBtn" class="ghost hidden">Auto: off</button>
+            <label class="folder-pick">📁
+              <select id="folderSelect" title="Folder"></select>
+            </label>
+          </div>
+          <div id="episodeArea"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Player -->
+  <div id="player" class="modal hidden">
+    <div class="modal-card player-card">
+      <button class="close" data-close>✕</button>
+      <div class="player-head">
+        <span id="playerTitle"></span>
+        <span id="playerSource" class="source-badge"></span>
+      </div>
+      <video id="video" controls autoplay playsinline></video>
+      <div class="player-controls">
+        <button id="playerDownload" class="primary">⬇ Download to library</button>
+        <span id="playerNote" class="note"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div id="settings" class="modal hidden">
+    <div class="modal-card settings-card">
+      <button class="close" data-close>✕</button>
+      <div class="settings-shell">
+        <aside class="settings-nav">
+          <div class="settings-title">Settings</div>
+          <button data-pane="account" class="active">👤&nbsp; Account</button>
+          <button data-pane="realdebrid">🔗&nbsp; Real-Debrid</button>
+          <button data-pane="trackers">📺&nbsp; Trackers</button>
+          <button data-pane="security">🔒&nbsp; Security</button>
+          <span class="sp"></span>
+          <button data-pane="users" id="usersNavBtn">👥&nbsp; Users</button>
+        </aside>
+
+        <div class="settings-panes">
+          <!-- Account -->
+          <section class="pane active" data-pane="account">
+            <div class="profile">
+              <div class="avatar" id="acctAvatar">·</div>
+              <div>
+                <div class="p-name"><span id="acctName">—</span><span class="role-badge" id="acctRole"></span></div>
+                <div class="p-sub" id="acctSub">Your account &amp; connections</div>
+              </div>
+            </div>
+            <div class="conn-list">
+              <div class="conn-row">
+                <div class="c-ico">🔗</div>
+                <div class="c-main"><div class="c-name">Real-Debrid</div>
+                  <div class="c-desc">Required to stream &amp; download</div></div>
+                <span class="pill-state" id="accRd">checking…</span>
+              </div>
+              <div class="conn-row">
+                <div class="c-ico">📘</div>
+                <div class="c-main"><div class="c-name">AniList</div>
+                  <div class="c-desc">List import &amp; scrobbling</div></div>
+                <span class="pill-state" id="accAni">checking…</span>
+              </div>
+              <div class="conn-row">
+                <div class="c-ico">📗</div>
+                <div class="c-main"><div class="c-name">MyAnimeList</div>
+                  <div class="c-desc">List import &amp; scrobbling</div></div>
+                <span class="pill-state" id="accMal">checking…</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- Real-Debrid -->
+          <section class="pane" data-pane="realdebrid">
+            <h2>Real-Debrid <span id="rdState" class="pill-state"></span></h2>
+            <p class="sub">Required. All torrent traffic is routed through Real-Debrid, so it never
+              touches your home IP.</p>
+            <div class="field">
+              <label for="rdToken">API token</label>
+              <div class="inline">
+                <input id="rdToken" class="in" type="password" placeholder="Paste your Real-Debrid API token" autocomplete="off" />
+                <button id="rdSave" class="primary">Save</button>
+              </div>
+              <span class="hint"><a class="muted-link" href="https://real-debrid.com/apitoken" target="_blank" rel="noreferrer">Get your token →</a></span>
+            </div>
+          </section>
+
+          <!-- Trackers -->
+          <section class="pane" data-pane="trackers">
+            <div class="users-head">
+              <h2>Trackers</h2>
+              <button id="trkRefresh" class="ghost" title="Re-check connection status">↻ Refresh</button>
+            </div>
+            <p class="sub">Link your AniList / MyAnimeList accounts to import your lists and
+              auto-scrobble progress as you watch. Connecting opens the auth site in a new tab —
+              sign in once and it manages your tokens from then on.</p>
+
+            <div class="conn-list">
+              <div class="conn-row">
+                <div class="c-ico">📘</div>
+                <div class="c-main"><div class="c-name">AniList</div>
+                  <div class="c-desc" id="trkAniDesc">List import &amp; scrobbling</div></div>
+                <span class="pill-state" id="trkAni">checking…</span>
+                <button class="ghost link-btn" id="aniConnect">Connect ↗</button>
+              </div>
+              <div class="conn-row">
+                <div class="c-ico">📗</div>
+                <div class="c-main"><div class="c-name">MyAnimeList</div>
+                  <div class="c-desc" id="trkMalDesc">List import &amp; scrobbling</div></div>
+                <span class="pill-state" id="trkMal">checking…</span>
+                <button class="ghost link-btn" id="malConnect">Connect ↗</button>
+              </div>
+            </div>
+
+            <details class="advanced">
+              <summary>Advanced · paste a token manually</summary>
+              <p class="hint">Optional. Overrides the auth-site token for your account only.</p>
+              <div class="field">
+                <label for="anilistToken">AniList access token</label>
+                <div class="inline">
+                  <input id="anilistToken" class="in" type="password" placeholder="AniList token" autocomplete="off" />
+                  <button data-tracker="anilistToken" class="ghost tracker-save">Save</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="malToken">MyAnimeList access token</label>
+                <div class="inline">
+                  <input id="malToken" class="in" type="password" placeholder="MAL token" autocomplete="off" />
+                  <button data-tracker="malToken" class="ghost tracker-save">Save</button>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <!-- Security -->
+          <section class="pane" data-pane="security">
+            <h2>Security</h2>
+            <p class="sub">Change your password. This signs out all your other sessions.</p>
+            <div class="field">
+              <label for="curPass">Current password</label>
+              <input id="curPass" class="in" type="password" placeholder="Current password" autocomplete="current-password" />
+            </div>
+            <div class="field">
+              <label for="newPass">New password</label>
+              <input id="newPass" class="in" type="password" placeholder="At least 8 characters" autocomplete="new-password" />
+            </div>
+            <div class="form-actions"><button id="passSave" class="primary">Update password</button></div>
+          </section>
+
+          <!-- Users (owner only) -->
+          <section class="pane" data-pane="users" id="usersBlock">
+            <div class="users-head">
+              <h2>Users</h2>
+              <span class="count-pill" id="usersCount">—</span>
+            </div>
+            <p class="sub">Everyone has their own library, lists, and Real-Debrid connection. Only
+              you (the owner) can add or remove accounts.</p>
+            <div id="usersList" class="users-list"></div>
+            <div class="add-user-card">
+              <h3>Add a user</h3>
+              <p class="hint">New accounts are regular users — they can't add or remove others.</p>
+              <div class="add-user-grid">
+                <div class="field" style="margin:0">
+                  <label for="newUserName">Username</label>
+                  <input id="newUserName" class="in" type="text" placeholder="username" autocomplete="off" />
+                </div>
+                <div class="field" style="margin:0">
+                  <label for="newUserPass">Password</label>
+                  <input id="newUserPass" class="in" type="password" placeholder="min 8 chars" autocomplete="new-password" />
+                </div>
+                <button id="addUserBtn" class="primary">Add user</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auth gate (login) -->
+  <div id="authGate" class="auth-gate hidden">
+    <div class="auth-card">
+      <img src="/brand/renzo-banner.png" alt="Renzo" class="auth-banner" />
+      <p id="authSubtitle" class="muted-note">Sign in to your account.</p>
+      <input id="authUser" type="text" placeholder="Username" autocomplete="username" />
+      <input id="authPass" type="password" placeholder="Password" autocomplete="current-password" />
+      <button id="authSubmit" class="primary wide">Sign in</button>
+      <div id="authError" class="auth-error"></div>
+    </div>
+  </div>
+
+  <!-- First-run setup: create the owner account -->
+  <div id="setupGate" class="auth-gate hidden">
+    <div class="auth-card setup-card">
+      <img src="/brand/renzo-banner.png" alt="Renzo" class="auth-banner" />
+      <h2 class="setup-title">Welcome — let's set up your server</h2>
+
+      <!-- Step 1: owner account -->
+      <div id="setupStep1">
+        <p class="muted-note">Create the <strong>owner</strong> account. It's the only admin, and
+          the only account that can add other users. Choose a strong password.</p>
+        <label class="fld">Username
+          <input id="setupUser" type="text" placeholder="e.g. levit" autocomplete="username" />
+        </label>
+        <label class="fld">Password
+          <input id="setupPass" type="password" placeholder="At least 8 characters" autocomplete="new-password" />
+        </label>
+        <label class="fld">Confirm password
+          <input id="setupPass2" type="password" placeholder="Re-enter password" autocomplete="new-password" />
+        </label>
+        <div class="pw-meter"><span id="pwBar"></span></div>
+        <button id="setupSubmit" class="primary wide">Create owner &amp; continue →</button>
+      </div>
+
+      <!-- Step 2: connect Real-Debrid -->
+      <div id="setupStep2" class="hidden">
+        <p class="muted-note">Almost done. Connect <strong>Real-Debrid</strong> — it's required to
+          stream and download, and keeps all torrent traffic off your home IP.
+          <a href="https://real-debrid.com/apitoken" target="_blank" rel="noreferrer" class="muted-link">Get your token →</a></p>
+        <label class="fld">Real-Debrid API token
+          <input id="setupRd" type="password" placeholder="Paste token (or skip and add later)" autocomplete="off" />
+        </label>
+        <div class="setup-actions">
+          <button id="setupRdSave" class="primary wide">Save &amp; finish</button>
+          <button id="setupRdSkip" class="ghost wide">Skip for now</button>
+        </div>
+      </div>
+
+      <div id="setupError" class="auth-error"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

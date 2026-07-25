@@ -1,0 +1,472 @@
+import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { config } from "../config.js";
+import { logger } from "../logger.js";
+import { db } from "../db.js";
+import type { Title, EpisodeRecord, DownloadJob, TorrentResult, UserRecord } from "../types.js";
+import * as anilist from "./anilist.js";
+import * as torrents from "./torrents.js";
+import * as rd from "./realdebrid.js";
+import * as library from "./library.js";
+import * as captions from "./captions.js";
+import * as jellyfin from "./jellyfin.js";
+
+const log = logger("downloader");
+
+// ---------------------------------------------------------------------------
+// Title / episode helpers
+// ---------------------------------------------------------------------------
+export async function getOrCreateTitle(anilistId: number): Promise<Title> {
+  const existing = db.getTitle(anilistId);
+  if (existing) return existing;
+  const media = await anilist.getById(anilistId);
+  if (!media) throw new Error(`AniList id ${anilistId} not found`);
+  return db.upsertTitle(anilist.toTitle(media));
+}
+
+// Download state is isolated PER USER (UserRecord.eps), keyed "titleId:ep".
+// Title objects only hold shared AniList metadata.
+function epKey(titleId: number, num: number): string {
+  return `${titleId}:${num}`;
+}
+function getUserEp(user: UserRecord, titleId: number, num: number): EpisodeRecord {
+  user.eps ??= {};
+  const k = epKey(titleId, num);
+  let ep = user.eps[k];
+  if (!ep) {
+    ep = { number: num, status: "wanted", updatedAt: new Date().toISOString() };
+    user.eps[k] = ep;
+  }
+  return ep;
+}
+export function peekUserEp(user: UserRecord, titleId: number, num: number): EpisodeRecord | undefined {
+  return user.eps?.[epKey(titleId, num)];
+}
+export function userDownloadedCount(user: UserRecord, titleId: number): number {
+  const prefix = `${titleId}:`;
+  return Object.entries(user.eps ?? {}).filter(([k, e]) => k.startsWith(prefix) && e.status === "downloaded").length;
+}
+
+// ---------------------------------------------------------------------------
+// Folders (per-user named collections; physical on disk)
+// ---------------------------------------------------------------------------
+export const DEFAULT_FOLDER = "Library";
+export function userFolders(user: UserRecord): string[] {
+  return user.folders?.length ? user.folders : [DEFAULT_FOLDER];
+}
+export function folderOf(user: UserRecord, titleId: number): string {
+  return user.titleFolder?.[String(titleId)] ?? userFolders(user)[0];
+}
+
+/** Refresh title metadata from AniList (episode count, airing state, art). */
+export async function refreshTitle(t: Title): Promise<Title> {
+  const media = await anilist.getById(t.id);
+  if (media) {
+    const fresh = anilist.toTitle(media);
+    Object.assign(t, fresh, {
+      addedAt: t.addedAt,
+      episodes: t.episodes,
+      autoDownload: t.autoDownload,
+      autoFromTracker: t.autoFromTracker,
+    });
+    await db.upsertTitle(t);
+  }
+  return t;
+}
+
+/** How many episodes have actually aired (movies = 1). */
+export function availableEpisodes(t: Title): number {
+  if (t.type === "movie") return t.airingStatus === "NOT_YET_RELEASED" ? 0 : 1;
+  // nextAiringEpisode === 1 means the premiere hasn't aired: 0 available.
+  if (t.nextAiringEpisode) return t.nextAiringEpisode - 1;
+  if (t.airingStatus === "NOT_YET_RELEASED") return 0;
+  return t.episodeCount ?? 0;
+}
+
+/** Real-Debrid is mandatory (ISP-ban-risk prevention): no token -> hard stop. */
+export function requireToken(user: UserRecord | undefined): string {
+  const token = user?.realDebridToken;
+  if (!token) throw new Error("realdebrid_required");
+  return token;
+}
+
+async function candidatesFor(t: Title, episode: number): Promise<TorrentResult[]> {
+  if (t.type === "movie") return torrents.findForMovie(t);
+  const single = await torrents.findForEpisode(t, episode);
+  if (single.length) return single;
+  return torrents.findBatch(t); // fall back to a season pack that contains it
+}
+
+// ---------------------------------------------------------------------------
+// Resolve a playable source: local file if we have it, else Real-Debrid link
+// ---------------------------------------------------------------------------
+export interface ResolvedStream {
+  source: "local" | "realdebrid";
+  url: string;
+  filename: string;
+  subtitles: { id: string; label: string; lang: string }[];
+  downloading?: DownloadJob;
+}
+
+export async function resolveStream(anilistId: number, episode: number, user: UserRecord): Promise<ResolvedStream> {
+  const t = await getOrCreateTitle(anilistId);
+  const ep = getUserEp(user, anilistId, episode);
+
+  // 1) Already in MY library -> serve MY local file (Crunchyroll-style handoff).
+  if (ep.status === "downloaded" && ep.filePath && (await library.exists(library.userAbs(user.id, ep.filePath)))) {
+    return {
+      source: "local",
+      url: `/files/${ep.filePath.split("/").map(encodeURIComponent).join("/")}`,
+      filename: ep.filePath.split("/").pop() ?? "",
+      subtitles: await subtitleList(anilistId, episode),
+      downloading: activeJobFor(anilistId, episode, user.id),
+    };
+  }
+
+  // 2) Otherwise resolve an instant Real-Debrid stream — mandatory: all torrent
+  // traffic goes through the user's RD account, never their own IP. Skips the
+  // per-title lock so playback stays responsive during a season grab.
+  const token = requireToken(user);
+  const link = await resolveRdLinkInner(token, t, ep, 45_000, undefined, user);
+  await db.save();
+  return {
+    source: "realdebrid",
+    url: link.download,
+    filename: link.filename,
+    subtitles: await subtitleList(anilistId, episode),
+    downloading: activeJobFor(anilistId, episode, user.id),
+  };
+}
+
+// Serialize RD preparation per title so concurrent episode jobs (e.g. a season
+// grab) don't add duplicate torrents; the first job's batch is shared with the
+// rest via ep.rdTorrentId (see the sibling-sharing block below).
+const titleLocks = new Map<string, Promise<unknown>>();
+async function withTitleLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = titleLocks.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const guard = run.catch(() => {});
+  titleLocks.set(key, guard);
+  try {
+    return await run;
+  } finally {
+    if (titleLocks.get(key) === guard) titleLocks.delete(key);
+  }
+}
+
+/** Prepare (or reuse) an RD torrent and return the direct link for the episode. */
+function resolveRdLink(
+  token: string,
+  t: Title,
+  ep: EpisodeRecord,
+  timeoutMs: number,
+  wantedEpisodes: number[] | undefined,
+  user: UserRecord,
+): Promise<rd.RdLink> {
+  // Lock per (user,title): one user's season grab shouldn't block another's playback.
+  return withTitleLock(`${user.id}:${t.id}`, () => resolveRdLinkInner(token, t, ep, timeoutMs, wantedEpisodes, user));
+}
+
+async function resolveRdLinkInner(
+  token: string,
+  t: Title,
+  ep: EpisodeRecord,
+  timeoutMs: number,
+  wantedEpisodes: number[] | undefined,
+  user: UserRecord,
+): Promise<rd.RdLink> {
+  if (!token) throw new Error("Real-Debrid is not connected — add your token in Settings");
+  // Reuse a previously prepared RD torrent when possible.
+  if (ep.rdTorrentId) {
+    try {
+      const info = await rd.getInfo(token, ep.rdTorrentId);
+      if (info.status === "downloaded") {
+        return await rd.resolveEpisodeLink(token, info, t.type === "movie" ? undefined : ep.number);
+      }
+    } catch {
+      ep.rdTorrentId = undefined;
+    }
+  }
+
+  const list = await candidatesFor(t, ep.number);
+  if (!list.length) throw new Error("No torrents found for this title/episode");
+
+  let lastErr: unknown;
+  for (const cand of list.slice(0, 4)) {
+    try {
+      const info = await rd.addAndPrepare(token, cand.magnet, {
+        episode: t.type === "movie" ? undefined : ep.number,
+        // Download jobs select every still-wanted episode a batch contains, so
+        // one RD torrent serves the whole season grab (sibling sharing below).
+        episodes: t.type === "movie" ? undefined : wantedEpisodes,
+        timeoutMs,
+      });
+      if (info.status !== "downloaded") {
+        await rd.deleteTorrent(token, info.id);
+        continue; // not cached / still downloading on RD — try the next candidate
+      }
+      ep.rdTorrentId = info.id;
+      ep.magnet = cand.magnet;
+      ep.updatedAt = new Date().toISOString();
+
+      // Sibling sharing: if this torrent is a batch, point every other episode
+      // in THIS user's library at the same RD torrent so their jobs skip search.
+      const selected = info.files.filter((f) => f.selected === 1);
+      if (t.type === "series" && selected.length > 1) {
+        for (const f of selected) {
+          const n = torrents.parseEpisode(f.path);
+          if (n && n !== ep.number) {
+            const sib = getUserEp(user, t.id, n);
+            if (sib.status !== "downloaded" && !sib.rdTorrentId) {
+              sib.rdTorrentId = info.id;
+              sib.magnet = cand.magnet;
+              sib.updatedAt = new Date().toISOString();
+            }
+          }
+        }
+      }
+      return await rd.resolveEpisodeLink(token, info, t.type === "movie" ? undefined : ep.number);
+    } catch (e) {
+      lastErr = e;
+      log.warn("candidate failed", cand.title, String(e));
+    }
+  }
+  throw new Error(
+    `Could not get an instant stream (nothing cached on Real-Debrid yet). ${lastErr ? String(lastErr) : ""}`.trim(),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Background download queue
+// ---------------------------------------------------------------------------
+class DownloadQueue {
+  private pending: string[] = [];
+  private active = new Set<string>();
+
+  async resume(): Promise<void> {
+    for (const j of db.jobs()) {
+      if (j.status === "queued" || j.status === "downloading" || j.status === "searching") {
+        j.status = "queued";
+        this.pending.push(j.id);
+      }
+    }
+    // Reconcile orphans: an episode stuck in an active status with no matching
+    // job (crash between the two writes) would otherwise be skipped forever.
+    for (const u of db.users()) {
+      for (const [k, ep] of Object.entries(u.eps ?? {})) {
+        if (!["queued", "searching", "downloading"].includes(ep.status)) continue;
+        const titleId = Number(k.split(":")[0]);
+        const hasJob = db.jobs().some(
+          (j) => j.userId === u.id && j.titleId === titleId && j.episode === ep.number &&
+            ["queued", "searching", "downloading"].includes(j.status),
+        );
+        if (!hasJob) {
+          ep.status = "wanted";
+          ep.updatedAt = new Date().toISOString();
+        }
+      }
+    }
+    await db.save();
+    this.pump();
+  }
+
+  private findActive(anilistId: number, episode: number, userId: string): DownloadJob | undefined {
+    return db.jobs().find(
+      (j) => j.userId === userId && j.titleId === anilistId && j.episode === episode &&
+        ["queued", "searching", "downloading"].includes(j.status),
+    );
+  }
+
+  private static readonly MAX_ACTIVE_PER_USER = 100;
+
+  async enqueue(anilistId: number, episode: number, userId: string): Promise<DownloadJob> {
+    const user = db.getUser(userId);
+    if (!user) throw new Error("unknown user");
+    await getOrCreateTitle(anilistId); // ensure shared metadata exists
+    const ep = getUserEp(user, anilistId, episode);
+    const early = this.findActive(anilistId, episode, userId);
+    if (early) return early;
+
+    // Bound shared-disk / RD abuse: cap simultaneous active jobs per user.
+    const activeForUser = db.jobs().filter(
+      (j) => j.userId === userId && ["queued", "searching", "downloading"].includes(j.status),
+    ).length;
+    if (activeForUser >= DownloadQueue.MAX_ACTIVE_PER_USER) {
+      throw new Error(`Too many active downloads (max ${DownloadQueue.MAX_ACTIVE_PER_USER}) — wait for some to finish`);
+    }
+
+    ep.status = "queued";
+    ep.updatedAt = new Date().toISOString();
+    await db.save();
+
+    // Re-check after the await: two concurrent enqueues for the same episode
+    // could both pass the early check. The check + insert below happen with no
+    // await between them, so they're atomic on the event loop.
+    const existing = this.findActive(anilistId, episode, userId);
+    if (existing) return existing;
+
+    const job: DownloadJob = {
+      id: randomUUID(),
+      titleId: anilistId,
+      userId,
+      episode,
+      status: "queued",
+      progress: 0,
+      magnet: ep.magnet ?? "",
+      rdTorrentId: ep.rdTorrentId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    void db.upsertJob(job);
+    this.pending.push(job.id);
+    this.pump();
+    return job;
+  }
+
+  private pump(): void {
+    while (this.active.size < config.downloadConcurrency && this.pending.length) {
+      const id = this.pending.shift()!;
+      this.active.add(id);
+      this.run(id).finally(() => {
+        this.active.delete(id);
+        this.pump();
+      });
+    }
+  }
+
+  private async run(jobId: string): Promise<void> {
+    const job = db.getJob(jobId);
+    if (!job) return;
+    const t = db.getTitle(job.titleId);
+    if (!t) return void (await this.fail(job, "title missing"));
+    const user = db.getUser(job.userId);
+    if (!user) return void (await this.fail(job, "account removed"));
+    const token = user.realDebridToken;
+    if (!token) return void (await this.fail(job, "Real-Debrid not connected for this account"));
+    const ep = getUserEp(user, job.titleId, job.episode);
+
+    try {
+      await this.update(job, { status: "searching", message: "Finding & preparing on Real-Debrid…" });
+      // Every still-wanted episode in THIS user's library: if we prepare a batch,
+      // select them all so this user's sibling jobs reuse the same RD torrent.
+      const avail = availableEpisodes(t);
+      const wanted: number[] = [];
+      for (let n = 1; n <= avail; n++) {
+        if (peekUserEp(user, t.id, n)?.status !== "downloaded") wanted.push(n);
+      }
+      if (!wanted.includes(job.episode)) wanted.push(job.episode);
+
+      const link = await resolveRdLink(token, t, ep, 8 * 60_000, wanted, user); // allow RD time to cache
+      await db.save();
+
+      const folder = folderOf(user, t.id);
+      const { abs, rel } = library.targetFor(user.id, folder, t, job.episode, link.filename);
+      await this.update(job, { status: "downloading", message: "Downloading to library…", progress: 0 });
+      ep.status = "downloading";
+      await db.save();
+
+      let lastPersist = 0;
+      await library.downloadTo(link.download, abs, async (frac) => {
+        job.progress = frac;
+        ep.progress = frac;
+        const now = Date.now();
+        if (now - lastPersist > 1500) {
+          lastPersist = now;
+          await db.upsertJob(job).catch(() => {});
+        }
+      });
+
+      ep.status = "downloaded";
+      ep.filePath = rel;
+      ep.progress = 1;
+      ep.updatedAt = new Date().toISOString();
+      await db.save();
+
+      // Post-processing: artwork, captions (per-user dir), Jellyfin scan (best-effort).
+      await library.saveArtwork(user.id, folder, t).catch(() => {});
+      await saveCaptionsNextTo(t, job.episode, abs).catch((e) => log.warn("captions", String(e)));
+      await jellyfin.triggerScan().catch(() => {});
+
+      await this.update(job, { status: "downloaded", message: "Done", progress: 1, filePath: rel });
+      log.info(`downloaded ${t.romaji} E${job.episode} for ${user.username}`);
+    } catch (e) {
+      ep.status = "failed";
+      ep.updatedAt = new Date().toISOString();
+      await db.save().catch(() => {});
+      await this.fail(job, String(e));
+    }
+  }
+
+  private async update(job: DownloadJob, patch: Partial<DownloadJob>): Promise<void> {
+    Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+    await db.upsertJob(job);
+  }
+  private async fail(job: DownloadJob, message: string): Promise<void> {
+    log.error("job failed", job.id, message);
+    await this.update(job, { status: "failed", message });
+  }
+}
+
+export const queue = new DownloadQueue();
+
+// ---------------------------------------------------------------------------
+// Subtitles
+// ---------------------------------------------------------------------------
+async function subtitleList(anilistId: number, episode: number) {
+  try {
+    const subs = await captions.findSubtitles(anilistId, episode);
+    return subs.map((s) => ({ id: s.id, label: s.label, lang: s.lang }));
+  } catch (e) {
+    log.warn("subtitle search", String(e));
+    return [];
+  }
+}
+
+/** Auto-download captions next to the video for Jellyfin + offline use. */
+async function saveCaptionsNextTo(t: Title, episode: number, videoAbs: string): Promise<void> {
+  const subs = await captions.findSubtitles(t.id, episode);
+  const base = videoAbs.replace(/\.[^.]+$/, "");
+  const seen = new Set<string>();
+  for (const s of subs) {
+    if (seen.has(s.lang)) continue; // one per language is enough
+    try {
+      const vtt = await captions.fetchAsVtt(s.id);
+      await fs.writeFile(`${base}.${s.lang}.vtt`, vtt);
+      seen.add(s.lang);
+    } catch (e) {
+      log.warn("save caption", String(e));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Season grab — enqueue every missing aired episode; jobs coordinate through
+// the per-title lock + sibling sharing, so a season pack is prepared once.
+// ---------------------------------------------------------------------------
+export async function downloadSeason(anilistId: number, user: UserRecord): Promise<{ queued: number; episodes: number[] }> {
+  requireToken(user);
+  let t = await getOrCreateTitle(anilistId);
+  if (t.type === "series" && (!t.episodeCount || t.airingStatus === "RELEASING")) {
+    t = await refreshTitle(t); // make sure the aired-episode count is current
+  }
+  const total = availableEpisodes(t);
+  if (!total) throw new Error("Episode count unknown for this title (AniList has no data yet)");
+
+  // Only count episodes actually enqueued now (skip already active/downloaded).
+  const enqueued: number[] = [];
+  for (let n = 1; n <= total; n++) {
+    if (peekUserEp(user, anilistId, n)?.status === "downloaded") continue;
+    if (activeJobFor(anilistId, n, user.id)) continue;
+    await queue.enqueue(anilistId, n, user.id);
+    enqueued.push(n);
+  }
+  log.info(`season grab: ${t.romaji} -> queued ${enqueued.length}/${total} for ${user.username}`);
+  return { queued: enqueued.length, episodes: enqueued };
+}
+
+function activeJobFor(anilistId: number, episode: number, userId: string): DownloadJob | undefined {
+  return db.jobs().find(
+    (j) => j.userId === userId && j.titleId === anilistId && j.episode === episode &&
+      ["queued", "searching", "downloading"].includes(j.status),
+  );
+}
