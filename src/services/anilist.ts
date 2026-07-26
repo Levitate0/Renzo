@@ -81,6 +81,67 @@ export async function trendingAnime(): Promise<AniListMedia[]> {
   return data.Page.media;
 }
 
+// Light TTL cache for the browse rows (they change slowly; avoids hammering AniList).
+const listCache = new Map<string, { at: number; data: AniListMedia[] }>();
+const LIST_TTL_MS = 10 * 60_000;
+async function cachedList(key: string, fetcher: () => Promise<AniListMedia[]>): Promise<AniListMedia[]> {
+  const hit = listCache.get(key);
+  if (hit && Date.now() - hit.at < LIST_TTL_MS) return hit.data;
+  const data = await fetcher();
+  if (data.length) listCache.set(key, { at: Date.now(), data });
+  return data;
+}
+
+const ANIME_FORMATS = new Set(["TV", "TV_SHORT", "MOVIE", "SPECIAL", "OVA", "ONA", "MUSIC"]);
+
+/** Community-recommended, highly-rated anime. */
+export async function recommendedAnime(): Promise<AniListMedia[]> {
+  return cachedList("recommended", async () => {
+    const query = `
+      query {
+        Page(perPage: 50) {
+          recommendations(sort: RATING_DESC) {
+            mediaRecommendation { ${MEDIA_FIELDS} }
+          }
+        }
+      }`;
+    const data = await gql<{ Page: { recommendations: { mediaRecommendation: AniListMedia | null }[] } }>(query, {});
+    const seen = new Set<number>();
+    const out: AniListMedia[] = [];
+    for (const r of data.Page.recommendations) {
+      const m = r.mediaRecommendation;
+      if (m && m.id && !seen.has(m.id) && ANIME_FORMATS.has(m.format ?? "")) { seen.add(m.id); out.push(m); }
+    }
+    return out.slice(0, 30);
+  });
+}
+
+function currentSeason(): { season: string; year: number } {
+  const d = new Date();
+  const m = d.getMonth(); // 0-11
+  if (m === 11) return { season: "WINTER", year: d.getFullYear() + 1 }; // Dec -> next WINTER
+  const season = m <= 1 ? "WINTER" : m <= 4 ? "SPRING" : m <= 7 ? "SUMMER" : "FALL";
+  return { season, year: d.getFullYear() };
+}
+
+/** New & continuing shows airing this season (new seasons + new titles). */
+export async function newSeasonAnime(): Promise<AniListMedia[]> {
+  const { season, year } = currentSeason();
+  return cachedList(`newseason:${season}${year}`, async () => {
+    const query = `
+      query ($season: MediaSeason, $year: Int) {
+        Page(perPage: 30) {
+          media(type: ANIME, season: $season, seasonYear: $year, sort: POPULARITY_DESC,
+                isAdult: false, format_in: [TV, TV_SHORT, ONA, OVA]) {
+            ${MEDIA_FIELDS}
+          }
+        }
+      }`;
+    const data = await gql<{ Page: { media: AniListMedia[] } }>(query, { season, year });
+    return data.Page.media;
+  });
+}
+
 export async function getById(id: number): Promise<AniListMedia | null> {
   const query = `query ($id: Int) { Media(id: $id, type: ANIME) { ${MEDIA_FIELDS} } }`;
   try {
@@ -94,6 +155,18 @@ export async function getById(id: number): Promise<AniListMedia | null> {
 
 export function mediaType(m: AniListMedia): MediaType {
   return m.format === "MOVIE" ? "movie" : "series";
+}
+
+/** Map a MyAnimeList id to its AniList id (for MAL-sourced browse cards). */
+export async function idFromMal(malId: number): Promise<number | null> {
+  const query = `query ($m: Int) { Media(idMal: $m, type: ANIME) { id } }`;
+  try {
+    const data = await gql<{ Media: { id: number } | null }>(query, { m: malId });
+    return data.Media?.id ?? null;
+  } catch (e) {
+    log.warn("idFromMal failed", malId, String(e));
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
