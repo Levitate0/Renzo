@@ -26,7 +26,7 @@ async function api(path, opts) {
     const err = await res.json().catch(() => ({}));
     if (res.status === 401) { showAuthGate(); throw new Error("unauthorized"); }
     if (res.status === 402 && err.error === "realdebrid_required") {
-      openSettings("realdebrid");
+      openSettings("credentials");
       toast("Connect Real-Debrid to stream or download");
       throw new Error("realdebrid_required");
     }
@@ -1232,7 +1232,7 @@ async function submitInvite() {
     history.replaceState(null, "", "/");
     document.getElementById("inviteGate").classList.add("hidden");
     startApp(data.user);
-    if (!data.user.realDebridConnected) openSettings("realdebrid");
+    if (!data.user.realDebridConnected) openSettings("credentials");
   } catch (e) { $("#inviteError").textContent = e.message; $("#inviteSubmit").disabled = false; }
 }
 $("#inviteSubmit").addEventListener("click", submitInvite);
@@ -1266,7 +1266,7 @@ async function submitReset() {
     history.replaceState(null, "", "/");
     $("#resetGate").classList.add("hidden");
     startApp(data.user);
-    if (!data.user.realDebridConnected) openSettings("realdebrid");
+    if (!data.user.realDebridConnected) openSettings("credentials");
   } catch (e) { $("#resetError").textContent = e.message; $("#resetSubmit").disabled = false; }
 }
 $("#resetSubmit").addEventListener("click", submitReset);
@@ -1435,7 +1435,7 @@ function startApp(user) {
   // otherwise showDetailView/showWatchView would instantly hide the prompt.
   if (!parseWatchHash() && !parseTitleHash() && !user.realDebridConnected) {
     toast("Connect Real-Debrid in Settings to start streaming");
-    openSettings("realdebrid");
+    openSettings("credentials");
   }
 }
 
@@ -1529,6 +1529,7 @@ async function openSettings(pane) {
     roleEl.textContent = roleLabel(u.role);
     roleEl.className = "role-badge" + (u.role === "owner" ? " owner" : u.role === "manager" ? " manager" : "");
     applyHealth(h);
+    setPill($("#jimakuState"), u.jimakuConnected ? "ok" : "warn", u.jimakuConnected ? "Connected" : "Not connected");
     if (u.role === "owner" || u.role === "manager") loadUsers();
     if (u.role === "owner") loadSmtp();
   } catch { /* ignore */ }
@@ -1611,6 +1612,17 @@ $("#rdSave").addEventListener("click", async () => {
     if (me) me.realDebridConnected = r.realDebridConnected;
     toast(r.realDebridConnected ? (r.premium ? "Real-Debrid connected" : "Connected — but account is NOT premium; downloads need premium") : "Real-Debrid disconnected");
     loadStatus();
+  } catch (e) { toast(e.message); }
+});
+
+$("#jimakuSave").addEventListener("click", async () => {
+  const key = $("#jimakuKey").value.trim();
+  try {
+    const u = await api("/account/jimaku", { method: "POST", body: JSON.stringify({ key }) });
+    $("#jimakuKey").value = "";
+    if (me) me.jimakuConnected = u.jimakuConnected;
+    setPill($("#jimakuState"), u.jimakuConnected ? "ok" : "warn", u.jimakuConnected ? "Connected" : "Not connected");
+    toast(u.jimakuConnected ? "Jimaku connected — subtitles enabled" : "Jimaku key removed");
   } catch (e) { toast(e.message); }
 });
 

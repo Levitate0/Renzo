@@ -180,7 +180,7 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
       source: "local",
       url: `/files/${ep.filePath.split("/").map(encodeURIComponent).join("/")}`,
       filename: ep.filePath.split("/").pop() ?? "",
-      subtitles: await subtitleList(anilistId, episode),
+      subtitles: await subtitleList(anilistId, episode, user.jimakuKey),
       downloading: activeJobFor(anilistId, episode, user.id),
     });
   }
@@ -455,7 +455,7 @@ class DownloadQueue {
 
       // Post-processing: artwork, captions (per-user dir), Jellyfin scan (best-effort).
       await library.saveArtwork(user.id, folder, t).catch(() => {});
-      await saveCaptionsNextTo(t, job.episode, abs).catch((e) => log.warn("captions", String(e)));
+      await saveCaptionsNextTo(t, job.episode, abs, user.jimakuKey).catch((e) => log.warn("captions", String(e)));
       await jellyfin.triggerScan().catch(() => {});
 
       await this.update(job, { status: "downloaded", message: "Done", progress: 1, filePath: rel });
@@ -483,9 +483,9 @@ export const queue = new DownloadQueue();
 // ---------------------------------------------------------------------------
 // Subtitles
 // ---------------------------------------------------------------------------
-async function subtitleList(anilistId: number, episode: number) {
+async function subtitleList(anilistId: number, episode: number, key?: string) {
   try {
-    const subs = await captions.findSubtitles(anilistId, episode);
+    const subs = await captions.findSubtitles(anilistId, episode, key);
     return subs.map((s) => ({ id: s.id, label: s.label, lang: s.lang }));
   } catch (e) {
     log.warn("subtitle search", String(e));
@@ -494,8 +494,8 @@ async function subtitleList(anilistId: number, episode: number) {
 }
 
 /** Auto-download captions next to the video for Jellyfin + offline use. */
-async function saveCaptionsNextTo(t: Title, episode: number, videoAbs: string): Promise<void> {
-  const subs = await captions.findSubtitles(t.id, episode);
+async function saveCaptionsNextTo(t: Title, episode: number, videoAbs: string, key?: string): Promise<void> {
+  const subs = await captions.findSubtitles(t.id, episode, key);
   const base = videoAbs.replace(/\.[^.]+$/, "");
   const seen = new Set<string>();
   for (const s of subs) {

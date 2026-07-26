@@ -16,11 +16,13 @@ export interface SubtitleTrack {
 // ---------------------------------------------------------------------------
 // Jimaku — community anime subtitles, keyed by AniList id (best source for JP)
 // ---------------------------------------------------------------------------
-async function jimaku<T>(path: string): Promise<T | null> {
-  if (!config.jimakuApiKey) return null;
+// Per-user key (Settings → Credentials) takes priority; env is a shared fallback.
+async function jimaku<T>(path: string, key?: string): Promise<T | null> {
+  const apiKey = key || config.jimakuApiKey;
+  if (!apiKey) return null;
   try {
     const res = await fetch(`${JIMAKU}${path}`, {
-      headers: { Authorization: config.jimakuApiKey, accept: "application/json" },
+      headers: { Authorization: apiKey, accept: "application/json" },
     });
     if (!res.ok) {
       log.warn("jimaku", res.status, path);
@@ -31,6 +33,15 @@ async function jimaku<T>(path: string): Promise<T | null> {
     log.warn("jimaku failed", path, String(e));
     return null;
   }
+}
+
+/** Validate a Jimaku API key (used by the settings save). */
+export async function jimakuKeyValid(key: string): Promise<boolean> {
+  if (!key) return false;
+  try {
+    const res = await fetch(`${JIMAKU}/user`, { headers: { Authorization: key, accept: "application/json" } });
+    return res.ok;
+  } catch { return false; }
 }
 
 function fmtOf(name: string): SubtitleTrack["format"] {
@@ -47,17 +58,18 @@ function langOf(name: string): string {
   return "en"; // anime subs are overwhelmingly English by default
 }
 
-/** Find subtitle tracks for a given AniList id + optional episode. */
-export async function findSubtitles(anilistId: number, episode?: number): Promise<SubtitleTrack[]> {
+/** Find subtitle tracks for a given AniList id + optional episode. `key` is the
+ *  requesting user's Jimaku API key (per-user credential). */
+export async function findSubtitles(anilistId: number, episode?: number, key?: string): Promise<SubtitleTrack[]> {
   const entries = await jimaku<{ id: number; name: string }[]>(
-    `/entries/search?anilist_id=${anilistId}`,
+    `/entries/search?anilist_id=${anilistId}`, key,
   );
   if (!entries?.length) return [];
 
   const tracks: SubtitleTrack[] = [];
   for (const entry of entries.slice(0, 3)) {
     const files = await jimaku<{ name: string; url: string; size: number }[]>(
-      `/entries/${entry.id}/files`,
+      `/entries/${entry.id}/files`, key,
     );
     if (!files) continue;
     for (const f of files) {
@@ -104,11 +116,14 @@ function assertAllowedSubtitleUrl(raw: string): void {
 }
 
 /** Fetch with manual redirects, re-validating the allowlist on every hop (SSRF-safe). */
-async function fetchAllowlisted(startUrl: string): Promise<Response> {
+async function fetchAllowlisted(startUrl: string, key?: string): Promise<Response> {
   let url = startUrl;
   for (let hop = 0; hop < 4; hop++) {
     assertAllowedSubtitleUrl(url);
-    const res = await fetch(url, { redirect: "manual" });
+    const u = new URL(url);
+    // jimaku.cc download links may require the user's key; other allowlisted CDNs don't.
+    const headers = (key && (u.hostname === "jimaku.cc" || u.hostname.endsWith(".jimaku.cc"))) ? { Authorization: key } : undefined;
+    const res = await fetch(url, { redirect: "manual", headers });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");
       if (!loc) throw new Error("redirect without location");
@@ -120,9 +135,9 @@ async function fetchAllowlisted(startUrl: string): Promise<Response> {
   throw new Error("too many redirects");
 }
 
-export async function fetchAsVtt(id: string): Promise<string> {
+export async function fetchAsVtt(id: string, key?: string): Promise<string> {
   const { url, format } = decodeTrackId(id);
-  const res = await fetchAllowlisted(url);
+  const res = await fetchAllowlisted(url, key);
   if (!res.ok) throw new Error(`subtitle fetch ${res.status}`);
   const raw = await res.text();
   if (format === "vtt") return raw.startsWith("WEBVTT") ? raw : `WEBVTT\n\n${raw}`;

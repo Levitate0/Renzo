@@ -242,8 +242,7 @@
         <aside class="settings-nav">
           <div class="settings-title">Settings</div>
           <button data-pane="account" class="active">👤&nbsp; Account</button>
-          <button data-pane="realdebrid">🔗&nbsp; Real-Debrid</button>
-          <button data-pane="trackers">📺&nbsp; Trackers</button>
+          <button data-pane="credentials">🔑&nbsp; Required credentials</button>
           <button data-pane="defaults">🗂️&nbsp; Library</button>
           <button data-pane="jellyfin">🧩&nbsp; Jellyfin</button>
           <button data-pane="security">🔒&nbsp; Security</button>
@@ -284,30 +283,39 @@
             </div>
           </section>
 
-          <!-- Real-Debrid -->
-          <section class="pane" data-pane="realdebrid">
-            <h2>Real-Debrid <span id="rdState" class="pill-state"></span></h2>
-            <p class="sub">Required. All torrent traffic is routed through Real-Debrid, so it never
-              touches your home IP.</p>
+          <!-- Required credentials (per-user): Real-Debrid, Jimaku subtitles, AniList/MAL -->
+          <section class="pane" data-pane="credentials">
+            <h2>Required credentials</h2>
+            <p class="sub">Each account uses its <b>own</b> credentials. Real-Debrid is required to
+              stream &amp; download; a Jimaku key enables anime subtitles; connect AniList <i>or</i>
+              MyAnimeList for list import &amp; scrobbling.</p>
+
             <div class="field">
-              <label for="rdToken">API token</label>
+              <label for="rdToken">Real-Debrid API token <span id="rdState" class="pill-state"></span></label>
               <div class="inline">
                 <input id="rdToken" class="in" type="password" placeholder="Paste your Real-Debrid API token" autocomplete="off" />
                 <button id="rdSave" class="primary">Save</button>
               </div>
-              <span class="hint"><a class="muted-link" href="https://real-debrid.com/apitoken" target="_blank" rel="noreferrer">Get your token →</a></span>
+              <span class="hint"><b>Required</b> — all torrent traffic routes through Real-Debrid, never your home IP.
+                <a class="muted-link" href="https://real-debrid.com/apitoken" target="_blank" rel="noreferrer">Get your token →</a></span>
             </div>
-          </section>
 
-          <!-- Trackers -->
-          <section class="pane" data-pane="trackers">
-            <div class="users-head">
-              <h2>Trackers</h2>
+            <div class="field">
+              <label for="jimakuKey">Jimaku API key <span id="jimakuState" class="pill-state"></span></label>
+              <div class="inline">
+                <input id="jimakuKey" class="in" type="password" placeholder="Paste your Jimaku API key" autocomplete="off" />
+                <button id="jimakuSave" class="primary">Save</button>
+              </div>
+              <span class="hint"><b>Required for subtitles</b> — enables anime captions and saves them with each download.
+                <a class="muted-link" href="https://jimaku.cc/login" target="_blank" rel="noreferrer">Sign in at jimaku.cc</a> → Account → API key.</span>
+            </div>
+
+            <div class="users-head" style="margin-top:6px">
+              <h3 style="margin:0">AniList / MyAnimeList</h3>
               <button id="trkRefresh" class="ghost" title="Re-check connection status">↻ Refresh</button>
             </div>
-            <p class="sub"><b>Connect just one</b> — AniList <i>or</i> MyAnimeList is enough to import
-              your list and auto-scrobble. Connecting opens the auth site in a new tab; sign in once
-              and it manages your tokens from then on.</p>
+            <p class="sub"><b>Connect just one</b> — enough to import your list and auto-scrobble.
+              Connecting opens the auth site in a new tab; sign in once and it manages your tokens.</p>
 
             <div class="conn-list">
               <div class="conn-row">

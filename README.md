@@ -111,6 +111,22 @@ immediately; no code change needed.
 
 ---
 
+## Required credentials (per-user, in Settings)
+
+Each account sets its **own** credentials under **Settings → Required credentials**:
+
+| Credential | Needed for | Where to get it |
+|------------|-----------|-----------------|
+| **Real-Debrid API token** | streaming + downloading (mandatory) | https://real-debrid.com/apitoken |
+| **Jimaku API key** | anime **subtitles** (captions in the player + saved with each download) | sign in at https://jimaku.cc → **Account → API key** |
+| **AniList _or_ MyAnimeList** | list import + progress scrobbling (optional) | "Connect ↗" (opens the auth site) |
+
+**Subtitles need the Jimaku key.** Renzo looks up subtitles by AniList id via
+[Jimaku](https://jimaku.cc) using **the watching user's own key** — without it the player's
+caption list is empty. The key is validated on save and stored per-user; `.env`'s
+`JIMAKU_API_KEY` (below) is only a shared fallback. When an episode is downloaded, its subtitle
+tracks are saved next to the video (`.vtt`) too, for Jellyfin + offline.
+
 ## Optional integrations (`.env`)
 
 | Feature            | Vars |

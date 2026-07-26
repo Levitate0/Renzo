@@ -8,6 +8,7 @@ import * as apikeys from "../services/apikeys.js";
 import * as rd from "../services/realdebrid.js";
 import * as mailer from "../services/mailer.js";
 import { isTrackStatus } from "../services/tracker.js";
+import { jimakuKeyValid } from "../services/captions.js";
 import type { AuthedRequest } from "../services/auth.js";
 import type { Role, InviteRecord, SmtpSettings, ThemeSettings, AddDefaults } from "../types.js";
 
@@ -33,7 +34,7 @@ function clientIp(req: Request): string {
 function publicUser(u: {
   id: string; username: string; role: string; email?: string;
   realDebridToken?: string; anilistToken?: string; malToken?: string; theme?: ThemeSettings;
-  downloadsDenied?: boolean; addDefaults?: AddDefaults; autoStatus?: boolean; ccLang?: string;
+  downloadsDenied?: boolean; addDefaults?: AddDefaults; autoStatus?: boolean; ccLang?: string; jimakuKey?: string;
 }) {
   return {
     id: u.id,
@@ -41,6 +42,7 @@ function publicUser(u: {
     role: u.role,
     email: u.email ?? null,
     realDebridConnected: Boolean(u.realDebridToken),
+    jimakuConnected: Boolean(u.jimakuKey),
     anilistConnected: Boolean(u.anilistToken),
     malConnected: Boolean(u.malToken),
     theme: u.theme ?? null,
@@ -337,6 +339,17 @@ accountRoutes.post("/realdebrid", wrap(async (req: AuthedRequest, res) => {
   user.realDebridToken = token;
   await db.save();
   res.json({ ...publicUser(user), premium: rd.isPremium(acct), username_rd: acct.username });
+}));
+
+// Connect / update the per-user Jimaku API key (anime subtitles). Validated.
+accountRoutes.post("/jimaku", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const key = String(req.body?.key ?? "").trim();
+  if (!key) { user.jimakuKey = undefined; await db.save(); return res.json(publicUser(user)); }
+  if (!(await jimakuKeyValid(key))) return res.status(400).json({ error: "Invalid Jimaku API key" });
+  user.jimakuKey = key;
+  await db.save();
+  res.json(publicUser(user));
 }));
 
 // --- Staff: user management (owner + manager) -------------------------------

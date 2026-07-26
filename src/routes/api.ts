@@ -624,8 +624,8 @@ api.post("/titles/:id/retry/:ep", wrap(async (req, res) => {
 }));
 
 // --- Captions proxy: remote sub -> WebVTT ----------------------------------
-api.get("/captions/:id.vtt", wrap(async (req, res) => {
-  const vtt = await captions.fetchAsVtt(req.params.id);
+api.get("/captions/:id.vtt", wrap(async (req: AuthedRequest, res) => {
+  const vtt = await captions.fetchAsVtt(req.params.id, req.user?.jimakuKey);
   res.type("text/vtt").send(vtt);
 }));
 
