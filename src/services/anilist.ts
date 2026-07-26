@@ -96,6 +96,81 @@ export function mediaType(m: AniListMedia): MediaType {
   return m.format === "MOVIE" ? "movie" : "series";
 }
 
+// ---------------------------------------------------------------------------
+// Per-episode thumbnails + related seasons (for the detail view), TTL-cached.
+// ---------------------------------------------------------------------------
+export interface EpisodeThumb { title: string; thumbnail: string | null }
+export interface SeasonRef {
+  id: number; title: string; year: number | null; format: string | null;
+  episodes: number | null; poster: string | null; relation: string; status: string | null;
+}
+interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[] }
+
+const extraCache = new Map<number, { at: number; data: DetailExtra }>();
+const EXTRA_TTL = 60 * 60_000;
+
+export async function detailExtra(id: number): Promise<DetailExtra> {
+  const hit = extraCache.get(id);
+  if (hit && Date.now() - hit.at < EXTRA_TTL) return hit.data;
+  const query = `
+    query ($id: Int) {
+      Media(id: $id, type: ANIME) {
+        streamingEpisodes { title thumbnail }
+        relations {
+          edges {
+            relationType
+            node {
+              id type format status seasonYear episodes
+              title { romaji english }
+              coverImage { large }
+            }
+          }
+        }
+      }
+    }`;
+  try {
+    const data = await gql<{
+      Media: {
+        streamingEpisodes: { title: string | null; thumbnail: string | null }[] | null;
+        relations: { edges: { relationType: string; node: {
+          id: number; type: string; format: string | null; status: string | null;
+          seasonYear: number | null; episodes: number | null;
+          title: { romaji: string | null; english: string | null };
+          coverImage: { large: string | null } | null;
+        } }[] } | null;
+      };
+    }>(query, { id });
+    // AniList lists streamingEpisodes in episode order (index 0 = episode 1);
+    // titles are prefixed "Episode N - Title". Just strip the prefix for a clean
+    // title — do NOT reorder (the "N" is the streaming site's global number).
+    const episodes: EpisodeThumb[] = (data.Media.streamingEpisodes ?? []).map((e) => {
+      const raw = (e.title ?? "").trim();
+      const m = raw.match(/^\s*Episode\s+\d+\s*[-:–—]\s*(.+)$/i);
+      return { title: m ? m[1].trim() : raw, thumbnail: e.thumbnail ?? null };
+    });
+    // Seasons = directly-related TV/ONA prequels & sequels (other cours).
+    const seasons: SeasonRef[] = (data.Media.relations?.edges ?? [])
+      .filter((e) => ["PREQUEL", "SEQUEL"].includes(e.relationType) &&
+        e.node.type === "ANIME" && ["TV", "TV_SHORT", "ONA"].includes(e.node.format ?? ""))
+      .map((e) => ({
+        id: e.node.id,
+        title: e.node.title.english ?? e.node.title.romaji ?? `#${e.node.id}`,
+        year: e.node.seasonYear,
+        format: e.node.format,
+        episodes: e.node.episodes,
+        poster: e.node.coverImage?.large ?? null,
+        relation: e.relationType,
+        status: e.node.status,
+      }));
+    const result = { episodes, seasons };
+    extraCache.set(id, { at: Date.now(), data: result });
+    return result;
+  } catch (e) {
+    log.warn("detailExtra failed", id, String(e));
+    return { episodes: [], seasons: [] };
+  }
+}
+
 /** Convert an AniList record into a library Title skeleton (no episodes yet). */
 export function toTitle(m: AniListMedia): Title {
   const type = mediaType(m);
