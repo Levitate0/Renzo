@@ -176,18 +176,36 @@ export interface EpisodeThumb { title: string; thumbnail: string | null }
 export interface SeasonRef {
   id: number; title: string; year: number | null; format: string | null;
   episodes: number | null; poster: string | null; relation: string; status: string | null;
+  num: number; // 1-based chronological season number within the full chain
 }
-interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[] }
+interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[]; seasonNum: number }
 
 const extraCache = new Map<number, { at: number; data: DetailExtra }>();
 const EXTRA_TTL = 60 * 60_000;
 
-export async function detailExtra(id: number): Promise<DetailExtra> {
-  const hit = extraCache.get(id);
-  if (hit && Date.now() - hit.at < EXTRA_TTL) return hit.data;
+// One node's own summary + episode thumbnails + its prequel/sequel TV neighbours.
+interface SeasonNode {
+  id: number; title: string; year: number | null; format: string | null;
+  episodes: number | null; poster: string | null; status: string | null;
+}
+interface RelInfo { node: SeasonNode; thumbs: EpisodeThumb[]; neighbours: { relation: string; node: SeasonNode }[] }
+
+const relCache = new Map<number, { at: number; data: RelInfo }>();
+const REL_TTL = 60 * 60_000;
+const SEASON_FORMATS = ["TV", "TV_SHORT", "ONA"];
+
+// Fetch a single media's own metadata, episode thumbnails, and its DIRECT
+// prequel/sequel TV/ONA neighbours. Cached per id so a chain walk that revisits
+// a node (they all point back at each other) costs one request, not many.
+async function relationsOf(id: number): Promise<RelInfo> {
+  const hit = relCache.get(id);
+  if (hit && Date.now() - hit.at < REL_TTL) return hit.data;
   const query = `
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
+        id seasonYear format status episodes
+        title { romaji english }
+        coverImage { large }
         streamingEpisodes { title thumbnail }
         relations {
           edges {
@@ -201,46 +219,118 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
         }
       }
     }`;
-  try {
-    const data = await gql<{
-      Media: {
-        streamingEpisodes: { title: string | null; thumbnail: string | null }[] | null;
-        relations: { edges: { relationType: string; node: {
-          id: number; type: string; format: string | null; status: string | null;
-          seasonYear: number | null; episodes: number | null;
-          title: { romaji: string | null; english: string | null };
-          coverImage: { large: string | null } | null;
-        } }[] } | null;
-      };
-    }>(query, { id });
-    // AniList lists streamingEpisodes in episode order (index 0 = episode 1);
-    // titles are prefixed "Episode N - Title". Just strip the prefix for a clean
-    // title — do NOT reorder (the "N" is the streaming site's global number).
-    const episodes: EpisodeThumb[] = (data.Media.streamingEpisodes ?? []).map((e) => {
-      const raw = (e.title ?? "").trim();
-      const m = raw.match(/^\s*Episode\s+\d+\s*[-:–—]\s*(.+)$/i);
-      return { title: m ? m[1].trim() : raw, thumbnail: e.thumbnail ?? null };
-    });
-    // Seasons = directly-related TV/ONA prequels & sequels (other cours).
-    const seasons: SeasonRef[] = (data.Media.relations?.edges ?? [])
-      .filter((e) => ["PREQUEL", "SEQUEL"].includes(e.relationType) &&
-        e.node.type === "ANIME" && ["TV", "TV_SHORT", "ONA"].includes(e.node.format ?? ""))
-      .map((e) => ({
+  const data = await gql<{
+    Media: {
+      id: number; seasonYear: number | null; format: string | null; status: string | null; episodes: number | null;
+      title: { romaji: string | null; english: string | null };
+      coverImage: { large: string | null } | null;
+      streamingEpisodes: { title: string | null; thumbnail: string | null }[] | null;
+      relations: { edges: { relationType: string; node: {
+        id: number; type: string; format: string | null; status: string | null;
+        seasonYear: number | null; episodes: number | null;
+        title: { romaji: string | null; english: string | null };
+        coverImage: { large: string | null } | null;
+      } }[] } | null;
+    };
+  }>(query, { id });
+  const m = data.Media;
+  const node: SeasonNode = {
+    id: m.id,
+    title: m.title.english ?? m.title.romaji ?? `#${m.id}`,
+    year: m.seasonYear,
+    format: m.format,
+    episodes: m.episodes,
+    poster: m.coverImage?.large ?? null,
+    status: m.status,
+  };
+  // AniList lists streamingEpisodes in episode order (index 0 = episode 1);
+  // titles are prefixed "Episode N - Title". Just strip the prefix for a clean
+  // title — do NOT reorder (the "N" is the streaming site's global number).
+  const thumbs: EpisodeThumb[] = (m.streamingEpisodes ?? []).map((e) => {
+    const raw = (e.title ?? "").trim();
+    const mm = raw.match(/^\s*Episode\s+\d+\s*[-:–—]\s*(.+)$/i);
+    return { title: mm ? mm[1].trim() : raw, thumbnail: e.thumbnail ?? null };
+  });
+  const neighbours = (m.relations?.edges ?? [])
+    .filter((e) => ["PREQUEL", "SEQUEL"].includes(e.relationType) &&
+      e.node.type === "ANIME" && SEASON_FORMATS.includes(e.node.format ?? ""))
+    .map((e) => ({
+      relation: e.relationType,
+      node: {
         id: e.node.id,
         title: e.node.title.english ?? e.node.title.romaji ?? `#${e.node.id}`,
         year: e.node.seasonYear,
         format: e.node.format,
         episodes: e.node.episodes,
         poster: e.node.coverImage?.large ?? null,
-        relation: e.relationType,
         status: e.node.status,
+      } as SeasonNode,
+    }));
+  const info: RelInfo = { node, thumbs, neighbours };
+  relCache.set(id, { at: Date.now(), data: info });
+  return info;
+}
+
+// Walk the prequel/sequel chain transitively (BFS) so the FULL set of seasons is
+// present no matter which one we start from. AniList only exposes DIRECT
+// neighbours, so from S3 you'd otherwise never see S1 (it's two hops away) — the
+// old code numbered by array index and mislabelled every later season.
+async function buildSeasonChain(startId: number): Promise<Map<number, SeasonNode>> {
+  const found = new Map<number, SeasonNode>();
+  const visited = new Set<number>();
+  const queue: number[] = [startId];
+  while (queue.length && found.size < 32) {
+    const cur = queue.shift()!;
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    let info: RelInfo;
+    try { info = await relationsOf(cur); }
+    catch (e) { log.warn("season chain hop failed", cur, String(e)); continue; }
+    found.set(cur, info.node); // authoritative self metadata
+    for (const nb of info.neighbours) {
+      if (!found.has(nb.node.id)) found.set(nb.node.id, nb.node);
+      if (!visited.has(nb.node.id)) queue.push(nb.node.id);
+    }
+  }
+  return found;
+}
+
+// Chronological order: by season year, then AniList id as a stable tiebreak
+// (handles split-cours that share a year well enough for numbering).
+function orderSeasons(nodes: SeasonNode[]): SeasonNode[] {
+  return [...nodes].sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999) || a.id - b.id);
+}
+
+export async function detailExtra(id: number): Promise<DetailExtra> {
+  const hit = extraCache.get(id);
+  if (hit && Date.now() - hit.at < EXTRA_TTL) return hit.data;
+  try {
+    const self = await relationsOf(id); // episode thumbnails for THIS title
+    const chain = orderSeasons([...(await buildSeasonChain(id)).values()]);
+    const numById = new Map(chain.map((n, i) => [n.id, i + 1]));
+    const seasonNum = numById.get(id) ?? 1;
+    // Other seasons in the chain, each carrying its true (chronological) number.
+    // relation is derived vs. the current season so consumers (Updates feed) can
+    // still tell which are sequels — now correct even across multiple hops.
+    const seasons: SeasonRef[] = chain
+      .filter((n) => n.id !== id)
+      .map((n) => ({
+        id: n.id,
+        title: n.title,
+        year: n.year,
+        format: n.format,
+        episodes: n.episodes,
+        poster: n.poster,
+        status: n.status,
+        num: numById.get(n.id)!,
+        relation: numById.get(n.id)! > seasonNum ? "SEQUEL" : "PREQUEL",
       }));
-    const result = { episodes, seasons };
+    const result: DetailExtra = { episodes: self.thumbs, seasons, seasonNum };
     extraCache.set(id, { at: Date.now(), data: result });
     return result;
   } catch (e) {
     log.warn("detailExtra failed", id, String(e));
-    return { episodes: [], seasons: [] };
+    return { episodes: [], seasons: [], seasonNum: 1 };
   }
 }
 

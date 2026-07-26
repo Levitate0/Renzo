@@ -343,8 +343,17 @@ $("#importBtn").addEventListener("click", async () => {
 let current = null;
 let detailShownId = null; // title id currently rendered on the detail page (for instant Back)
 
-// Navigate to a title's dedicated page; the hash router renders it.
-function openDetail(id) { location.hash = `#/title/${id}`; }
+// Navigate to a title's dedicated page; the hash router renders it. `replace`
+// (used by season/related links already inside a detail or the player) swaps the
+// current history entry instead of pushing one, so the title stack stays flat and
+// Back returns to the MENU — not to the previously-viewed season.
+function openDetail(id, replace) {
+  const url = `#/title/${id}`;
+  if (replace && location.hash !== url) {
+    history.replaceState(null, "", url); // replaceState doesn't fire hashchange…
+    route();                             // …so run the router ourselves
+  } else location.hash = url;
+}
 
 function showDetailView() {
   document.querySelectorAll(".modal:not(.hidden)").forEach((m) => m.classList.add("hidden"));
@@ -445,17 +454,18 @@ function renderSeasons(d) {
   const row = $("#seasonsRow");
   row.innerHTML = "";
   const seasons = [
-    { id: d.id, title: d.english || d.romaji, year: d.year, poster: d.poster, current: true },
-    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, poster: s.poster })),
+    { id: d.id, title: d.english || d.romaji, year: d.year, poster: d.poster, num: d.seasonNum, current: true },
+    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, poster: s.poster, num: s.num })),
   ];
   if (seasons.length < 2) { row.classList.add("hidden"); return; }
-  seasons.sort((a, b) => (a.year || 0) - (b.year || 0));
+  seasons.sort((a, b) => (a.num || 0) - (b.num || 0) || (a.year || 0) - (b.year || 0));
   row.classList.remove("hidden");
   seasons.forEach((s, i) => {
+    const n = s.num || i + 1; // backend season number (chronological across the whole chain)
     const card = el("div", "season-card" + (s.current ? " current" : ""));
     card.innerHTML = `<img loading="lazy" src="${esc(s.poster || "")}" alt="" onerror="this.style.opacity=.15" />
-      <div class="lbl">S${i + 1}${s.year ? ` · ${s.year}` : ""}${s.current ? " (this)" : ""}</div>`;
-    if (!s.current) card.addEventListener("click", () => openDetail(s.id));
+      <div class="lbl">S${n}${s.year ? ` · ${s.year}` : ""}${s.current ? " (this)" : ""}</div>`;
+    if (!s.current) card.addEventListener("click", () => openDetail(s.id, true)); // flat stack → Back = menu
     row.append(card);
   });
 }
@@ -744,11 +754,12 @@ function airedCount(d) {
   return (d.episodeList || []).filter((e) => e.aired !== false).length || 1;
 }
 function orderedSeasons(d) {
-  return [{ id: d.id, title: d.english || d.romaji, year: d.year, current: true },
-    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year }))]
-    .sort((a, b) => (a.year || 0) - (b.year || 0));
+  return [{ id: d.id, title: d.english || d.romaji, year: d.year, num: d.seasonNum, current: true },
+    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, num: s.num }))]
+    .sort((a, b) => (a.num || 0) - (b.num || 0) || (a.year || 0) - (b.year || 0));
 }
 function seasonNumber(d) {
+  if (d.seasonNum) return d.seasonNum; // authoritative number from the backend chain
   const i = orderedSeasons(d).findIndex((s) => s.id === d.id);
   return i < 0 ? 1 : i + 1;
 }
@@ -762,7 +773,8 @@ function renderWatchShell(d) {
     sel.innerHTML = "";
     seasons.forEach((s, i) => {
       const o = document.createElement("option");
-      o.value = s.id; o.textContent = `Season ${i + 1}${s.year ? ` · ${s.year}` : ""}`;
+      const n = s.num || i + 1;
+      o.value = s.id; o.textContent = `Season ${n}${s.year ? ` · ${s.year}` : ""}`;
       if (s.id === d.id) o.selected = true;
       sel.append(o);
     });

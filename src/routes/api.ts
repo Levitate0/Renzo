@@ -395,7 +395,7 @@ api.delete("/library/:id", wrap(async (req, res) => {
 
 api.get("/titles/:id", wrap(async (req, res) => {
   const t = await getOrCreateTitle(Number(req.params.id));
-  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [] }));
+  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1 }));
   const detail = detailFromTitle(t, req.user);
   // Merge per-episode preview thumbnails + episode titles (fallback: banner/poster).
   const episodeList = detail.episodeList.map((e) => {
@@ -406,6 +406,7 @@ api.get("/titles/:id", wrap(async (req, res) => {
     ...detail,
     episodeList,
     seasons: extra.seasons,
+    seasonNum: extra.seasonNum, // this title's true season number in the chain
     watchedThrough: req.user ? watchedEp(req.user, t.id) : 0, // last episode marked watched
     lists: userLists(req.user, t.id),
     inLibrary: inLibrary(req.user, t.id),
