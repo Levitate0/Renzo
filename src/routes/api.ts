@@ -521,3 +521,20 @@ api.get("/captions/:id.vtt", wrap(async (req, res) => {
 api.post("/trackers/import", wrap(async (req: AuthedRequest, res) => {
   res.json(await tracker.importAll(req.user));
 }));
+
+// Per-title tracking (status / progress / score) read from + synced to trackers.
+api.get("/titles/:id/tracking", wrap(async (req: AuthedRequest, res) => {
+  const t = await getOrCreateTitle(Number(req.params.id));
+  res.json(await tracker.getTracking(t, req.user));
+}));
+
+api.post("/titles/:id/tracking", wrap(async (req: AuthedRequest, res) => {
+  const t = await getOrCreateTitle(Number(req.params.id));
+  const patch: { status?: tracker.TrackStatus; progress?: number; score?: number } = {};
+  const st = String(req.body?.status ?? "");
+  if (tracker.isTrackStatus(st)) patch.status = st;
+  if (req.body?.progress != null) patch.progress = Math.max(0, Math.floor(Number(req.body.progress) || 0));
+  if (req.body?.score != null) patch.score = Math.max(0, Math.min(10, Number(req.body.score) || 0));
+  await tracker.setTracking(t, req.user, patch);
+  res.json(await tracker.getTracking(t, req.user)); // return the fresh synced state
+}));
