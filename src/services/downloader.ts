@@ -135,20 +135,54 @@ export interface ResolvedStream {
   downloading?: DownloadJob;
 }
 
+// Short-lived cache of resolved streams so the player can prefetch the next
+// episode and make in-player transitions instant (the real play reuses the
+// warmed link instead of re-resolving through Real-Debrid).
+const streamCache = new Map<string, { at: number; data: ResolvedStream }>();
+const STREAM_TTL_MS = 8 * 60_000;
+function cacheStream(key: string, data: ResolvedStream): ResolvedStream {
+  streamCache.set(key, { at: Date.now(), data });
+  return data;
+}
+/** Drop cached stream(s) for a user's title — one episode or all of them. */
+export function invalidateStream(userId: string, titleId: number, episode?: number): void {
+  if (episode != null) { streamCache.delete(`${userId}:${titleId}:${episode}`); return; }
+  const prefix = `${userId}:${titleId}:`;
+  for (const k of [...streamCache.keys()]) if (k.startsWith(prefix)) streamCache.delete(k);
+}
+// A cached entry is only reusable if it still reflects reality: a cached local
+// file must still exist at that exact path (guards folder moves / deletes), and
+// a cached RD link is stale once the episode is available locally (prefer the
+// local handoff instead of continuing to stream from Real-Debrid).
+async function cachedStillValid(data: ResolvedStream, ep: EpisodeRecord, userId: string): Promise<boolean> {
+  if (data.source === "local") {
+    if (!ep.filePath) return false;
+    const expected = `/files/${ep.filePath.split("/").map(encodeURIComponent).join("/")}`;
+    return data.url === expected && (await library.exists(library.userAbs(userId, ep.filePath)));
+  }
+  return !(ep.status === "downloaded" && ep.filePath);
+}
+
 export async function resolveStream(anilistId: number, episode: number, user: UserRecord): Promise<ResolvedStream> {
   const t = await getOrCreateTitle(anilistId);
   const ep = getUserEp(user, anilistId, episode);
+  const cacheKey = `${user.id}:${anilistId}:${episode}`;
+  const cached = streamCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < STREAM_TTL_MS && (await cachedStillValid(cached.data, ep, user.id))) {
+    return cached.data;
+  }
+  streamCache.delete(cacheKey); // expired or no longer valid -> re-resolve below
   log.info(`▶ play ${t.romaji} E${episode} (${user.username})`);
 
   // 1) Already in MY library -> serve MY local file (Crunchyroll-style handoff).
   if (ep.status === "downloaded" && ep.filePath && (await library.exists(library.userAbs(user.id, ep.filePath)))) {
-    return {
+    return cacheStream(cacheKey, {
       source: "local",
       url: `/files/${ep.filePath.split("/").map(encodeURIComponent).join("/")}`,
       filename: ep.filePath.split("/").pop() ?? "",
       subtitles: await subtitleList(anilistId, episode),
       downloading: activeJobFor(anilistId, episode, user.id),
-    };
+    });
   }
 
   // 2) Otherwise resolve an instant Real-Debrid stream — mandatory: all torrent
@@ -157,13 +191,13 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
   const token = requireToken(user);
   const link = await resolveRdLinkInner(token, t, ep, 45_000, undefined, user);
   await db.save();
-  return {
+  return cacheStream(cacheKey, {
     source: "realdebrid",
     url: link.download,
     filename: link.filename,
     subtitles: await subtitleList(anilistId, episode),
     downloading: activeJobFor(anilistId, episode, user.id),
-  };
+  });
 }
 
 // Serialize RD preparation per title so concurrent episode jobs (e.g. a season
@@ -417,6 +451,7 @@ class DownloadQueue {
       ep.progress = 1;
       ep.updatedAt = new Date().toISOString();
       await db.save();
+      invalidateStream(job.userId, job.titleId, job.episode); // serve the local file now, not the stale RD link
 
       // Post-processing: artwork, captions (per-user dir), Jellyfin scan (best-effort).
       await library.saveArtwork(user.id, folder, t).catch(() => {});
