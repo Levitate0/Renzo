@@ -1017,7 +1017,11 @@ function initPlayer() {
     $("#pcCur").textContent = fmtTime(v.currentTime);
   });
   v.addEventListener("loadedmetadata", () => { $("#pcDur").textContent = fmtTime(v.duration); });
-  v.addEventListener("volumechange", () => { $("#pcMute").textContent = (v.muted || !v.volume) ? "🔇" : "🔊"; });
+  v.addEventListener("volumechange", () => {
+    $("#pcMute").textContent = (v.muted || !v.volume) ? "🔇" : (v.volume < 0.5 ? "🔉" : "🔊");
+    $("#pcVol").value = String(Math.round((v.muted ? 0 : v.volume) * 100));
+  });
+  $("#pcVol").addEventListener("input", () => { const val = Number($("#pcVol").value) / 100; v.muted = val === 0; v.volume = val; });
   $("#pcSeek").addEventListener("input", () => { scrubbing = true; if (v.duration) $("#pcCur").textContent = fmtTime(v.duration * $("#pcSeek").value / 1000); });
   $("#pcSeek").addEventListener("change", () => { if (v.duration) v.currentTime = v.duration * $("#pcSeek").value / 1000; scrubbing = false; });
   $("#pcMute").addEventListener("click", () => { v.muted = !v.muted; });

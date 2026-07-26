@@ -821,3 +821,16 @@ html { overflow-x: clip; }                 /* no horizontal page scroll (sticky-
 /* fullscreen: fill the screen, keep our controls + captions */
 .watch-stage:fullscreen { max-height: none; aspect-ratio: auto; width: 100vw; height: 100vh; }
 .watch-stage:-webkit-full-screen { max-height: none; aspect-ratio: auto; width: 100vw; height: 100vh; }
+
+/* hover volume slider (vertical, pops above the mute button) */
+.pc-vol { position: relative; display: flex; align-items: center; }
+.pc-vol-slider {
+  position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%);
+  -webkit-appearance: slider-vertical; appearance: slider-vertical;
+  writing-mode: vertical-lr; direction: rtl;
+  width: 30px; height: 96px; margin: 0; padding: 10px 4px; cursor: pointer;
+  background: rgba(16,17,24,.97); border: 1px solid var(--line-2); border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.5); accent-color: var(--accent);
+  opacity: 0; pointer-events: none; transition: opacity .12s;
+}
+.pc-vol:hover .pc-vol-slider, .pc-vol-slider:focus { opacity: 1; pointer-events: auto; }

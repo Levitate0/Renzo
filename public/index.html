@@ -193,7 +193,10 @@
         <span id="pcDur" class="pc-time">0:00</span>
         <button id="pcCc" class="pc-btn" title="Subtitles">CC</button>
         <button id="pcRate" class="pc-btn pc-rate" title="Speed">1×</button>
-        <button id="pcMute" class="pc-btn" title="Mute">🔊</button>
+        <div class="pc-vol" id="pcVolWrap">
+          <button id="pcMute" class="pc-btn" title="Mute">🔊</button>
+          <input id="pcVol" class="pc-vol-slider" type="range" min="0" max="100" value="100" aria-label="Volume" />
+        </div>
         <button id="pcFs" class="pc-btn" title="Fullscreen">⤢</button>
       </div>
       <div id="ccMenu" class="cc-menu hidden"></div>
