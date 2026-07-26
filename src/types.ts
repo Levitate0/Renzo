@@ -94,10 +94,20 @@ export interface UserRecord {
   titleFolder?: Record<string, string>; // titleId -> folder name (default folder if unset)
   titleProvider?: Record<string, string>; // titleId -> preferred release group (all eps/seasons)
   progress?: Record<string, number>;   // titleId -> last episode watched (for "up next")
+  watchIds?: Record<string, string>;   // titleId -> stable per-user watch token (for saved titles)
   updatesSeen?: Record<string, number>; // titleId -> aired-count last acknowledged in Updates
   realDebridToken?: string;        // per-user RD creds — required to stream/download
   anilistToken?: string;           // per-user tracker connections
   malToken?: string;
+  resetToken?: string;             // active password-reset token (emailed)
+  resetExpires?: number;           // epoch ms
+  theme?: ThemeSettings;           // per-user appearance
+}
+
+export interface ThemeSettings {
+  preset: string;                  // preset id (e.g. "renzo", "amoled", "light")
+  accent?: string;                 // optional custom accent (#rrggbb)
+  bg?: string;                     // optional custom background (#rrggbb)
 }
 
 export interface SessionRecord {
@@ -127,6 +137,14 @@ export interface SmtpSettings {
   from: string;
 }
 
+/** A shareable/bookmarkable per-series watch URL id (temp or per-user stable). */
+export interface WatchToken {
+  userId: string;
+  titleId: number;
+  temp: boolean;       // true = ephemeral (title not in the user's library)
+  createdAt: number;
+}
+
 export interface DbShape {
   titles: Title[];
   jobs: DownloadJob[];
@@ -134,4 +152,5 @@ export interface DbShape {
   sessions: SessionRecord[];
   invites: InviteRecord[];
   settings: { smtp?: SmtpSettings };
+  watch: Record<string, WatchToken>;   // watchId -> token
 }

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import type { DbShape, Title, DownloadJob, UserRecord, SessionRecord, InviteRecord, SmtpSettings } from "./types.js";
+import type { DbShape, Title, DownloadJob, UserRecord, SessionRecord, InviteRecord, SmtpSettings, WatchToken } from "./types.js";
 
 const log = logger("db");
 
@@ -12,7 +12,7 @@ const log = logger("db");
  */
 class Store {
   private path = join(config.dataDir, "db.json");
-  private data: DbShape = { titles: [], jobs: [], users: [], sessions: [], invites: [], settings: {} };
+  private data: DbShape = { titles: [], jobs: [], users: [], sessions: [], invites: [], settings: {}, watch: {} };
   private writing: Promise<void> = Promise.resolve();
   private loaded = false;
 
@@ -27,6 +27,7 @@ class Store {
       this.data.sessions ??= [];
       this.data.invites ??= [];
       this.data.settings ??= {};
+      this.data.watch ??= {};
       // Migrate legacy role "admin" -> "owner".
       let migrated = false;
       for (const u of this.data.users) {
@@ -174,6 +175,12 @@ class Store {
   async setSmtp(s: SmtpSettings | undefined): Promise<void> {
     this.data.settings.smtp = s;
     await this.flush();
+  }
+
+  // --- watch tokens ----------------------------------------------------------
+  watch(): Record<string, WatchToken> {
+    this.assert();
+    return this.data.watch;
   }
 
   /** Persist any in-place mutations made by callers. */
