@@ -189,18 +189,43 @@ function renderGrid(target, items) {
   items.forEach((it) => target.append(makeCard(it)));
 }
 
+const browseData = {};
+const CAT_LABELS = { trending: "Trending", recommended: "Recommended", newSeason: "New & this season" };
 async function loadBrowse() {
   $("#searchWrap").classList.add("hidden");
   $("#browseWrap").classList.remove("hidden");
   const rows = [
-    ["#trendingGrid", "/discover/trending"],
-    ["#recommendedGrid", "/discover/recommended"],
-    ["#newSeasonGrid", "/discover/new-season"],
+    ["#trendingGrid", "/discover/trending", "trending"],
+    ["#recommendedGrid", "/discover/recommended", "recommended"],
+    ["#newSeasonGrid", "/discover/new-season", "newSeason"],
   ];
-  await Promise.all(rows.map(async ([sel, url]) => {
-    try { renderGrid($(sel), await api(url)); } catch { renderGrid($(sel), []); }
+  await Promise.all(rows.map(async ([sel, url, key]) => {
+    try {
+      const items = await api(url);
+      browseData[key] = items;
+      renderGrid($(sel), items);
+      appendMoreTile($(sel), key);        // "More →" tile at the end of the scroll row
+    } catch { browseData[key] = []; renderGrid($(sel), []); }
   }));
 }
+function appendMoreTile(target, key) {
+  if (!target || !(browseData[key] || []).length) return;
+  const more = el("div", "more-tile");
+  more.innerHTML = `<div class="more-ic">›</div><div class="more-lbl">More</div>`;
+  more.addEventListener("click", () => showCategory(key));
+  target.append(more);
+}
+// Full-category view (from the "See all" arrow or the "More" tile) — reuses the
+// search results grid; unaffected by the mobile horizontal-scroll layout.
+function showCategory(key) {
+  $("#browseWrap").classList.add("hidden");
+  $("#searchWrap").classList.remove("hidden");
+  $("#discoverHeading").textContent = CAT_LABELS[key] || "Browse";
+  renderGrid($("#discoverGrid"), browseData[key] || []);
+  window.scrollTo(0, 0);
+}
+document.querySelectorAll(".row-more").forEach((b) => b.addEventListener("click", () => showCategory(b.dataset.cat)));
+$("#discoverBack").addEventListener("click", () => { $("#search").value = ""; loadBrowse(); });
 
 let searchTimer;
 $("#search").addEventListener("input", () => {

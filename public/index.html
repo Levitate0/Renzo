@@ -47,13 +47,25 @@
   <main>
     <section id="view-discover" class="view active">
       <div id="searchWrap" class="hidden">
-        <h2 id="discoverHeading">Results</h2>
+        <div class="search-head">
+          <button id="discoverBack" class="ghost">‹ Back</button>
+          <h2 id="discoverHeading">Results</h2>
+        </div>
         <div id="discoverGrid" class="grid"></div>
       </div>
       <div id="browseWrap">
-        <div class="browse-row"><h2>Trending</h2><div id="trendingGrid" class="grid"></div></div>
-        <div class="browse-row"><h2>Recommended</h2><div id="recommendedGrid" class="grid"></div></div>
-        <div class="browse-row"><h2>New &amp; this season</h2><div id="newSeasonGrid" class="grid"></div></div>
+        <div class="browse-row">
+          <div class="row-head"><h2>Trending</h2><button class="row-more" data-cat="trending">See all ›</button></div>
+          <div id="trendingGrid" class="grid"></div>
+        </div>
+        <div class="browse-row">
+          <div class="row-head"><h2>Recommended</h2><button class="row-more" data-cat="recommended">See all ›</button></div>
+          <div id="recommendedGrid" class="grid"></div>
+        </div>
+        <div class="browse-row">
+          <div class="row-head"><h2>New &amp; this season</h2><button class="row-more" data-cat="newSeason">See all ›</button></div>
+          <div id="newSeasonGrid" class="grid"></div>
+        </div>
       </div>
     </section>
 

@@ -608,3 +608,33 @@ body.watching { overflow: hidden; }
 @media (max-width: 400px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* ---------------------------------------------------------------------------
+   Browse rows: fixed "See all" arrow above + horizontal scroll + "More" tile
+   (mobile only; search/category full-view stay normal wrapping grids)
+   =========================================================================== */
+.row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 0 12px; }
+.row-head h2 { margin: 0; font-size: 18px; }
+.row-more { display: none; background: none; border: 0; color: var(--accent-2); font-weight: 600; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.row-more:hover { text-decoration: underline; }
+.search-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.search-head h2 { margin: 0; }
+.more-tile { display: none; }
+
+@media (max-width: 720px) {
+  .row-more { display: inline-flex; }              /* fixed arrow above the row */
+  .browse-row .grid {
+    display: flex; grid-template-columns: none;
+    overflow-x: auto; gap: 12px; padding-bottom: 6px;
+    scroll-snap-type: x proximity; scrollbar-width: none;
+  }
+  .browse-row .grid::-webkit-scrollbar { display: none; }
+  .browse-row .grid > .card { flex: 0 0 150px; scroll-snap-align: start; }
+  .browse-row .grid > .more-tile {
+    display: flex; flex: 0 0 96px; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    background: var(--s1); border: 1px dashed var(--line-2); border-radius: var(--r); color: var(--muted); cursor: pointer;
+  }
+  .browse-row .grid > .more-tile:hover { color: var(--fg); border-color: var(--accent); }
+  .browse-row .grid > .more-tile .more-ic { font-size: 30px; line-height: 1; }
+  .browse-row .grid > .more-tile .more-lbl { font-size: 12px; font-weight: 600; }
+}
