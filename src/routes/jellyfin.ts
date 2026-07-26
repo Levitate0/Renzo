@@ -1,29 +1,33 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { db } from "../db.js";
 import * as anilist from "../services/anilist.js";
+import * as apikeys from "../services/apikeys.js";
 import * as library from "../services/library.js";
 import { getOrCreateTitle, resolveStream, availableEpisodes } from "../services/downloader.js";
 import type { UserRecord } from "../types.js";
 
 // Public API consumed by the Renzo Jellyfin plugin (catalog / search / episodes /
-// stream). Everything under /api is protected by RENZO_PLUGIN_KEY; the plugin
-// streams through the owner's Real-Debrid identity. The repo manifest + zip are
+// stream). Every request under /api carries a PER-USER API key: it resolves to
+// a specific Renzo account and streams through THAT user's Real-Debrid and their
+// isolated library — no shared/owner identity. The repo manifest + zip are
 // served statically from public/jellyfin/.
 const log = logger("jf-plugin");
 export const jellyfinPluginRoutes = Router();
 
-function ownerUser(): UserRecord | undefined {
-  return db.users().find((u) => u.role === "owner" && u.id !== "system") ?? db.users().find((u) => u.id !== "system");
+// The API key identifies which Renzo user this request runs as.
+interface KeyedRequest extends Request {
+  renzoUser?: UserRecord;
+  renzoKey?: string;
 }
 
 function requireKey(req: Request, res: Response, next: NextFunction): void {
-  if (!config.pluginKey) { res.status(503).json({ error: "plugin API disabled (set RENZO_PLUGIN_KEY)" }); return; }
   const key = String(req.query.key ?? req.get("X-Renzo-Key") ?? "");
-  if (key !== config.pluginKey) { res.status(401).json({ error: "invalid plugin key" }); return; }
+  const user = apikeys.userByApiKey(key);
+  if (!user) { res.status(401).json({ error: "invalid or missing Renzo API key" }); return; }
+  (req as KeyedRequest).renzoUser = user;
+  (req as KeyedRequest).renzoKey = key;
   next();
 }
 
@@ -44,11 +48,19 @@ function toItem(m: anilist.AniListMedia) {
 
 jellyfinPluginRoutes.use("/api", requireKey);
 
-// Trending (no q) or search — this is what powers Jellyfin's Renzo search.
+// Catalog by category (trending / season / recommended) or a search query.
+// The plugin exposes each category as a folder, so browsing/refreshing indexes
+// a broad slice of the catalog into Jellyfin's DB — that's what makes Renzo
+// titles turn up in Jellyfin's global search.
 jellyfinPluginRoutes.get("/api/catalog", async (req, res) => {
   const q = String(req.query.q ?? "").trim();
+  const cat = String(req.query.cat ?? "trending").toLowerCase();
   try {
-    const media = q ? await anilist.searchAnime(q) : await anilist.trendingAnime();
+    const media = q
+      ? await anilist.searchAnime(q)
+      : cat === "recommended" ? await anilist.recommendedAnime()
+      : cat === "season" ? await anilist.newSeasonAnime()
+      : await anilist.trendingAnime();
     res.json(media.map(toItem));
   } catch (e) { log.warn("catalog", String(e)); res.json([]); }
 });
@@ -71,31 +83,32 @@ jellyfinPluginRoutes.get("/api/episodes", async (req, res) => {
   } catch (e) { log.warn("episodes", String(e)); res.status(404).json({ error: "not found" }); }
 });
 
-// Resolve a playable URL (owner's RD/local) and redirect Jellyfin to it.
+// Resolve a playable URL (this user's RD/local) and redirect Jellyfin to it.
 jellyfinPluginRoutes.get("/api/stream", async (req, res) => {
   const id = Number(req.query.id);
   const ep = Math.max(1, Number(req.query.ep) || 1);
-  const owner = ownerUser();
-  if (!owner) { res.status(503).json({ error: "no Renzo account to stream through" }); return; }
+  const user = (req as KeyedRequest).renzoUser!;
+  const key = (req as KeyedRequest).renzoKey!;
+  if (!user.realDebridToken) { res.status(400).json({ error: "connect Real-Debrid in Renzo to stream" }); return; }
   try {
-    const r = await resolveStream(id, ep, owner);
+    const r = await resolveStream(id, ep, user);
     if (r.source === "local") {
-      // /files/<enc path> -> serve directly (ranged) through the key-protected file route
+      // /files/<enc path> -> serve directly (ranged) through the key-protected
+      // file route; carry the SAME per-user key so it stays this user's file.
       const rel = r.url.replace(/^\/files\//, "");
-      res.redirect(302, `/jellyfin/api/file?p=${rel}&key=${encodeURIComponent(config.pluginKey)}`);
+      res.redirect(302, `/jellyfin/api/file?p=${rel}&key=${encodeURIComponent(key)}`);
     } else {
       res.redirect(302, r.url); // direct Real-Debrid https link
     }
   } catch (e) { log.warn("stream", String(e)); res.status(502).json({ error: String(e) }); }
 });
 
-// Ranged file streaming of a local library file (owner's), for Jellyfin playback.
+// Ranged file streaming of a local library file (this user's), for Jellyfin playback.
 jellyfinPluginRoutes.get("/api/file", async (req, res) => {
-  const owner = ownerUser();
-  if (!owner) { res.status(503).end(); return; }
+  const user = (req as KeyedRequest).renzoUser!;
   const rel = decodeURIComponent(String(req.query.p ?? "")).replace(/\\/g, "/");
   if (!rel || rel.includes("..")) { res.status(400).end(); return; }
-  const abs = library.userAbs(owner.id, rel);
+  const abs = library.userAbs(user.id, rel);
   try {
     const info = await stat(abs);
     const range = req.headers.range;

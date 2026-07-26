@@ -10,6 +10,7 @@ import { requireAuth, requireStaff, requireOwner, type AuthedRequest } from "./s
 import { queue } from "./services/downloader.js";
 import { jellyfinPluginRoutes } from "./routes/jellyfin.js";
 import { userRoot } from "./services/library.js";
+import * as apikeys from "./services/apikeys.js";
 import * as autodl from "./services/autodl.js";
 
 const log = logger("server");
@@ -63,6 +64,7 @@ async function main() {
   await fs.mkdir(config.dataDir, { recursive: true });
   await fs.mkdir(config.libraryDir, { recursive: true });
   await db.init();
+  await apikeys.ensureAllApiKeys(); // every account gets a per-user API key
   await queue.resume();
   autodl.start();
 

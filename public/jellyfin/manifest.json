@@ -8,16 +8,9 @@
     "category": "Channel",
     "imageUrl": "https://renzo.levitatemedia.top/brand/renzo-logo.png",
     "versions": [
-      {
-        "version": "1.0.0.0",
-        "changelog": "Initial release: Renzo channel (browse / search / watch).",
-        "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://renzo.levitatemedia.top/jellyfin/renzo-jellyfin_1.0.0.0.zip",
-        "checksum": "9adb440bd0dd21b4d9b22a1113707cd0",
-        "timestamp": "2026-07-26T16:30:51Z",
-        "repositoryName": "Renzo",
-        "repositoryUrl": "https://renzo.levitatemedia.top/jellyfin/manifest.json"
-      }
+      { "version": "1.0.1.0", "changelog": "Release 1.0.1.0.", "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://renzo.levitatemedia.top/jellyfin/renzo-jellyfin_1.0.1.0.zip", "checksum": "8cf2e9dcfd3650997a30c2331da39029", "timestamp": "2026-07-26T16:48:40Z",
+        "repositoryName": "Renzo", "repositoryUrl": "https://renzo.levitatemedia.top/jellyfin/manifest.json" }
     ]
   }
 ]

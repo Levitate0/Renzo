@@ -97,6 +97,7 @@ export interface UserRecord {
   watchIds?: Record<string, string>;   // titleId -> stable per-user watch token (for saved titles)
   updatesSeen?: Record<string, number>; // titleId -> aired-count last acknowledged in Updates
   realDebridToken?: string;        // per-user RD creds — required to stream/download
+  apiKey?: string;                 // per-user API key (Jellyfin plugin / external clients)
   anilistToken?: string;           // per-user tracker connections
   malToken?: string;
   resetToken?: string;             // active password-reset token (emailed)

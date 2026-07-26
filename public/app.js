@@ -1382,6 +1382,49 @@ $("#emailSave").addEventListener("click", async () => {
   } catch (e) { toast(e.message); }
 });
 
+// --- Jellyfin / personal API key -------------------------------------------
+let apiKeyValue = "";
+function copyText(text, okMsg) {
+  if (!text) return toast("Nothing to copy");
+  navigator.clipboard?.writeText(text)
+    .then(() => toast(okMsg))
+    .catch(() => { try { document.execCommand("copy"); toast(okMsg); } catch { toast("Copy failed"); } });
+}
+async function loadApiKey() {
+  try {
+    const r = await api("/account/apikey");
+    apiKeyValue = r.apiKey || "";
+    const inp = $("#apiKey");
+    inp.type = "password"; inp.value = apiKeyValue; // masked by the field until "Show"
+    $("#apiKeyReveal").textContent = "Show";
+    $("#jfManifest").value = r.manifestUrl || "";
+  } catch { /* pane still usable; key loads on next open */ }
+}
+// Load lazily the first time the Jellyfin pane is opened.
+document.querySelector('.settings-nav button[data-pane="jellyfin"]')?.addEventListener("click", () => {
+  if (!apiKeyValue) loadApiKey();
+});
+$("#apiKeyReveal")?.addEventListener("click", () => {
+  const inp = $("#apiKey");
+  const show = inp.type === "password";
+  inp.type = show ? "text" : "password";
+  $("#apiKeyReveal").textContent = show ? "Hide" : "Show";
+});
+$("#apiKeyCopy")?.addEventListener("click", () => copyText(apiKeyValue, "API key copied"));
+$("#jfManifestCopy")?.addEventListener("click", () => copyText($("#jfManifest").value, "Repository URL copied"));
+$("#apiKeyRotate")?.addEventListener("click", async (e) => {
+  e.preventDefault();
+  if (!confirm("Regenerate your API key? Anything using the old key (e.g. Jellyfin) will stop working until you paste the new one.")) return;
+  try {
+    const r = await api("/account/apikey/rotate", { method: "POST" });
+    apiKeyValue = r.apiKey || "";
+    const inp = $("#apiKey");
+    inp.value = apiKeyValue;
+    if (inp.type === "text") $("#apiKeyReveal").textContent = "Hide";
+    toast("New API key generated — update it in Jellyfin");
+  } catch (err) { toast(err.message); }
+});
+
 const rank = { owner: 0, manager: 1, user: 2 };
 async function loadUsers() {
   try {

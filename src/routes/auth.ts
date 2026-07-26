@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { db } from "../db.js";
 import * as auth from "../services/auth.js";
+import * as apikeys from "../services/apikeys.js";
 import * as rd from "../services/realdebrid.js";
 import * as mailer from "../services/mailer.js";
 import type { AuthedRequest } from "../services/auth.js";
@@ -244,6 +245,30 @@ accountRoutes.post("/email", wrap(async (req: AuthedRequest, res) => {
   user.email = email || undefined;
   await db.save();
   res.json(publicUser(user));
+}));
+
+// --- Personal API key (Jellyfin plugin / external clients) ------------------
+// Each account has its own key; the Jellyfin plugin uses it so streams play
+// through THIS user's Real-Debrid and library. Only ever returned to the
+// authenticated owner of the key.
+accountRoutes.get("/apikey", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  if (user.id === "system") return res.status(400).json({ error: "auth is disabled" });
+  const apiKey = await apikeys.ensureApiKey(user);
+  res.json({
+    apiKey,
+    renzoUrl: config.publicUrl,
+    manifestUrl: `${config.publicUrl}/jellyfin/manifest.json`,
+  });
+}));
+
+// Regenerate my key (any client still using the old one stops working).
+accountRoutes.post("/apikey/rotate", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  if (user.id === "system") return res.status(400).json({ error: "auth is disabled" });
+  const apiKey = await apikeys.rotateApiKey(user);
+  log.info(`api key rotated: ${user.username}`);
+  res.json({ apiKey });
 }));
 
 accountRoutes.post("/trackers", wrap(async (req: AuthedRequest, res) => {

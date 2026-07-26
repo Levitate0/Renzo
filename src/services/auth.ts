@@ -4,6 +4,7 @@ import type { Request, Response, NextFunction } from "express";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { db } from "../db.js";
+import { newApiKey } from "./apikeys.js";
 import type { UserRecord, Role } from "../types.js";
 
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
@@ -72,6 +73,7 @@ export async function createUser(
     createdAt: new Date().toISOString(),
     library: [],
     lists: {},
+    apiKey: newApiKey(),
     realDebridToken: seedFromEnv && config.realDebridToken ? config.realDebridToken : undefined,
     anilistToken: seedFromEnv && config.anilistToken ? config.anilistToken : undefined,
     malToken: seedFromEnv && config.malToken ? config.malToken : undefined,

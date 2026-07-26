@@ -218,6 +218,7 @@
           <button data-pane="account" class="active">👤&nbsp; Account</button>
           <button data-pane="realdebrid">🔗&nbsp; Real-Debrid</button>
           <button data-pane="trackers">📺&nbsp; Trackers</button>
+          <button data-pane="jellyfin">🧩&nbsp; Jellyfin</button>
           <button data-pane="security">🔒&nbsp; Security</button>
           <span class="sp"></span>
           <button data-pane="users" id="usersNavBtn">👥&nbsp; Users</button>
@@ -315,6 +316,45 @@
                   <button data-tracker="malToken" class="ghost tracker-save">Save</button>
                 </div>
               </div>
+            </details>
+          </section>
+
+          <!-- Jellyfin / API access -->
+          <section class="pane" data-pane="jellyfin">
+            <h2>Jellyfin</h2>
+            <p class="sub">Watch your Renzo library inside Jellyfin. Your <b>personal API key</b> links the
+              Renzo plugin to <i>your</i> account — playback streams through your own Real-Debrid and your
+              own library, never anyone else's.</p>
+
+            <div class="field">
+              <label for="apiKey">Your API key</label>
+              <div class="inline">
+                <input id="apiKey" class="in" type="password" readonly value="" autocomplete="off" />
+                <button id="apiKeyReveal" class="ghost" type="button">Show</button>
+                <button id="apiKeyCopy" class="primary" type="button">Copy</button>
+              </div>
+              <span class="hint">Keep this secret — anyone with it can stream through your Real-Debrid.
+                <a href="#" id="apiKeyRotate" class="muted-link">Regenerate</a> if it leaks (updates needed anywhere you used it).</span>
+            </div>
+
+            <div class="field">
+              <label for="jfManifest">Plugin repository URL</label>
+              <div class="inline">
+                <input id="jfManifest" class="in" type="text" readonly value="" autocomplete="off" />
+                <button id="jfManifestCopy" class="primary" type="button">Copy</button>
+              </div>
+            </div>
+
+            <details class="advanced" open>
+              <summary>How to install</summary>
+              <ol class="hint" style="line-height:1.8;padding-left:18px;margin:8px 0 0">
+                <li>In Jellyfin: <b>Dashboard → Plugins → Repositories → ＋</b>, paste the repository URL above, save.</li>
+                <li><b>Catalog</b> → install <b>Renzo</b> → restart Jellyfin.</li>
+                <li><b>Dashboard → Plugins → Renzo</b> → set the Renzo server URL and paste <b>your API key</b> from above.</li>
+                <li>Open the <b>Renzo</b> channel (Trending · This Season · Recommended); titles you browse become searchable in Jellyfin.</li>
+              </ol>
+              <p class="hint" style="margin-top:8px">Note: Jellyfin 10.11 has no live channel search, so Renzo titles
+                show up in Jellyfin's global search after the channel has been browsed or refreshed — not typed live against Renzo.</p>
             </details>
           </section>
 
