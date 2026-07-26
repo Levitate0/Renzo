@@ -20,6 +20,7 @@ export interface TorrentResult {
   resolution: number; // 2160 / 1080 / 720 / 480 / 0=unknown
   isBatch: boolean;
   episode?: number;   // parsed absolute/season episode number, if any
+  releaseGroup?: string; // e.g. "SubsPlease", "Erai-raws"
   date?: string;
 }
 
@@ -77,17 +78,23 @@ export interface DownloadJob {
 // ---------------------------------------------------------------------------
 // Users & sessions
 // ---------------------------------------------------------------------------
+export type Role = "owner" | "manager" | "user";
+
 export interface UserRecord {
   id: string;
   username: string;
   passHash: string;               // scrypt "salt:hash" (hex)
-  role: "admin" | "user";
+  role: Role;
+  email?: string;
   createdAt: string;
   library?: number[];              // AniList ids in MY library (metadata is shared)
   eps?: Record<string, EpisodeRecord>; // "titleId:ep" -> MY download state (isolated per user)
   lists: Record<string, number[]>; // list name -> AniList ids (per-user)
   folders?: string[];              // MY named folders/collections (physical, ordered)
   titleFolder?: Record<string, string>; // titleId -> folder name (default folder if unset)
+  titleProvider?: Record<string, string>; // titleId -> preferred release group (all eps/seasons)
+  progress?: Record<string, number>;   // titleId -> last episode watched (for "up next")
+  updatesSeen?: Record<string, number>; // titleId -> aired-count last acknowledged in Updates
   realDebridToken?: string;        // per-user RD creds — required to stream/download
   anilistToken?: string;           // per-user tracker connections
   malToken?: string;
@@ -100,9 +107,31 @@ export interface SessionRecord {
   expiresAt: string;
 }
 
+export interface InviteRecord {
+  token: string;
+  role: Role;                     // role the invitee will get (not owner)
+  email?: string;                 // optional; if set + SMTP configured, emailed
+  username?: string;              // optional pre-set username
+  createdBy: string;              // user id
+  createdAt: string;
+  expiresAt: string;
+  usedAt?: string;                // set once accepted
+}
+
+export interface SmtpSettings {
+  host: string;
+  port: number;
+  secure: boolean;                // true = implicit TLS (465); false = STARTTLS
+  user: string;
+  pass: string;
+  from: string;
+}
+
 export interface DbShape {
   titles: Title[];
   jobs: DownloadJob[];
   users: UserRecord[];
   sessions: SessionRecord[];
+  invites: InviteRecord[];
+  settings: { smtp?: SmtpSettings };
 }
