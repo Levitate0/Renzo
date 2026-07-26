@@ -58,6 +58,33 @@ export function folderOf(user: UserRecord, titleId: number): string {
   return user.titleFolder?.[String(titleId)] ?? userFolders(user)[0];
 }
 
+/** The user's chosen release group for a title (applied to all eps/seasons). */
+export function providerFor(user: UserRecord, titleId: number): string | undefined {
+  return user.titleProvider?.[String(titleId)];
+}
+
+/** Last episode the user finished (for "up next"). */
+export function watchedEp(user: UserRecord, titleId: number): number {
+  return user.progress?.[String(titleId)] ?? 0;
+}
+export function setWatched(user: UserRecord, titleId: number, episode: number): void {
+  user.progress ??= {};
+  user.progress[String(titleId)] = Math.max(user.progress[String(titleId)] ?? 0, episode);
+}
+/** Next episode number to watch, or null if caught up. */
+export function upNextFor(user: UserRecord, t: Title): number | null {
+  const avail = availableEpisodes(t);
+  const w = watchedEp(user, t.id);
+  if (t.type === "movie") return avail >= 1 && w < 1 ? 1 : null;
+  return avail > w ? w + 1 : null;
+}
+
+/** List available release-group providers for a title (for the picker). */
+export async function listProviders(anilistId: number): Promise<torrents.ProviderInfo[]> {
+  const t = await getOrCreateTitle(anilistId);
+  return torrents.listProviders(t);
+}
+
 /** Refresh title metadata from AniList (episode count, airing state, art). */
 export async function refreshTitle(t: Title): Promise<Title> {
   const media = await anilist.getById(t.id);
@@ -90,11 +117,11 @@ export function requireToken(user: UserRecord | undefined): string {
   return token;
 }
 
-async function candidatesFor(t: Title, episode: number): Promise<TorrentResult[]> {
-  if (t.type === "movie") return torrents.findForMovie(t);
-  const single = await torrents.findForEpisode(t, episode);
+async function candidatesFor(t: Title, episode: number, preferredGroup?: string): Promise<TorrentResult[]> {
+  if (t.type === "movie") return torrents.findForMovie(t, preferredGroup);
+  const single = await torrents.findForEpisode(t, episode, preferredGroup);
   if (single.length) return single;
-  return torrents.findBatch(t); // fall back to a season pack that contains it
+  return torrents.findBatch(t, preferredGroup); // fall back to a season pack that contains it
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +138,7 @@ export interface ResolvedStream {
 export async function resolveStream(anilistId: number, episode: number, user: UserRecord): Promise<ResolvedStream> {
   const t = await getOrCreateTitle(anilistId);
   const ep = getUserEp(user, anilistId, episode);
+  log.info(`▶ play ${t.romaji} E${episode} (${user.username})`);
 
   // 1) Already in MY library -> serve MY local file (Crunchyroll-style handoff).
   if (ep.status === "downloaded" && ep.filePath && (await library.exists(library.userAbs(user.id, ep.filePath)))) {
@@ -188,11 +216,18 @@ async function resolveRdLinkInner(
     }
   }
 
-  const list = await candidatesFor(t, ep.number);
-  if (!list.length) throw new Error("No torrents found for this title/episode");
+  const preferredGroup = providerFor(user, t.id);
+  const list = await candidatesFor(t, ep.number, preferredGroup);
+  if (!list.length) {
+    log.warn(`no torrents for ${t.romaji} E${ep.number}`);
+    throw new Error("No torrents found for this title/episode");
+  }
+  log.info(`${t.romaji} E${ep.number}: ${list.length} candidates${preferredGroup ? ` (provider: ${preferredGroup})` : ""}, top: [${list[0].source}] ${list[0].title.slice(0, 54)}`);
 
   let lastErr: unknown;
-  for (const cand of list.slice(0, 4)) {
+  // Try more candidates so DMCA'd (RD 451 infringing_file) or uncached releases
+  // are skipped for the next available one.
+  for (const cand of list.slice(0, 10)) {
     try {
       const info = await rd.addAndPrepare(token, cand.magnet, {
         episode: t.type === "movie" ? undefined : ep.number,
@@ -208,6 +243,7 @@ async function resolveRdLinkInner(
       ep.rdTorrentId = info.id;
       ep.magnet = cand.magnet;
       ep.updatedAt = new Date().toISOString();
+      log.info(`✓ Real-Debrid ready: [${cand.releaseGroup ?? cand.source}] ${cand.resolution || "?"}p — ${cand.title.slice(0, 54)}`);
 
       // Sibling sharing: if this torrent is a batch, point every other episode
       // in THIS user's library at the same RD torrent so their jobs skip search.
