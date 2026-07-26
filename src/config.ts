@@ -39,9 +39,14 @@ export const config = {
   anilistToken: process.env.ANILIST_TOKEN ?? "",
   malToken: process.env.MAL_TOKEN ?? "",
 
-  // Self-hosted auth site that stores + auto-refreshes AniList/MAL tokens.
-  // Hardcoded default — every deployment uses the same public auth site.
-  authsiteUrl: (process.env.AUTHSITE_URL || "https://auth.levitatemedia.top").replace(/\/$/, ""),
+  // Self-hosted auth site (Renzo Apps) that stores + auto-refreshes AniList/MAL
+  // tokens. Two bases:
+  //  - authsiteUrl (internal): server-to-server token fetch via X-Service-Key.
+  //    Defaults to localhost so it never depends on the public tunnel.
+  //  - authsitePublicUrl (public): handed to the browser for the OAuth connect
+  //    popup (/connect/<provider>) and the postMessage origin check.
+  authsiteUrl: (process.env.AUTHSITE_URL || "http://127.0.0.1:8788/auth").replace(/\/$/, ""),
+  authsitePublicUrl: (process.env.AUTHSITE_PUBLIC_URL || "https://renzo-apps.levitatemedia.top/auth").replace(/\/$/, ""),
   authsiteServiceKey: process.env.AUTHSITE_SERVICE_KEY ?? "",
 
   // Authentication
