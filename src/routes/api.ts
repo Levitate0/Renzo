@@ -10,7 +10,9 @@ import * as jellyfin from "../services/jellyfin.js";
 import * as tracker from "../services/tracker.js";
 import * as captions from "../services/captions.js";
 import * as library from "../services/library.js";
-import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched } from "../services/downloader.js";
+import * as watch from "../services/watch.js";
+import * as mal from "../services/mal.js";
+import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
 import * as autodl from "../services/autodl.js";
 import { requireAdmin, type AuthedRequest } from "../services/auth.js";
 import type { UserRecord } from "../types.js";
@@ -83,6 +85,7 @@ async function moveTitleToFolder(user: UserRecord, t: Title, from: string, to: s
   }
   user.titleFolder ??= {};
   user.titleFolder[String(t.id)] = to;
+  invalidateStream(user.id, t.id); // cached /files URLs point at the old folder
 }
 
 /** Add a title to the user's personal library (idempotent, no save). */
@@ -149,9 +152,40 @@ api.get("/health", wrap(async (req, res) => {
 }));
 
 // --- Discovery -------------------------------------------------------------
+// Each browse row prefers AniList; if AniList is unavailable it falls back to
+// MAL (Jikan) so the page still populates. MAL cards resolve to an AniList id
+// on click via GET /titles/resolve.
+async function browseRow(
+  anilistFn: () => Promise<AniListMedia[]>,
+  malFn: () => Promise<unknown[]>,
+): Promise<unknown[]> {
+  try {
+    return (await anilistFn()).map(cardFromMedia);
+  } catch (e) {
+    log.warn("anilist browse failed, MAL fallback:", String(e));
+    return malFn();
+  }
+}
+
 api.get("/discover/trending", wrap(async (_req, res) => {
-  const media = await anilist.trendingAnime();
-  res.json(media.map(cardFromMedia));
+  res.json(await browseRow(anilist.trendingAnime, mal.malTrending));
+}));
+
+api.get("/discover/recommended", wrap(async (_req, res) => {
+  res.json(await browseRow(anilist.recommendedAnime, mal.malRecommended));
+}));
+
+api.get("/discover/new-season", wrap(async (_req, res) => {
+  res.json(await browseRow(anilist.newSeasonAnime, mal.malNewSeason));
+}));
+
+// Resolve a MyAnimeList id -> AniList id (for MAL-sourced browse cards).
+api.get("/titles/resolve", wrap(async (req, res) => {
+  const malId = Number(req.query.mal);
+  if (!malId) return res.status(400).json({ error: "mal id required" });
+  const id = await anilist.idFromMal(malId);
+  if (!id) return res.status(404).json({ error: "not found" });
+  res.json({ id });
 }));
 
 api.get("/discover/search", wrap(async (req, res) => {
@@ -284,6 +318,7 @@ api.delete("/library/:id", wrap(async (req, res) => {
     user.lists[name] = user.lists[name].filter((x) => x !== id);
     if (!user.lists[name].length) delete user.lists[name];
   }
+  watch.dropWatch(user, id); // forget this title's watch links
   await db.save();
   res.json({ ok: true });
 }));
@@ -322,6 +357,7 @@ api.post("/titles/:id/provider", wrap(async (req, res) => {
   user.titleProvider ??= {};
   if (raw && /^[\w .\-\[\]]+$/.test(raw)) user.titleProvider[String(t.id)] = raw;
   else delete user.titleProvider[String(t.id)]; // empty/invalid -> auto
+  invalidateStream(user.id, t.id); // re-resolve with the new release group
   await db.save();
   res.json({ id: t.id, provider: user.titleProvider[String(t.id)] ?? null });
 }));
@@ -332,6 +368,25 @@ api.get("/titles/:id/play/:ep", wrap(async (req, res) => {
   const ep = Math.max(1, Number(req.params.ep) || 1);
   const resolved = await resolveStream(id, ep, req.user!);
   res.json(resolved);
+}));
+
+// --- Watch links: per-series URL id (stable per-user if saved, else temp) ---
+api.post("/titles/:id/watch", wrap(async (req, res) => {
+  const user = req.user!;
+  const t = await getOrCreateTitle(Number(req.params.id));
+  const saved = inLibrary(user, t.id) || userLists(user, t.id).length > 0;
+  const watchId = watch.watchTokenFor(user, t.id, saved);
+  await db.save();
+  res.json({ watchId, titleId: t.id });
+}));
+
+// Resolve a watch id -> title + resume episode (scoped to the requesting user).
+api.get("/watch/:watchId", wrap(async (req, res) => {
+  const user = req.user!;
+  const tok = watch.resolveWatch(user, String(req.params.watchId));
+  if (!tok) return res.status(404).json({ error: "watch link not found" });
+  const t = await getOrCreateTitle(tok.titleId);
+  res.json({ titleId: t.id, resumeEp: Math.max(1, watchedEp(user, t.id) + 1), temp: tok.temp });
 }));
 
 // --- Background download (RD mandatory) ------------------------------------
