@@ -1,0 +1,23 @@
+[
+  {
+    "guid": "b1e7c4a2-8f3d-4e6a-9c1b-7a2f5d8e0c33",
+    "name": "Renzo",
+    "description": "Browse, search and watch the Renzo anime catalog inside Jellyfin.",
+    "overview": "Renzo channel for Jellyfin — browse trending, search, and stream anime through your Renzo server (Real-Debrid).",
+    "owner": "Levitate",
+    "category": "Channel",
+    "imageUrl": "https://renzo.levitatemedia.top/brand/renzo-logo.png",
+    "versions": [
+      {
+        "version": "1.0.0.0",
+        "changelog": "Initial release: Renzo channel (browse / search / watch).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://renzo.levitatemedia.top/jellyfin/renzo-jellyfin_1.0.0.0.zip",
+        "checksum": "9adb440bd0dd21b4d9b22a1113707cd0",
+        "timestamp": "2026-07-26T16:30:51Z",
+        "repositoryName": "Renzo",
+        "repositoryUrl": "https://renzo.levitatemedia.top/jellyfin/manifest.json"
+      }
+    ]
+  }
+]

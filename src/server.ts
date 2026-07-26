@@ -8,6 +8,7 @@ import { api } from "./routes/api.js";
 import { authRoutes, accountRoutes, userAdminRoutes, inviteRoutes, smtpRoutes } from "./routes/auth.js";
 import { requireAuth, requireStaff, requireOwner, type AuthedRequest } from "./services/auth.js";
 import { queue } from "./services/downloader.js";
+import { jellyfinPluginRoutes } from "./routes/jellyfin.js";
 import { userRoot } from "./services/library.js";
 import * as autodl from "./services/autodl.js";
 
@@ -90,6 +91,8 @@ async function main() {
   app.use("/api/smtp", requireAuth, requireOwner, smtpRoutes);
   // --- Everything else requires a session ---
   app.use("/api", requireAuth, api);
+  // --- Jellyfin plugin API (public; guarded by RENZO_PLUGIN_KEY) ---
+  app.use("/jellyfin", jellyfinPluginRoutes);
 
   // Downloaded media + sidecar subtitles — gated AND isolated per user: each
   // request is served only from that user's own library subdirectory, so no

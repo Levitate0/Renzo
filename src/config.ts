@@ -33,6 +33,8 @@ export const config = {
   // Jellyfin integration (optional)
   jellyfinUrl: (process.env.JELLYFIN_URL ?? "").replace(/\/$/, ""),
   jellyfinApiKey: process.env.JELLYFIN_API_KEY ?? "",
+  // Key the Renzo Jellyfin plugin uses to reach the catalog/stream API.
+  pluginKey: process.env.RENZO_PLUGIN_KEY ?? "",
 
   // Tracker connections. Priority per user: their own token > env override >
   // the self-hosted auth site (below), which fetches/refreshes tokens centrally.
