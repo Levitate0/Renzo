@@ -72,28 +72,18 @@ services:
     build: .                       # or:  image: ghcr.io/levitate0/renzo:latest
     container_name: renzo
     restart: unless-stopped
-    ports:
-      - "8787:8787"                # web UI + API  (host:container)
+    ports: ["8787:8787"]
     environment:
-      PUBLIC_URL: "https://renzo.example.com"  # external URL — enables Secure cookies over https
-      SESSION_TTL_DAYS: "30"                   # "Remember me" cookie lifetime (days)
-      # --- optional ---
-      # RENZO_PLUGIN_MANIFEST_URL: "https://raw.githubusercontent.com/Levitate0/Renzo/main/public/jellyfin/manifest.json"
-      # JELLYFIN_URL: "http://jellyfin:8096"   # rescan Jellyfin when a download finishes
-      # JELLYFIN_API_KEY: "xxxxxxxx"
-      # JIMAKU_API_KEY: "xxxxxxxx"             # anime subtitles (https://jimaku.cc)
-      # SUBTITLE_LANGS: "en"
-      # AUTO_DOWNLOAD: "true"                  # per-user scheduled auto-downloader
-      # AUTO_DOWNLOAD_INTERVAL_MIN: "60"
-      # AUTHSITE_URL / AUTHSITE_PUBLIC_URL / AUTHSITE_SERVICE_KEY   # self-hosted AniList/MAL token store
+      PUBLIC_URL: "https://renzo.example.com"   # your external URL
     volumes:
-      - ./data:/data               # DATA_DIR — JSON db + state (back this up)
-      - ./library:/library         # LIBRARY_DIR — downloaded video + .vtt subtitles
+      - ./data:/data               # JSON db + state (back this up)
+      - ./library:/library         # downloaded video + subtitles
 ```
 
-**Real-Debrid is per-user** — each account pastes its own token in Settings (nothing goes in the
-compose file), and every user downloads to their own RD. Put Renzo behind a TLS reverse proxy or a
-Cloudflare Tunnel for public access.
+That's all that's required. **Real-Debrid is per-user** — each account pastes its own token in
+Settings; nothing goes in the compose file. Optional env (`AUTO_DOWNLOAD`, `JELLYFIN_URL`/`_API_KEY`,
+`JIMAKU_API_KEY`, `AUTHSITE_*`, `SESSION_TTL_DAYS`, …) is documented in `.env.example`. Put Renzo
+behind a TLS reverse proxy or Cloudflare Tunnel for public access.
 
 ### From source (no Docker)
 
