@@ -64,6 +64,37 @@ docker compose up -d --build
 Then open **http://<host>:8787** and create the owner account on first run.
 `docker-compose.yml` maps `./data` (json db + state) and `./library` (downloads).
 
+### Example `docker-compose.yml`
+
+```yaml
+services:
+  renzo:
+    build: .                       # or:  image: ghcr.io/levitate0/renzo:latest
+    container_name: renzo
+    restart: unless-stopped
+    ports:
+      - "8787:8787"                # web UI + API  (host:container)
+    environment:
+      PUBLIC_URL: "https://renzo.example.com"  # external URL — enables Secure cookies over https
+      SESSION_TTL_DAYS: "30"                   # "Remember me" cookie lifetime (days)
+      # --- optional ---
+      # RENZO_PLUGIN_MANIFEST_URL: "https://raw.githubusercontent.com/Levitate0/Renzo/main/public/jellyfin/manifest.json"
+      # JELLYFIN_URL: "http://jellyfin:8096"   # rescan Jellyfin when a download finishes
+      # JELLYFIN_API_KEY: "xxxxxxxx"
+      # JIMAKU_API_KEY: "xxxxxxxx"             # anime subtitles (https://jimaku.cc)
+      # SUBTITLE_LANGS: "en"
+      # AUTO_DOWNLOAD: "true"                  # per-user scheduled auto-downloader
+      # AUTO_DOWNLOAD_INTERVAL_MIN: "60"
+      # AUTHSITE_URL / AUTHSITE_PUBLIC_URL / AUTHSITE_SERVICE_KEY   # self-hosted AniList/MAL token store
+    volumes:
+      - ./data:/data               # DATA_DIR — JSON db + state (back this up)
+      - ./library:/library         # LIBRARY_DIR — downloaded video + .vtt subtitles
+```
+
+**Real-Debrid is per-user** — each account pastes its own token in Settings (nothing goes in the
+compose file), and every user downloads to their own RD. Put Renzo behind a TLS reverse proxy or a
+Cloudflare Tunnel for public access.
+
 ### From source (no Docker)
 
 ```bash
@@ -128,9 +159,13 @@ Designed to be exposed through your cloudflared tunnel. Every request is gated.
 - **Real-Debrid is required per-user** — the app never sends torrent traffic from your own
   IP; everything is resolved through the user's RD account (ISP/DMCA-ban-risk prevention).
   No RD token → streaming/downloads return `402 realdebrid_required` and the UI prompts.
-- **Auto-download is owner-only.** The scheduler/`Run now` and the per-title auto-flag spend
-  the owner's Real-Debrid account, so those endpoints require admin. Regular users can still
-  stream/download on **their own** RD token (capped at 100 concurrent jobs each).
+- **Downloads are per-user (no sharing).** Every user streams/downloads on **their own** RD
+  token, and the scheduled auto-downloader runs **per account** — each user's own RD funds
+  auto-downloads of the titles on their own AniList *Watching* list plus any they flag (`Auto`).
+  No account's RD ever funds another's. Staff can **deny a specific user** all downloads from the
+  Users list (they can still stream); denied users are skipped by the auto-downloader.
+- **Library defaults (per-user):** optionally set a tracking status, a default folder, and
+  auto-download to apply automatically the first time a series enters your library.
 - **Hardening:** login rate-limiting (5 fails → 15-min lockout, keyed on `CF-Connecting-IP`),
   CSRF protection (`Sec-Fetch-Site` guard + SameSite cookies), strict **CSP** + security
   headers, `/files` media is auth-gated (never publicly listable), SSRF allowlist on the

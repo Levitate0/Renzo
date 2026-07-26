@@ -385,8 +385,9 @@ async function renderDetail(id) {
       || (d.episodeList || []).find((e) => e.aired !== false) || { number: 1 };
     $("#heroPlay").textContent = isSeries ? `▶ Play E${firstEp.number}` : "▶ Play";
     $("#heroPlay").onclick = () => play(d.id, isSeries ? firstEp.number : 1, `${d.english || d.romaji}${isSeries ? ` · E${firstEp.number}` : ""}`);
-    $("#seasonBtn").classList.toggle("hidden", !isSeries);
-    $("#autoBtn").classList.toggle("hidden", !isSeries);
+    const denied = !!(me && me.downloadsDenied);
+    $("#seasonBtn").classList.toggle("hidden", !isSeries || denied);
+    $("#autoBtn").classList.toggle("hidden", !isSeries || denied);
     setAutoBtn(!!d.autoDownload);
     setListBtns(d.lists || []);
     populateFolderSelect(d.folders || [], d.folder);
@@ -796,6 +797,7 @@ async function goToEp(ep) {
     video.load();
     video.play().catch(() => {});
     if (video.textTracks[0]) video.textTracks[0].mode = "showing";
+    $("#watchDownload").style.display = (me && me.downloadsDenied) ? "none" : "";
     $("#watchDownload").textContent = r.source === "local" ? "✓ In library" : "⬇ Download to library";
     $("#watchDownload").disabled = r.source === "local";
     if (r.downloading) watchJob(r.downloading.id);
@@ -1528,6 +1530,31 @@ $("#apiKeyRotate")?.addEventListener("click", async (e) => {
   } catch (err) { toast(err.message); }
 });
 
+// --- Library defaults (per-user "on add" states) ---------------------------
+async function loadDefaults() {
+  const d = (me && me.addDefaults) || {};
+  $("#defTrack").value = d.track || "";
+  $("#defAuto").checked = !!d.autoDownload;
+  $("#defAutoRow").style.display = (me && me.downloadsDenied) ? "none" : ""; // can't auto-download if denied
+  try {
+    const folders = await api("/folders");
+    const cur = d.folder || "";
+    $("#defFolder").innerHTML = '<option value="">— Default folder —</option>' +
+      folders.map((f) => `<option value="${esc(f.name)}"${f.name === cur ? " selected" : ""}>${esc(f.name)}</option>`).join("");
+  } catch { /* keep the default option */ }
+}
+document.querySelector('.settings-nav button[data-pane="defaults"]')?.addEventListener("click", loadDefaults);
+$("#defSave")?.addEventListener("click", async () => {
+  try {
+    const u = await api("/account/add-defaults", {
+      method: "POST",
+      body: JSON.stringify({ track: $("#defTrack").value, autoDownload: $("#defAuto").checked, folder: $("#defFolder").value }),
+    });
+    if (me) me.addDefaults = u.addDefaults;
+    toast("Library defaults saved");
+  } catch (e) { toast(e.message); }
+});
+
 const rank = { owner: 0, manager: 1, user: 2 };
 async function loadUsers() {
   try {
@@ -1554,8 +1581,23 @@ async function loadUsers() {
             ${chip(u.realDebridConnected, "RD")}
             ${chip(u.anilistConnected, "AniList")}
             ${chip(u.malConnected, "MAL")}
+            ${u.downloadsDenied ? '<span class="mini-chip off">Downloads off</span>' : ""}
           </div>
         </div>`;
+      // Staff can deny/allow downloads (owner: anyone but self/owner; manager: only users).
+      const canManage = !isMe && u.role !== "owner" && (iAmOwner || u.role === "user");
+      if (canManage) {
+        const dl = el("button", "ghost sm-btn", u.downloadsDenied ? "Allow DL" : "Deny DL");
+        dl.title = u.downloadsDenied ? "Allow this user to download" : "Block this user from downloading (streaming stays on)";
+        dl.addEventListener("click", async () => {
+          try {
+            await api(`/users/${u.id}/downloads`, { method: "POST", body: JSON.stringify({ denied: !u.downloadsDenied }) });
+            toast(u.downloadsDenied ? `${u.username} can download` : `${u.username} blocked from downloads`);
+            loadUsers();
+          } catch (e) { toast(e.message); }
+        });
+        card.append(dl);
+      }
       // Owner can change roles (except the owner's own).
       if (iAmOwner && !isMe && u.role !== "owner") {
         const sel = el("select", "user-role-sel");

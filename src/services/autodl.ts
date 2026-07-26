@@ -3,7 +3,6 @@ import { logger } from "../logger.js";
 import { db } from "../db.js";
 import * as tracker from "./tracker.js";
 import { queue, refreshTitle, availableEpisodes, peekUserEp } from "./downloader.js";
-import type { UserRecord } from "../types.js";
 
 const log = logger("autodl");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -27,6 +26,9 @@ const state = {
 };
 
 export function getStatus(): AutoDlStatus {
+  // How many distinct titles are auto-flagged across all users' own lists.
+  const flagged = new Set<number>();
+  for (const u of db.users()) (u.autoTitles ?? []).forEach((id) => flagged.add(id));
   return {
     enabled: config.autoDownload,
     intervalMin: config.autoDownloadIntervalMin,
@@ -35,21 +37,16 @@ export function getStatus(): AutoDlStatus {
     lastRun: state.lastRun,
     lastQueued: state.lastQueued,
     lastError: state.lastError,
-    trackedTitles: db.titles().filter((t) => t.autoDownload).length,
+    trackedTitles: flagged.size,
   };
 }
 
-/** The account whose Real-Debrid creds fund auto-downloads (owner by default). */
-function autoDownloadUser(): UserRecord | undefined {
-  const admins = db.users().filter((u) => u.role === "owner" && u.realDebridToken);
-  if (admins.length) return admins[0];
-  return db.users().find((u) => u.realDebridToken);
-}
-
 /**
- * One pass: sync each AniList-connected account (flags/unflags titles), then for
- * every auto-flagged title queue aired-but-missing episodes, up to the per-tick
- * cap. Downloads use the owner's Real-Debrid creds (RD is mandatory).
+ * One pass, PER USER — no shared Real-Debrid. For each account we sync their
+ * AniList "Watching" list, union it with the titles they manually flagged
+ * (user.autoTitles), and queue aired-but-missing episodes into THAT user's own
+ * library using THEIR OWN Real-Debrid. Users who are download-denied or have no
+ * RD token are skipped. Each user gets up to maxPerTick queued per pass (fair).
  */
 export async function tick(): Promise<{ queued: number }> {
   if (state.running) return { queued: 0 };
@@ -57,54 +54,46 @@ export async function tick(): Promise<{ queued: number }> {
   state.lastError = undefined;
   let queued = 0;
   try {
-    // Sync AniList watching lists; retire tracker flags for shows nobody is
-    // watching anymore. Users with their own token sync individually; otherwise
-    // fall back to the shared token (env override or the auth site).
-    const connectedUsers = tracker.usersWithAniList();
-    const stillWatching = new Set<number>();
-    let synced = false;
-    for (const u of connectedUsers) {
+    // 1) Per-user AniList sync → each user's currently-watching ids.
+    const watchingByUser = new Map<string, Set<number>>();
+    for (const u of tracker.usersWithAniList()) {
       const r = await tracker.importAniList(u).catch((e) => {
         log.warn("anilist sync", u.username, String(e));
         return { imported: 0, watchingIds: [] as number[] };
       });
-      r.watchingIds.forEach((id) => stillWatching.add(id));
-      synced = true;
+      watchingByUser.set(u.id, new Set(r.watchingIds));
       await sleep(400); // rate-limit courtesy to AniList between accounts
     }
-    if (!synced && (await tracker.anilistConnected())) {
-      const r = await tracker.importAniList().catch((e) => {
-        log.warn("anilist sync (shared)", String(e));
-        return { imported: 0, watchingIds: [] as number[] };
-      });
-      r.watchingIds.forEach((id) => stillWatching.add(id));
-      synced = true;
-    }
-    if (synced) await tracker.retireAutoFlags(stillWatching);
 
-    const rdUser = autoDownloadUser();
-    if (!rdUser) {
-      state.lastError = "No account with a Real-Debrid token — auto-download idle";
-      return { queued: 0 };
-    }
+    // 2) For each real account, download its own auto targets to its own RD.
+    for (const u of db.users()) {
+      if (u.id === "system") continue;
+      if (u.downloadsDenied) continue;   // denied → skip entirely
+      if (!u.realDebridToken) continue;  // no RD → can't fund their own downloads
+      const targets = new Set<number>([...(u.autoTitles ?? []), ...(watchingByUser.get(u.id) ?? [])]);
+      if (!targets.size) continue;
 
-    const targets = db.titles().filter((t) => t.autoDownload);
-    for (const t of targets) {
-      if (queued >= config.autoDownloadMaxPerTick) break;
-      await refreshTitle(t).catch((e) => log.warn("refresh", t.romaji, String(e)));
-      const avail = availableEpisodes(t);
-
-      for (let n = 1; n <= avail && queued < config.autoDownloadMaxPerTick; n++) {
-        // Auto-downloads land in the funding (owner) account's own library.
-        const rec = peekUserEp(rdUser, t.id, n);
-        if (rec && ["downloaded", "downloading", "queued", "searching"].includes(rec.status)) continue;
-        // Don't hammer a permanently-failing episode: retry at most daily.
-        if (rec?.status === "failed" && Date.now() - new Date(rec.updatedAt).getTime() < 24 * 3600_000) continue;
-        await queue.enqueue(t.id, n, rdUser.id);
-        queued++;
-        log.info(`queued ${t.romaji} E${n}`);
+      let userQueued = 0;
+      for (const titleId of targets) {
+        if (userQueued >= config.autoDownloadMaxPerTick) break;
+        const t = db.getTitle(titleId);
+        if (!t) continue;
+        await refreshTitle(t).catch((e) => log.warn("refresh", t.romaji, String(e)));
+        // Make sure the title shows up in this user's library.
+        u.library ??= [];
+        if (!u.library.includes(titleId)) { u.library.push(titleId); await db.save(); }
+        const avail = availableEpisodes(t);
+        for (let n = 1; n <= avail && userQueued < config.autoDownloadMaxPerTick; n++) {
+          const rec = peekUserEp(u, t.id, n);
+          if (rec && ["downloaded", "downloading", "queued", "searching"].includes(rec.status)) continue;
+          // Don't hammer a permanently-failing episode: retry at most daily.
+          if (rec?.status === "failed" && Date.now() - new Date(rec.updatedAt).getTime() < 24 * 3600_000) continue;
+          await queue.enqueue(t.id, n, u.id);
+          userQueued++; queued++;
+          log.info(`queued ${t.romaji} E${n} for ${u.username}`);
+        }
+        await sleep(300);
       }
-      await sleep(300);
     }
     state.lastQueued = queued;
   } catch (e) {
@@ -116,6 +105,34 @@ export async function tick(): Promise<{ queued: number }> {
   }
   if (queued) log.info(`tick complete — queued ${queued}`);
   return { queued };
+}
+
+/**
+ * One-time migration: the old model flagged auto-download on the shared Title
+ * record. Move MANUAL flags (not tracker-derived) onto the owner's per-user
+ * autoTitles so their auto-downloads keep working, then clear the legacy
+ * title-level flags (tracker-derived flags are recomputed from Watching lists).
+ */
+export async function migrateAutoFlags(): Promise<void> {
+  const owner = db.users().find((u) => u.role === "owner" && u.id !== "system")
+    ?? db.users().find((u) => u.id !== "system");
+  let changed = false;
+  let moved = 0;
+  for (const t of db.titles()) {
+    if (t.autoDownload && !t.autoFromTracker && owner) {
+      owner.autoTitles ??= [];
+      if (!owner.autoTitles.includes(t.id)) { owner.autoTitles.push(t.id); moved++; }
+    }
+    if (t.autoDownload !== undefined || t.autoFromTracker !== undefined) {
+      t.autoDownload = undefined;
+      t.autoFromTracker = undefined;
+      changed = true;
+    }
+  }
+  if (changed) {
+    await db.save();
+    if (moved) log.info(`migrated ${moved} legacy auto-flag(s) to ${owner?.username}'s autoTitles`);
+  }
 }
 
 export function start(): void {

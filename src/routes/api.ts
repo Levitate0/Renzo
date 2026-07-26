@@ -15,6 +15,7 @@ import * as mal from "../services/mal.js";
 import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
 import * as autodl from "../services/autodl.js";
 import { requireAdmin, type AuthedRequest } from "../services/auth.js";
+import { isTrackStatus } from "../services/tracker.js";
 import type { UserRecord } from "../types.js";
 import type { Title } from "../types.js";
 
@@ -88,11 +89,43 @@ async function moveTitleToFolder(user: UserRecord, t: Title, from: string, to: s
   invalidateStream(user.id, t.id); // cached /files URLs point at the old folder
 }
 
-/** Add a title to the user's personal library (idempotent, no save). */
-function addToLibrary(user: UserRecord | undefined, titleId: number): void {
-  if (!user) return;
+/** Add a title to the user's personal library (idempotent, no save). Returns
+ *  true only when the title was newly added (first entry). */
+function addToLibrary(user: UserRecord | undefined, titleId: number): boolean {
+  if (!user) return false;
   user.library ??= [];
-  if (!user.library.includes(titleId)) user.library.push(titleId);
+  if (user.library.includes(titleId)) return false;
+  user.library.push(titleId);
+  return true;
+}
+
+/** Block downloads for a denied user (streaming stays allowed). Returns true if
+ *  the response was already sent (caller should return). */
+function downloadBlocked(user: UserRecord | undefined, res: Response): boolean {
+  if (user?.downloadsDenied) {
+    res.status(403).json({ error: "Downloads are disabled for your account" });
+    return true;
+  }
+  return false;
+}
+
+/** Apply this user's per-title "on add" defaults the first time a title enters
+ *  their library. Best-effort — folder/auto mutate the db (caller saves);
+ *  tracker sync is fire-and-forget so the add stays snappy. */
+function applyAddDefaults(user: UserRecord, t: Title): void {
+  const d = user.addDefaults;
+  if (!d) return;
+  if (d.folder && userFolders(user).includes(d.folder)) {
+    user.titleFolder ??= {};
+    if (!user.titleFolder[String(t.id)]) user.titleFolder[String(t.id)] = d.folder;
+  }
+  if (d.autoDownload && !user.downloadsDenied) {
+    user.autoTitles ??= [];
+    if (!user.autoTitles.includes(t.id)) user.autoTitles.push(t.id);
+  }
+  if (d.track && isTrackStatus(d.track) && (user.anilistToken || user.malToken)) {
+    tracker.setTracking(t, user, { status: d.track }).catch((e) => log.warn("addDefaults track", t.id, String(e)));
+  }
 }
 
 function cardFromTitle(t: Title, user?: UserRecord) {
@@ -128,7 +161,14 @@ function detailFromTitle(t: Title, user?: UserRecord) {
       aired: n <= aired,
     };
   });
-  return { ...t, episodes: undefined, episodesTotal: count, airedEpisodes: aired, episodeList: episodes };
+  return {
+    ...t,
+    episodes: undefined,
+    autoDownload: (user?.autoTitles ?? []).includes(t.id), // per-user, not the legacy title-level flag
+    episodesTotal: count,
+    airedEpisodes: aired,
+    episodeList: episodes,
+  };
 }
 
 // --- Health / status -------------------------------------------------------
@@ -290,7 +330,7 @@ api.post("/titles/:id/lists", wrap(async (req, res) => {
   const cur = new Set(user.lists[list] ?? []);
   if (req.body?.on) {
     cur.add(t.id);
-    addToLibrary(user, t.id); // anything you list is in your library
+    if (addToLibrary(user, t.id)) applyAddDefaults(user, t); // anything you list is in your library
   } else {
     cur.delete(t.id);
   }
@@ -304,7 +344,7 @@ api.post("/library", wrap(async (req, res) => {
   const id = Number(req.body?.anilistId ?? req.body?.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "anilistId required" });
   const t = await getOrCreateTitle(id);
-  addToLibrary(req.user, t.id);
+  if (addToLibrary(req.user, t.id) && req.user) applyAddDefaults(req.user, t);
   await db.save();
   res.json(cardFromTitle(t, req.user));
 }));
@@ -393,6 +433,7 @@ api.get("/watch/:watchId", wrap(async (req, res) => {
 // --- Background download (RD mandatory) ------------------------------------
 api.post("/titles/:id/download/:ep", wrap(async (req, res) => {
   const user = req.user!;
+  if (downloadBlocked(user, res)) return; // staff can deny a user all downloads
   requireToken(user); // 402 realdebrid_required if not connected
   const id = Number(req.params.id);
   const ep = Math.max(1, Number(req.params.ep) || 1);
@@ -405,6 +446,7 @@ api.post("/titles/:id/download/:ep", wrap(async (req, res) => {
 // --- Season grab: queue every missing aired episode ------------------------
 api.post("/titles/:id/download-season", wrap(async (req, res) => {
   const user = req.user!;
+  if (downloadBlocked(user, res)) return;
   const id = Number(req.params.id);
   addToLibrary(user, id);
   await db.save();
@@ -412,12 +454,18 @@ api.post("/titles/:id/download-season", wrap(async (req, res) => {
 }));
 
 // --- Per-title auto-download toggle (ADMIN: it's a global, owner-funded flag) --
-api.post("/titles/:id/auto", requireAdmin, wrap(async (req, res) => {
+// Per-user auto-download flag: the title downloads to THIS user's own RD on the
+// schedule. Open to any user who isn't download-denied (no longer admin-only).
+api.post("/titles/:id/auto", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  if (downloadBlocked(user, res)) return;
   const t = await getOrCreateTitle(Number(req.params.id));
-  t.autoDownload = Boolean(req.body?.enabled);
-  t.autoFromTracker = undefined; // manual choice — tracker sync must not undo it
+  const on = Boolean(req.body?.enabled);
+  const set = new Set(user.autoTitles ?? []);
+  if (on) { set.add(t.id); addToLibrary(user, t.id); } else set.delete(t.id);
+  user.autoTitles = [...set];
   await db.save();
-  res.json({ id: t.id, autoDownload: t.autoDownload });
+  res.json({ id: t.id, autoDownload: on });
 }));
 
 // --- Auto-downloader (spends the OWNER's Real-Debrid account -> ADMIN only) ---

@@ -98,6 +98,9 @@ export interface UserRecord {
   updatesSeen?: Record<string, number>; // titleId -> aired-count last acknowledged in Updates
   realDebridToken?: string;        // per-user RD creds — required to stream/download
   apiKey?: string;                 // per-user API key (Jellyfin plugin / external clients)
+  downloadsDenied?: boolean;       // staff can block this user from ALL downloads (streaming still allowed)
+  autoTitles?: number[];           // titles this user auto-downloads to THEIR OWN Real-Debrid
+  addDefaults?: AddDefaults;       // states applied when a title first enters this user's library
   anilistToken?: string;           // per-user tracker connections
   malToken?: string;
   resetToken?: string;             // active password-reset token (emailed)
@@ -109,6 +112,13 @@ export interface ThemeSettings {
   preset: string;                  // preset id (e.g. "renzo", "amoled", "light")
   accent?: string;                 // optional custom accent (#rrggbb)
   bg?: string;                     // optional custom background (#rrggbb)
+}
+
+/** Per-user defaults applied when a title first enters the user's library. */
+export interface AddDefaults {
+  track?: string;                  // tracking status to sync on add (validated as TrackStatus)
+  autoDownload?: boolean;          // start auto-downloading the series on add
+  folder?: string;                 // file the series into this folder
 }
 
 export interface SessionRecord {

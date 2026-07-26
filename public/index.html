@@ -221,6 +221,7 @@
           <button data-pane="account" class="active">👤&nbsp; Account</button>
           <button data-pane="realdebrid">🔗&nbsp; Real-Debrid</button>
           <button data-pane="trackers">📺&nbsp; Trackers</button>
+          <button data-pane="defaults">🗂️&nbsp; Library</button>
           <button data-pane="jellyfin">🧩&nbsp; Jellyfin</button>
           <button data-pane="security">🔒&nbsp; Security</button>
           <span class="sp"></span>
@@ -320,6 +321,34 @@
                 </div>
               </div>
             </details>
+          </section>
+
+          <!-- Library defaults (applied when a series enters your library) -->
+          <section class="pane" data-pane="defaults">
+            <h2>Library defaults</h2>
+            <p class="sub">Applied automatically the first time a series enters your library — when you
+              add it or put it on a list. Leave blank / off to do nothing.</p>
+            <div class="field">
+              <label for="defTrack">Set tracking status</label>
+              <select id="defTrack" class="in">
+                <option value="">— Don't set —</option>
+                <option value="watching">Watching</option>
+                <option value="planning">Plan to watch</option>
+                <option value="completed">Completed</option>
+                <option value="paused">Paused</option>
+                <option value="dropped">Dropped</option>
+                <option value="rewatching">Rewatching</option>
+              </select>
+              <span class="hint">Synced to your AniList / MyAnimeList when connected.</span>
+            </div>
+            <div class="field">
+              <label for="defFolder">Add to folder</label>
+              <select id="defFolder" class="in"><option value="">— Default folder —</option></select>
+            </div>
+            <label class="remember-row" id="defAutoRow">
+              <input id="defAuto" type="checkbox" /> <span>Auto-download new episodes to your own Real-Debrid</span>
+            </label>
+            <div class="form-actions"><button id="defSave" class="primary">Save defaults</button></div>
           </section>
 
           <!-- Jellyfin / API access -->

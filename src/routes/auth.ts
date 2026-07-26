@@ -7,8 +7,9 @@ import * as auth from "../services/auth.js";
 import * as apikeys from "../services/apikeys.js";
 import * as rd from "../services/realdebrid.js";
 import * as mailer from "../services/mailer.js";
+import { isTrackStatus } from "../services/tracker.js";
 import type { AuthedRequest } from "../services/auth.js";
-import type { Role, InviteRecord, SmtpSettings, ThemeSettings } from "../types.js";
+import type { Role, InviteRecord, SmtpSettings, ThemeSettings, AddDefaults } from "../types.js";
 
 const log = logger("auth-routes");
 export const authRoutes = Router();
@@ -32,6 +33,7 @@ function clientIp(req: Request): string {
 function publicUser(u: {
   id: string; username: string; role: string; email?: string;
   realDebridToken?: string; anilistToken?: string; malToken?: string; theme?: ThemeSettings;
+  downloadsDenied?: boolean; addDefaults?: AddDefaults;
 }) {
   return {
     id: u.id,
@@ -42,6 +44,8 @@ function publicUser(u: {
     anilistConnected: Boolean(u.anilistToken),
     malConnected: Boolean(u.malToken),
     theme: u.theme ?? null,
+    downloadsDenied: Boolean(u.downloadsDenied),
+    addDefaults: u.addDefaults ?? null,
   };
 }
 
@@ -275,6 +279,30 @@ accountRoutes.post("/apikey/rotate", wrap(async (req: AuthedRequest, res) => {
   res.json({ apiKey });
 }));
 
+// Per-user "on add" defaults (tracking status / auto-download / folder). All
+// inputs validated; the folder is checked against the user's own folders at
+// apply time, so a stale value can never leak or mis-file.
+accountRoutes.post("/add-defaults", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  if (user.id === "system") return res.status(400).json({ error: "auth is disabled" });
+  const body = req.body ?? {};
+  const defaults: AddDefaults = {};
+  const track = String(body.track ?? "").trim();
+  if (track) {
+    if (!isTrackStatus(track)) return res.status(400).json({ error: "invalid tracking status" });
+    defaults.track = track;
+  }
+  if (body.autoDownload === true) defaults.autoDownload = true;
+  const folder = String(body.folder ?? "").trim();
+  if (folder) {
+    if (!/^[A-Za-z0-9 _-]{1,48}$/.test(folder)) return res.status(400).json({ error: "invalid folder name" });
+    defaults.folder = folder;
+  }
+  user.addDefaults = Object.keys(defaults).length ? defaults : undefined;
+  await db.save();
+  res.json(publicUser(user));
+}));
+
 accountRoutes.post("/trackers", wrap(async (req: AuthedRequest, res) => {
   const user = req.user!;
   if ("anilistToken" in (req.body ?? {})) {
@@ -336,6 +364,20 @@ userAdminRoutes.post("/:id/role", wrap(async (req: AuthedRequest, res) => {
   target.role = role;
   await db.save();
   log.info(`role changed: ${target.username} -> ${role}`);
+  res.json(publicUser(target));
+}));
+
+// Deny / allow a user's downloads (streaming stays allowed). Same permission
+// model as delete: managers may only touch plain users; the owner can't be denied.
+userAdminRoutes.post("/:id/downloads", wrap(async (req: AuthedRequest, res) => {
+  const actor = req.user!;
+  const target = db.getUser(req.params.id);
+  if (!target) return res.status(404).json({ error: "no such user" });
+  if (target.role === "owner") return res.status(400).json({ error: "cannot deny the owner" });
+  if (actor.role !== "owner" && target.role !== "user") return res.status(403).json({ error: "managers can only manage users" });
+  target.downloadsDenied = Boolean(req.body?.denied);
+  await db.save();
+  log.info(`downloads ${target.downloadsDenied ? "denied" : "allowed"}: ${target.username} by ${actor.username}`);
   res.json(publicUser(target));
 }));
 

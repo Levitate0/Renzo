@@ -719,3 +719,7 @@ body.detailing { overflow: hidden; }
   .title-body { padding: 10px 16px 80px; }
   .page-back { padding: 7px 12px; font-size: 13px; }
 }
+
+/* denied-downloads chip + compact staff button */
+.mini-chip.off { color: var(--err); border-color: rgba(255,95,109,.42); }
+.sm-btn { padding: 6px 10px; font-size: 12px; }

@@ -65,6 +65,7 @@ async function main() {
   await fs.mkdir(config.libraryDir, { recursive: true });
   await db.init();
   await apikeys.ensureAllApiKeys(); // every account gets a per-user API key
+  await autodl.migrateAutoFlags();  // legacy title-level auto-flags -> per-user autoTitles
   await queue.resume();
   autodl.start();
 
