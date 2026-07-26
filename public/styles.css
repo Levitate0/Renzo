@@ -723,3 +723,21 @@ body.detailing { overflow: hidden; }
 /* denied-downloads chip + compact staff button */
 .mini-chip.off { color: var(--err); border-color: rgba(255,95,109,.42); }
 .sm-btn { padding: 6px 10px; font-size: 12px; }
+
+/* ---------------------------------------------------------------------------
+   Landscape / small-window top bar — never overflow. Phone landscape (~740-900px
+   CSS) sits just above the 720px mobile break, so the desktop top bar (with the
+   RD/tracker pill + 240px search) overflowed and the sticky bar scrolled, hiding
+   the brand and the account avatar. Keep it compact + wrap, and forbid horizontal
+   page scroll outright.
+--------------------------------------------------------------------------- */
+html { overflow-x: clip; }                 /* no horizontal page scroll (sticky-safe) */
+.topbar {                                  /* stay clear of the landscape notch */
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
+}
+@media (min-width: 721px) and (max-width: 940px) {
+  .topbar { flex-wrap: wrap; gap: 10px 14px; }
+  .status { display: none; }               /* the RD/tracker pill is the widest item */
+  .search input { width: 180px; }
+}
