@@ -1,6 +1,6 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import { resolve } from "node:path";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import { config, assertConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { db } from "./db.js";
@@ -107,8 +107,16 @@ async function main() {
 
   // Static web UI (login shell + app). Public so the login page can load.
   const publicDir = resolve("public");
-  app.use(express.static(publicDir));
-  app.get("*", (_req, res) => res.sendFile(resolve(publicDir, "index.html")));
+  // Cache-bust app.js/styles.css per build so clients never run stale JS against
+  // fresh markup (index.html itself is served no-store so it's always fresh).
+  const BUILD = Date.now().toString(36);
+  const indexHtml = readFileSync(resolve(publicDir, "index.html"), "utf8")
+    .replace('href="/styles.css"', `href="/styles.css?v=${BUILD}"`)
+    .replace('src="/app.js"', `src="/app.js?v=${BUILD}"`);
+  const sendIndex = (res: Response) => res.set("Cache-Control", "no-store").type("html").send(indexHtml);
+  app.use(express.static(publicDir, { index: false }));
+  app.get("/", (_req, res) => sendIndex(res));
+  app.get("*", (_req, res) => sendIndex(res));
 
   app.listen(config.port, () => {
     log.info(`Renzo listening on ${config.publicUrl} (port ${config.port})`);
