@@ -10,7 +10,7 @@ import * as jellyfin from "../services/jellyfin.js";
 import * as tracker from "../services/tracker.js";
 import * as captions from "../services/captions.js";
 import * as library from "../services/library.js";
-import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, userFolders, folderOf, DEFAULT_FOLDER } from "../services/downloader.js";
+import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched } from "../services/downloader.js";
 import * as autodl from "../services/autodl.js";
 import { requireAdmin, type AuthedRequest } from "../services/auth.js";
 import type { UserRecord } from "../types.js";
@@ -104,6 +104,7 @@ function cardFromTitle(t: Title, user?: UserRecord) {
     lists: userLists(user, t.id),
     folder: user ? folderOf(user, t.id) : DEFAULT_FOLDER,
     downloaded: user ? userDownloadedCount(user, t.id) : 0,
+    upNext: user ? upNextFor(user, t) : null,
   };
 }
 function detailFromTitle(t: Title, user?: UserRecord) {
@@ -141,8 +142,9 @@ api.get("/health", wrap(async (req, res) => {
     realdebrid: !token ? "not-connected" : !acct ? "invalid" : rd.isPremium(acct) ? "premium" : "not-premium",
     jellyfin: jf,
     trackers: { anilist: anilistOn, mal: malOn },
-    // Where to link AniList/MAL accounts (the auth site manages tokens centrally).
-    authsite: { enabled: authsite.configured(), url: config.authsiteUrl },
+    // Where the BROWSER links AniList/MAL accounts (public host for the popup +
+    // postMessage origin). Token fetching uses the internal host, not this one.
+    authsite: { enabled: authsite.configured(), url: config.authsitePublicUrl },
   });
 }));
 
@@ -288,13 +290,40 @@ api.delete("/library/:id", wrap(async (req, res) => {
 
 api.get("/titles/:id", wrap(async (req, res) => {
   const t = await getOrCreateTitle(Number(req.params.id));
+  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [] }));
+  const detail = detailFromTitle(t, req.user);
+  // Merge per-episode preview thumbnails + episode titles (fallback: banner/poster).
+  const episodeList = detail.episodeList.map((e) => {
+    const meta = extra.episodes[e.number - 1];
+    return { ...e, thumbnail: meta?.thumbnail || t.banner || t.poster || null, epTitle: meta?.title || null };
+  });
   res.json({
-    ...detailFromTitle(t, req.user),
+    ...detail,
+    episodeList,
+    seasons: extra.seasons,
     lists: userLists(req.user, t.id),
     inLibrary: inLibrary(req.user, t.id),
     folder: req.user ? folderOf(req.user, t.id) : DEFAULT_FOLDER,
     folders: req.user ? userFolders(req.user) : [DEFAULT_FOLDER],
+    provider: req.user ? providerFor(req.user, t.id) ?? null : null,
   });
+}));
+
+// --- Providers (release groups) for a title --------------------------------
+api.get("/titles/:id/providers", wrap(async (req, res) => {
+  res.json(await listProviders(Number(req.params.id)));
+}));
+
+// Set (or clear) MY preferred release group for a title — used for all eps/seasons.
+api.post("/titles/:id/provider", wrap(async (req, res) => {
+  const user = req.user!;
+  const t = await getOrCreateTitle(Number(req.params.id));
+  const raw = String(req.body?.group ?? "").trim().slice(0, 40);
+  user.titleProvider ??= {};
+  if (raw && /^[\w .\-\[\]]+$/.test(raw)) user.titleProvider[String(t.id)] = raw;
+  else delete user.titleProvider[String(t.id)]; // empty/invalid -> auto
+  await db.save();
+  res.json({ id: t.id, provider: user.titleProvider[String(t.id)] ?? null });
 }));
 
 // --- Playback: instant stream (RD, mandatory) or local file ----------------
@@ -344,20 +373,57 @@ api.post("/autodl/run", requireAdmin, wrap(async (_req, res) => {
   res.json(await autodl.tick());
 }));
 
-// --- Mark watched -> scrobble to MY trackers -------------------------------
+// --- Mark watched -> local progress + scrobble to MY trackers --------------
 api.post("/titles/:id/watched/:ep", wrap(async (req: AuthedRequest, res) => {
   const id = Number(req.params.id);
   const ep = Math.max(1, Number(req.params.ep) || 1);
   const t = await getOrCreateTitle(id);
+  setWatched(req.user!, id, ep);   // powers "up next"
+  await db.save();
   await tracker.scrobble(t, ep, req.user);
-  res.json({ ok: true });
+  res.json({ ok: true, upNext: upNextFor(req.user!, t) });
+}));
+
+// --- Updates feed: new episodes / seasons for saved titles (anime + movies) --
+api.get("/updates", wrap(async (req, res) => {
+  const user = req.user!;
+  const libIds = user.library ?? [];
+  const inLib = new Set(libIds);
+  const items: unknown[] = [];
+
+  for (const id of libIds) {
+    const t = db.getTitle(id);
+    if (!t) continue;
+    const avail = availableEpisodes(t);
+    const w = watchedEp(user, id);
+    if (t.type === "series" && avail > w) {
+      items.push({ kind: "episode", id, type: "series", title: t.english ?? t.romaji, poster: t.poster,
+        ep: w + 1, latest: avail, releasing: t.airingStatus === "RELEASING" });
+    } else if (t.type === "movie" && avail >= 1 && w < 1) {
+      items.push({ kind: "movie", id, type: "movie", title: t.english ?? t.romaji, poster: t.poster });
+    }
+  }
+
+  // New seasons: sequels of saved titles that aren't in the library yet.
+  const seenSeasons = new Set<number>();
+  for (const id of libIds.slice(0, 20)) {
+    const ex = await anilist.detailExtra(id).catch(() => ({ seasons: [] as { id: number; title: string; poster: string | null; year: number | null; relation: string; status: string | null }[] }));
+    for (const s of ex.seasons) {
+      if (s.relation !== "SEQUEL" || inLib.has(s.id) || seenSeasons.has(s.id)) continue;
+      if (!["RELEASING", "NOT_YET_RELEASED", "FINISHED"].includes(s.status ?? "")) continue;
+      seenSeasons.add(s.id);
+      items.push({ kind: "season", id: s.id, type: "series", title: s.title, poster: s.poster, year: s.year,
+        upcoming: s.status === "NOT_YET_RELEASED" });
+    }
+  }
+  res.json(items);
 }));
 
 // --- Jobs (only MY jobs; admin sees all) -----------------------------------
 api.get("/jobs", wrap(async (req, res) => {
   const user = req.user!;
   const jobs = db.jobs()
-    .filter((j) => user.role === "admin" || j.userId === user.id)
+    .filter((j) => user.role !== "user" || j.userId === user.id)
     .filter((j) => ["queued", "searching", "downloading", "failed"].includes(j.status) ||
       Date.now() - new Date(j.updatedAt).getTime() < 60_000)
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
@@ -366,14 +432,28 @@ api.get("/jobs", wrap(async (req, res) => {
       // Don't expose internal fields (userId, rdTorrentId, magnet) to the client.
       return {
         id: j.id,
+        titleId: j.titleId, // needed for the Retry button
         episode: j.episode,
         status: j.status,
         progress: j.progress,
         message: j.message,
         title: t ? t.english ?? t.romaji : `#${j.titleId}`,
+        mine: j.userId === user.id,
       };
     });
   res.json(jobs);
+}));
+
+// --- Retry a failed download (re-search from scratch) ----------------------
+api.post("/titles/:id/retry/:ep", wrap(async (req, res) => {
+  const user = req.user!;
+  requireToken(user);
+  const id = Number(req.params.id);
+  const ep = Math.max(1, Number(req.params.ep) || 1);
+  const rec = peekUserEp(user, id, ep);
+  if (rec) { rec.rdTorrentId = undefined; rec.status = "wanted"; await db.save(); } // fresh search
+  const job = await queue.enqueue(id, ep, user.id);
+  res.json(job);
 }));
 
 // --- Captions proxy: remote sub -> WebVTT ----------------------------------
