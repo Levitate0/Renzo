@@ -120,55 +120,57 @@
     </section>
   </main>
 
-  <!-- Title detail (Crunchyroll-style) -->
-  <div id="detail" class="modal hidden">
-    <div class="modal-card detail-card">
-      <button class="close" data-close>✕</button>
-      <div class="detail-hero">
-        <div class="detail-banner" id="detailBanner"></div>
-        <div class="detail-hero-inner">
-          <img id="detailPoster" class="detail-poster" alt="" />
-          <div class="detail-meta">
-            <h1 id="detailTitle"></h1>
-            <div id="detailMetaline" class="metaline"></div>
-            <p id="detailDesc" class="desc"></p>
-            <div class="detail-actions">
-              <button id="heroPlay" class="primary play-btn">▶ Play</button>
-              <button id="watchlistBtn" class="icon-pill" title="Watchlist">☆</button>
-              <button id="favBtn" class="icon-pill" title="Favorite">♡</button>
-              <button id="seasonBtn" class="icon-pill hidden" title="Download season">⬇</button>
-            </div>
-            <div class="detail-controls">
-              <button id="autoBtn" class="ghost hidden">Auto: off</button>
-              <label class="folder-pick" title="Folder">📁 <select id="folderSelect"></select></label>
-              <label class="folder-pick" title="Preferred release group (all episodes)">▤ <select id="providerSelect"></select></label>
-            </div>
-            <div class="track-row" id="trackRow">
-              <span class="track-label">Track</span>
-              <select id="trackStatus" class="track-sel">
-                <option value="">— Not tracked —</option>
-                <option value="watching">Watching</option>
-                <option value="completed">Completed</option>
-                <option value="planning">Plan to watch</option>
-                <option value="paused">Paused</option>
-                <option value="dropped">Dropped</option>
-                <option value="rewatching">Rewatching</option>
-              </select>
-              <input id="trackProgress" class="track-num" type="number" min="0" title="Episodes watched" />
-              <span id="trackTotal" class="track-total"></span>
-              <input id="trackScore" class="track-num" type="number" min="0" max="10" placeholder="/10" title="Score out of 10" />
-              <button id="trackSave" class="ghost">Sync</button>
-              <span id="trackNote" class="hint"></span>
-            </div>
+  <!-- Title detail — dedicated routed page (#/title/<id>), Crunchyroll-style -->
+  <section id="detail" class="pageview hidden">
+    <a id="detailBack" class="page-back" href="#">‹ Back</a>
+    <div class="title-hero">
+      <div class="title-hero-bg" id="detailBanner"></div>
+      <div class="title-hero-scrim"></div>
+      <div class="title-hero-inner">
+        <img id="detailPoster" class="title-hero-poster" alt="" onerror="this.style.visibility='hidden'" />
+        <div class="title-hero-meta">
+          <h1 id="detailTitle" class="title-hero-name"></h1>
+          <div id="detailMetaline" class="metaline"></div>
+          <p id="detailDesc" class="desc clamp"></p>
+          <button id="detailMore" class="more-link" type="button">More details</button>
+          <div class="detail-actions">
+            <button id="heroPlay" class="primary play-btn">▶ Play</button>
+            <button id="watchlistBtn" class="icon-pill" title="Watchlist">☆</button>
+            <button id="favBtn" class="icon-pill" title="Favorite">♡</button>
+            <button id="seasonBtn" class="icon-pill hidden" title="Download season">⬇</button>
+          </div>
+          <div class="detail-controls">
+            <button id="autoBtn" class="ghost hidden">Auto: off</button>
+            <label class="folder-pick" title="Folder">📁 <select id="folderSelect"></select></label>
+            <label class="folder-pick" title="Preferred release group (all episodes)">▤ <select id="providerSelect"></select></label>
+          </div>
+          <div class="track-row" id="trackRow">
+            <span class="track-label">Track</span>
+            <select id="trackStatus" class="track-sel">
+              <option value="">— Not tracked —</option>
+              <option value="watching">Watching</option>
+              <option value="completed">Completed</option>
+              <option value="planning">Plan to watch</option>
+              <option value="paused">Paused</option>
+              <option value="dropped">Dropped</option>
+              <option value="rewatching">Rewatching</option>
+            </select>
+            <input id="trackProgress" class="track-num" type="number" min="0" title="Episodes watched" />
+            <span id="trackTotal" class="track-total"></span>
+            <input id="trackScore" class="track-num" type="number" min="0" max="10" placeholder="/10" title="Score out of 10" />
+            <button id="trackSave" class="ghost">Sync</button>
+            <span id="trackNote" class="hint"></span>
           </div>
         </div>
       </div>
+    </div>
+    <div class="title-body">
       <div class="detail-episodes">
         <div id="seasonsRow" class="seasons-row hidden"></div>
         <div id="episodeArea"></div>
       </div>
     </div>
-  </div>
+  </section>
 
   <!-- Watch page (own URL, series-based — no per-episode reloads) -->
   <section id="view-watch" class="watch hidden">
@@ -191,8 +193,9 @@
     <div class="watch-info">
       <div class="watch-head">
         <div class="watch-headmeta">
-          <div id="watchEpNo" class="watch-epno"></div>
+          <a id="watchSeriesLink" class="watch-series-link" href="#" title="Back to series"></a>
           <h1 id="watchTitle" class="watch-title"></h1>
+          <div id="watchEpNo" class="watch-epno"></div>
         </div>
         <span id="watchSource" class="source-badge"></span>
       </div>

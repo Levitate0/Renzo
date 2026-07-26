@@ -461,9 +461,13 @@ main { padding: 26px 22px 60px; max-width: 1440px; margin: 0 auto; }
 /* ---------------------------------------------------------------------------
    Watch page (Crunchyroll-style routed player)
 --------------------------------------------------------------------------- */
+/* Player + detail are overlays that sit BELOW the sticky topbar (z-index 30),
+   so the topbar stays visible & clickable for quick navigation. `main` is
+   hidden underneath so nothing bleeds through the translucent topbar. */
 body.watching { overflow: hidden; }
+body.watching main, body.detailing main { display: none; }
 #view-watch.watch {
-  position: fixed; inset: 0; z-index: 200;
+  position: fixed; left: 0; right: 0; bottom: 0; top: var(--topbar-h, 56px); z-index: 25;
   background: var(--bg); overflow-y: auto;
   display: flex; flex-direction: column;
 }
@@ -471,7 +475,7 @@ body.watching { overflow: hidden; }
 
 .watch-stage {
   position: relative; width: 100%; background: #000;
-  aspect-ratio: 16 / 9; max-height: 82vh; flex: none;
+  aspect-ratio: 16 / 9; max-height: 78vh; flex: none;
 }
 .watch-stage #watchVideo { width: 100%; height: 100%; background: #000; display: block; }
 .watch-back {
@@ -637,4 +641,73 @@ body.watching { overflow: hidden; }
   .browse-row .grid > .more-tile:hover { color: var(--fg); border-color: var(--accent); }
   .browse-row .grid > .more-tile .more-ic { font-size: 30px; line-height: 1; }
   .browse-row .grid > .more-tile .more-lbl { font-size: 12px; font-weight: 600; }
+}
+
+/* ---------------------------------------------------------------------------
+   Title detail — dedicated routed page (Crunchyroll-style)
+--------------------------------------------------------------------------- */
+body.detailing { overflow: hidden; }
+.pageview {
+  position: fixed; left: 0; right: 0; bottom: 0; top: var(--topbar-h, 56px); z-index: 20;
+  background: var(--bg); overflow-y: auto;
+}
+.pageview.hidden { display: none; }
+
+.page-back {
+  position: fixed; top: calc(var(--topbar-h, 56px) + 12px); left: 16px; z-index: 3;
+  display: inline-flex; align-items: center; gap: 4px; text-decoration: none;
+  background: rgba(10,11,16,.62); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.page-back:hover { background: rgba(10,11,16,.9); }
+
+.title-hero { position: relative; min-height: 58vh; display: flex; align-items: flex-end; }
+.title-hero-bg { position: absolute; inset: 0; background-size: cover; background-position: center 20%; }
+.title-hero-scrim {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, rgba(0,0,0,.28) 0%, rgba(0,0,0,.06) 32%, var(--bg) 100%),
+    linear-gradient(90deg, rgba(0,0,0,.78) 0%, rgba(0,0,0,.36) 46%, rgba(0,0,0,0) 76%);
+}
+.title-hero-inner {
+  position: relative; z-index: 2; display: flex; gap: 26px; align-items: flex-end;
+  width: min(1180px, 100%); margin: 0 auto; padding: 0 32px 30px;
+}
+.title-hero-poster {
+  width: 158px; aspect-ratio: 2/3; object-fit: cover; border-radius: 12px; flex: none;
+  box-shadow: 0 12px 40px rgba(0,0,0,.55); background: var(--s2);
+}
+.title-hero-meta { min-width: 0; max-width: 740px; align-self: flex-end; }
+.title-hero-name { font-size: clamp(26px, 4vw, 46px); margin: 0 0 10px; line-height: 1.05;
+  text-shadow: 0 2px 20px rgba(0,0,0,.6); }
+.title-body { width: min(1180px, 100%); margin: 0 auto; padding: 10px 32px 80px; }
+
+.desc.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.more-link {
+  background: none; border: 0; color: var(--accent); font-weight: 600; cursor: pointer;
+  padding: 4px 0; font-size: 13px; display: inline-block; margin: 2px 0 6px;
+}
+
+/* Orange series link on the player — doubles as "back to series" */
+.watch-series-link {
+  display: inline-block; color: var(--accent); font-weight: 700; font-size: 14px;
+  text-decoration: none; cursor: pointer; margin-bottom: 3px;
+}
+.watch-series-link:hover { text-decoration: underline; }
+
+/* Watched badge on episode thumbnails */
+.ep-watched {
+  position: absolute; right: 6px; bottom: 6px; z-index: 2;
+  background: rgba(10,11,16,.82); color: #fff; font-size: 11px; font-weight: 600;
+  padding: 2px 7px; border-radius: 6px;
+}
+
+@media (max-width: 720px) {
+  .title-hero { min-height: 48vh; }
+  .title-hero-inner { flex-direction: column; align-items: flex-start; gap: 14px; padding: 0 16px 20px; }
+  .title-hero-poster { width: 104px; }
+  .title-body { padding: 10px 16px 80px; }
+  .page-back { padding: 7px 12px; font-size: 13px; }
 }

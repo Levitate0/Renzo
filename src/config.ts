@@ -35,6 +35,11 @@ export const config = {
   jellyfinApiKey: process.env.JELLYFIN_API_KEY ?? "",
   // Key the Renzo Jellyfin plugin uses to reach the catalog/stream API.
   pluginKey: process.env.RENZO_PLUGIN_KEY ?? "",
+  // The Jellyfin plugin repository (manifest) URL handed to users to install
+  // the plugin. Hosted on GitHub (public repo) — NOT the Renzo server — so the
+  // zip comes from a GitHub Release asset.
+  pluginManifestUrl: process.env.RENZO_PLUGIN_MANIFEST_URL
+    || "https://raw.githubusercontent.com/Levitate0/Renzo/main/public/jellyfin/manifest.json",
 
   // Tracker connections. Priority per user: their own token > env override >
   // the self-hosted auth site (below), which fetches/refreshes tokens centrally.

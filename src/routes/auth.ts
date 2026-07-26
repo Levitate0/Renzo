@@ -258,7 +258,7 @@ accountRoutes.get("/apikey", wrap(async (req: AuthedRequest, res) => {
   res.json({
     apiKey,
     renzoUrl: config.publicUrl,
-    manifestUrl: `${config.publicUrl}/jellyfin/manifest.json`,
+    manifestUrl: config.pluginManifestUrl, // GitHub-hosted plugin repo
   });
 }));
 

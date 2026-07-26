@@ -336,6 +336,7 @@ api.get("/titles/:id", wrap(async (req, res) => {
     ...detail,
     episodeList,
     seasons: extra.seasons,
+    watchedThrough: req.user ? watchedEp(req.user, t.id) : 0, // last episode marked watched
     lists: userLists(req.user, t.id),
     inLibrary: inLibrary(req.user, t.id),
     folder: req.user ? folderOf(req.user, t.id) : DEFAULT_FOLDER,

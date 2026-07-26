@@ -47,6 +47,7 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 function switchTab(name) {
+  if (location.hash) location.hash = ""; // leave any player/detail overlay (hashchange -> route tears it down)
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   if (name === "library") loadLibrary();
@@ -54,6 +55,15 @@ function switchTab(name) {
   if (name === "updates") loadUpdates();
   if (name === "appearance") renderAppearance();
 }
+
+// The player/detail overlays sit below the sticky topbar; keep their top offset
+// in sync with the topbar's real height (it wraps taller on narrow screens).
+function syncTopbarH() {
+  const bar = document.querySelector(".topbar");
+  if (bar) document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+}
+window.addEventListener("resize", syncTopbarH);
+syncTopbarH();
 
 // ---------------------------------------------------------------------------
 // Themes (per-user, persisted; applied via CSS variables)
@@ -317,12 +327,41 @@ $("#importBtn").addEventListener("click", async () => {
 // detail
 // ---------------------------------------------------------------------------
 let current = null;
-async function openDetail(id) {
+let detailShownId = null; // title id currently rendered on the detail page (for instant Back)
+
+// Navigate to a title's dedicated page; the hash router renders it.
+function openDetail(id) { location.hash = `#/title/${id}`; }
+
+function showDetailView() {
+  document.querySelectorAll(".modal:not(.hidden)").forEach((m) => m.classList.add("hidden"));
+  $("#view-watch").classList.add("hidden");
+  document.body.classList.remove("watching");
+  syncTopbarH();
+  $("#detail").classList.remove("hidden");
+  document.body.classList.add("detailing");
+}
+function hideDetail() {
+  $("#detail").classList.add("hidden");
+  document.body.classList.remove("detailing");
+  detailShownId = null;
+}
+// Router entry: show the page and render it — but skip the re-render (and its
+// flash) when returning to the SAME title, e.g. Back from the player.
+async function enterDetail(id) {
+  showDetailView();
+  if (detailShownId === id) return;
+  $("#detail").scrollTop = 0;
+  await renderDetail(id);
+}
+
+async function renderDetail(id) {
   try {
     const d = await api(`/titles/${id}`);
     current = d;
+    detailShownId = d.id;
     $("#detailBanner").style.backgroundImage = `url(${d.banner || d.poster || ""})`;
     $("#detailPoster").src = d.poster || "";
+    $("#detailPoster").style.visibility = d.poster ? "" : "hidden";
     $("#detailTitle").textContent = d.english || d.romaji;
     const meta = [
       `<span class="type-tag">${d.type === "movie" ? "Movie" : "Series"}</span>`,
@@ -330,7 +369,11 @@ async function openDetail(id) {
     ].filter(Boolean);
     $("#detailMetaline").innerHTML = meta.map((m, i) =>
       `${i ? '<span class="sep">•</span>' : ""}<span>${typeof m === "string" && m.startsWith("<") ? m : esc(m)}</span>`).join("");
-    $("#detailDesc").textContent = d.description || "";
+    const desc = $("#detailDesc");
+    desc.textContent = d.description || "";
+    desc.classList.add("clamp");
+    $("#detailMore").textContent = "More details";
+    $("#detailMore").style.display = (d.description || "").length > 200 ? "" : "none";
     const isSeries = d.type === "series";
     // Hero Play -> first not-downloaded aired episode (or E1 / movie).
     const firstEp = (d.episodeList || []).find((e) => e.aired !== false && !e.hasFile)
@@ -346,9 +389,21 @@ async function openDetail(id) {
     renderEpisodes(d);
     loadProviders(d);          // async — populates the release-group picker
     loadTracking(d.id);        // async — AniList/MAL list status
-    openModal("#detail");
-  } catch (e) { toast("Detail failed: " + e.message); }
+  } catch (e) {
+    toast("Detail failed: " + e.message);
+    location.hash = "";
+  }
 }
+
+// Detail page controls (bound once).
+$("#detailBack").addEventListener("click", (e) => {
+  e.preventDefault();
+  if (history.length > 1) history.back(); else location.hash = "";
+});
+$("#detailMore").addEventListener("click", () => {
+  const clamped = $("#detailDesc").classList.toggle("clamp");
+  $("#detailMore").textContent = clamped ? "More details" : "Less";
+});
 
 // Seasons: current entry + related prequel/sequel entries, ordered by year.
 function renderSeasons(d) {
@@ -518,6 +573,7 @@ function renderEpisodes(d) {
     const row = el("div", `ep-row${unaired ? " unaired" : ""}`);
     const busy = ["downloading", "queued", "searching"].includes(ep.status);
     const pct = Math.round((ep.progress || 0) * 100);
+    const watched = !unaired && ep.number <= (d.watchedThrough || 0);
     let status = "";
     if (ep.hasFile) status = `<span class="ep-st local">✓ Saved</span>`;
     else if (busy) status = `<span class="ep-st busy">${ep.status}${pct ? " " + pct + "%" : ""}</span>`;
@@ -527,6 +583,7 @@ function renderEpisodes(d) {
         <img class="ep-thumb" loading="lazy" src="${esc(ep.thumbnail || fallback)}" alt="" onerror="this.src='${esc(fallback)}'" />
         <span class="num-badge">${ep.number}</span>
         ${!unaired ? '<div class="play-ov">▶</div>' : ""}
+        ${watched ? '<span class="ep-watched">Watched</span>' : ""}
         ${pct > 0 && pct < 100 ? `<div class="ep-prog" style="width:${pct}%"></div>` : ""}
       </div>
       <div class="ep-main">
@@ -604,11 +661,17 @@ function parseWatchHash() {
   const m = location.hash.match(/^#\/watch\/([^/]+)(?:\/(\d+))?$/);
   return m ? { watchId: m[1], ep: m[2] ? Number(m[2]) : null } : null;
 }
+function parseTitleHash() {
+  const m = location.hash.match(/^#\/title\/(\d+)$/);
+  return m ? { id: Number(m[1]) } : null;
+}
 function route() {
   if (!me) return;
   const w = parseWatchHash();
-  if (w) enterWatch(w.watchId, w.ep);
-  else if (watch) exitWatch();
+  const t = parseTitleHash();
+  if (w) enterWatch(w.watchId, w.ep);              // showWatchView() hides the detail page
+  else if (t) { if (watch) exitWatch(); enterDetail(t.id); }
+  else { if (watch) exitWatch(); hideDetail(); }
 }
 window.addEventListener("hashchange", route);
 
@@ -645,7 +708,7 @@ function seasonNumber(d) {
 }
 
 function renderWatchShell(d) {
-  $("#watchTitle").textContent = d.english || d.romaji;
+  $("#watchSeriesLink").textContent = d.english || d.romaji; // orange link → series page
   const sel = $("#watchSeason");
   const seasons = orderedSeasons(d);
   if (seasons.length > 1) {
@@ -689,7 +752,8 @@ async function goToEp(ep) {
   cancelAutoNext();
   history.replaceState(null, "", `#/watch/${watch.watchId}/${ep}`); // no reload (no hashchange)
 
-  $("#watchEpNo").textContent = isMovie ? "Movie" : `S${seasonNumber(d)} E${ep}${meta.epTitle ? ` · ${meta.epTitle}` : ""}`;
+  $("#watchTitle").textContent = isMovie ? (d.english || d.romaji) : `E${ep}${meta.epTitle ? ` · ${meta.epTitle}` : ""}`;
+  $("#watchEpNo").textContent = isMovie ? "Movie" : `Season ${seasonNumber(d)}`;
   $("#watchDesc").textContent = d.description || "";
   highlightEp(ep);
   const isMv = isMovie;
@@ -745,6 +809,9 @@ function highlightEp(ep) {
 
 function showWatchView() {
   document.querySelectorAll(".modal:not(.hidden)").forEach((m) => m.classList.add("hidden"));
+  $("#detail").classList.add("hidden");          // player replaces the series page…
+  document.body.classList.remove("detailing");   // …but detailShownId is kept, so Back is instant
+  syncTopbarH();
   $("#view-watch").classList.remove("hidden");
   document.body.classList.add("watching");
 }
@@ -783,7 +850,16 @@ function startAutoNext(nextEp) {
 }
 
 // --- watch controls (bound once) -------------------------------------------
-$("#watchBack").addEventListener("click", () => { if (history.length > 1) history.back(); else location.hash = ""; });
+$("#watchBack").addEventListener("click", () => {
+  const tid = watch && watch.titleId;
+  if (history.length > 1) history.back();
+  else location.hash = tid ? `#/title/${tid}` : ""; // deep-linked → fall back to the series page
+});
+// The series title (orange) doubles as a back-to-series link, Crunchyroll-style.
+$("#watchSeriesLink").addEventListener("click", (e) => {
+  e.preventDefault();
+  if (watch) location.hash = `#/title/${watch.titleId}`;
+});
 $("#watchPrev").addEventListener("click", () => { if (watch) goToEp(watch.ep - 1); });
 $("#watchNext").addEventListener("click", () => { if (watch) goToEp(watch.ep + 1); });
 $("#watchSeason").addEventListener("change", (e) => play(Number(e.target.value), 1));
@@ -806,6 +882,7 @@ $("#watchVideo").addEventListener("ended", async () => {
   try {
     await api(`/titles/${titleId}/watched/${endedEp}`, { method: "POST" });
     refreshUpdatesBadge();
+    if (detailShownId === titleId) detailShownId = null; // series page re-renders Watched on Back
   } catch { /* trackers optional */ }
   if (!watch || watch.titleId !== titleId || watch.ep !== endedEp) return; // exited or moved on
   const max = airedCount(detail);
@@ -907,7 +984,10 @@ document.querySelectorAll("[data-close]").forEach((b) =>
 document.querySelectorAll(".modal").forEach((m) =>
   m.addEventListener("click", (e) => { if (e.target === m) closeModal(m); }));
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") document.querySelectorAll(".modal:not(.hidden)").forEach(closeModal);
+  if (e.key !== "Escape") return;
+  const open = document.querySelectorAll(".modal:not(.hidden)");
+  if (open.length) { open.forEach(closeModal); return; }
+  if (!$("#detail").classList.contains("hidden")) $("#detailBack").click(); // Esc backs out of the series page
 });
 
 // ---------------------------------------------------------------------------
