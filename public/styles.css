@@ -575,3 +575,36 @@ body.watching { overflow: hidden; }
 .track-num { width: 62px; }
 .track-total { color: var(--muted); font-size: 13px; }
 .track-row [disabled] { opacity: .5; }
+
+/* ===========================================================================
+   Mobile / narrow screens — fix the topbar overflow + grid + detail layout
+   =========================================================================== */
+@media (max-width: 720px) {
+  .topbar { flex-wrap: wrap; gap: 10px 12px; padding: 10px 12px; }
+  .brand { order: 1; }
+  .brand-logo { height: 26px; }
+  .acct { order: 2; margin-left: auto; }
+  .status { display: none; }                    /* declutter: RD/tracker pill hidden on mobile */
+  .tabs { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; justify-content: flex-start; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { white-space: nowrap; padding: 7px 13px; }
+  .search { order: 4; width: 100%; margin-left: 0; }
+  .search input { width: auto; flex: 1 1 auto; min-width: 0; }
+
+  main { padding: 16px 12px 64px; }
+  .view > h2 { font-size: 18px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(144px, 1fr)); gap: 12px; margin-top: 12px; }
+
+  /* detail modal: stack poster over meta, center */
+  .detail-banner { height: 200px; }
+  .detail-hero-inner { flex-direction: column; align-items: center; text-align: center; gap: 14px; padding: 18px 16px; margin-top: -56px; }
+  .detail-poster { width: 132px; }
+  .detail-actions, .detail-controls, .track-row { justify-content: center; flex-wrap: wrap; }
+  .detail-episodes { padding: 0 12px 16px; }
+
+  /* browse row headings a touch tighter */
+  .browse-row { margin-bottom: 22px; }
+}
+@media (max-width: 400px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
