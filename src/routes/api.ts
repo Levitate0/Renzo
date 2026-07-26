@@ -109,6 +109,15 @@ function downloadBlocked(user: UserRecord | undefined, res: Response): boolean {
   return false;
 }
 
+/** Record a watch in the user's history: newest first, one entry per title,
+ *  capped. Called whenever an episode is marked watched. */
+function logHistory(user: UserRecord, id: number, ep: number): void {
+  const now = new Date().toISOString();
+  const hist = (user.history ?? []).filter((h) => h.id !== id);
+  hist.unshift({ id, ep, at: now });
+  user.history = hist.slice(0, 100);
+}
+
 /** Apply this user's per-title "on add" defaults the first time a title enters
  *  their library. Best-effort — folder/auto mutate the db (caller saves);
  *  tracker sync is fire-and-forget so the add stays snappy. */
@@ -504,10 +513,41 @@ api.post("/titles/:id/watched/:ep", wrap(async (req: AuthedRequest, res) => {
   const ep = Math.max(1, Number(req.params.ep) || 1);
   const t = await getOrCreateTitle(id);
   setWatched(req.user!, id, ep);   // powers "up next"
+  logHistory(req.user!, id, ep);
   await db.save();
   await tracker.scrobble(t, ep, req.user); // progress + "watching" on the trackers
   await syncWatchStatus(t, req.user!);     // …escalate to "completed" once fully watched
   res.json({ ok: true, upNext: upNextFor(req.user!, t) });
+}));
+
+// Set the exact watched-through episode (0 = none) — powers the manual
+// "mark watched / un-watch" toggle and "mark season watched". ep can go DOWN
+// (un-mark), unlike /watched which only advances.
+api.post("/titles/:id/progress", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const id = Number(req.params.id);
+  const t = await getOrCreateTitle(id);
+  const total = t.type === "movie" ? 1 : (t.episodeCount ?? availableEpisodes(t) ?? 1);
+  const ep = Math.max(0, Math.min(Math.floor(Number(req.body?.ep) || 0), Math.max(1, total)));
+  user.progress ??= {};
+  if (ep <= 0) delete user.progress[String(id)];
+  else { user.progress[String(id)] = ep; logHistory(user, id, ep); }
+  await db.save();
+  if (ep > 0) {
+    await tracker.scrobble(t, ep, user).catch(() => {});
+    await syncWatchStatus(t, user);
+  }
+  res.json({ id, watchedThrough: watchedEp(user, id), upNext: upNextFor(user, t) });
+}));
+
+// Recently-watched titles (most-recent first), as library cards + last ep/time.
+api.get("/history", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const out = (user.history ?? [])
+    .map((h) => { const t = db.getTitle(h.id); return t ? { ...cardFromTitle(t, user), ep: h.ep, at: h.at } : null; })
+    .filter(Boolean)
+    .slice(0, 60);
+  res.json(out);
 }));
 
 // --- Updates feed: new episodes / seasons for saved titles (anime + movies) --

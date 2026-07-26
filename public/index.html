@@ -19,6 +19,7 @@
       <button data-tab="discover" class="active">Discover</button>
       <button data-tab="library">Library</button>
       <button data-tab="updates">Updates <span id="updBadge" class="badge hidden">0</span></button>
+      <button data-tab="history">History</button>
       <button data-tab="downloads">Downloads <span id="dlBadge" class="badge hidden">0</span></button>
     </nav>
     <div class="search">
@@ -83,6 +84,12 @@
       <h2>Updates</h2>
       <p class="view-sub" id="updatesSub">New episodes &amp; seasons for the anime and movies in your library.</p>
       <div id="updatesGrid" class="grid"></div>
+    </section>
+
+    <section id="view-history" class="view">
+      <h2>Watch history</h2>
+      <p class="view-sub">Recently watched — most recent first.</p>
+      <div id="historyGrid" class="grid"></div>
     </section>
 
     <section id="view-downloads" class="view">
@@ -176,6 +183,7 @@
   <section id="view-watch" class="watch hidden">
     <div class="watch-stage">
       <button id="watchBack" class="watch-back">‹ Back</button>
+      <button id="watchFs" class="watch-fs" title="Fullscreen">⤢</button>
       <video id="watchVideo" controls autoplay playsinline></video>
       <div id="autoNext" class="autonext hidden">
         <img id="anThumb" class="an-thumb" alt="" />

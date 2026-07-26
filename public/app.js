@@ -57,7 +57,17 @@ function switchTab(name) {
   if (name === "library") loadLibrary();
   if (name === "downloads") loadJobs();
   if (name === "updates") loadUpdates();
+  if (name === "history") loadHistory();
   if (name === "appearance") renderAppearance();
+}
+
+async function loadHistory() {
+  try {
+    const items = await api("/history");
+    const grid = $("#historyGrid");
+    renderGrid(grid, items);
+    if (!items.length) grid.innerHTML = '<div class="empty">Nothing watched yet — mark episodes watched or finish one in the player.</div>';
+  } catch { /* ignore */ }
 }
 
 // The player/detail overlays sit below the sticky topbar; keep their top offset
@@ -420,6 +430,16 @@ $("#detailMore").addEventListener("click", () => {
   $("#detailMore").textContent = clamped ? "More details" : "Less";
 });
 
+// Set the exact watched-through episode (mark / un-watch / mark season).
+async function setProgress(id, ep) {
+  try {
+    const r = await api(`/titles/${id}/progress`, { method: "POST", body: JSON.stringify({ ep }) });
+    if (current && current.id === id) { current.watchedThrough = r.watchedThrough; renderEpisodes(current); loadTracking(id); }
+    invalidateDetail(id);
+    toast(r.watchedThrough > 0 ? `Watched through E${r.watchedThrough}` : "Marked unwatched");
+  } catch (e) { toast(e.message); }
+}
+
 // Seasons: current entry + related prequel/sequel entries, ordered by year.
 function renderSeasons(d) {
   const row = $("#seasonsRow");
@@ -577,8 +597,13 @@ function renderEpisodes(d) {
     return;
   }
   const aired = d.episodeList.filter((e) => e.aired !== false).length;
+  const sn = seasonNumber(d); // real season number (was hardcoded to 1)
+  const seasonWatched = aired > 0 && (d.watchedThrough || 0) >= aired;
   const header = el("div", "season-header");
-  header.innerHTML = `Season 1 <span class="cnt">${aired} of ${d.episodeList.length} available</span>`;
+  header.innerHTML = `<span>Season ${sn} <span class="cnt">${aired} of ${d.episodeList.length} available</span></span>`;
+  const markAll = el("button", "ghost mark-all" + (seasonWatched ? " on" : ""), seasonWatched ? "✓ Season watched" : "Mark season watched");
+  markAll.addEventListener("click", () => setProgress(d.id, seasonWatched ? 0 : aired));
+  header.append(markAll);
   area.append(header);
 
   const list = el("div", "ep-list");
@@ -602,13 +627,19 @@ function renderEpisodes(d) {
         ${pct > 0 && pct < 100 ? `<div class="ep-prog" style="width:${pct}%"></div>` : ""}
       </div>
       <div class="ep-main">
-        <div class="ep-no">S1 E${ep.number}${ep.epTitle ? ` · ${esc(ep.epTitle)}` : ""}</div>
+        <div class="ep-no">S${sn} E${ep.number}${ep.epTitle ? ` · ${esc(ep.epTitle)}` : ""}</div>
         <div class="ep-t">${esc(ep.epTitle ? "" : `Episode ${ep.number}`)}</div>
       </div>
       ${status}`;
     row.title = unaired ? `Episode ${ep.number} — not aired yet` : `Play episode ${ep.number}`;
     if (unaired) row.addEventListener("click", () => toast(`Episode ${ep.number} hasn't aired yet`));
     else row.addEventListener("click", () => play(d.id, ep.number, `${d.english || d.romaji} · E${ep.number}`));
+    if (!unaired) { // watched toggle (doesn't trigger play)
+      const wbtn = el("button", "ep-watch" + (watched ? " on" : ""), watched ? "✓" : "＋");
+      wbtn.title = watched ? "Mark as unwatched" : "Mark watched up to here";
+      wbtn.addEventListener("click", (e) => { e.stopPropagation(); setProgress(d.id, watched ? ep.number - 1 : ep.number); });
+      row.append(wbtn);
+    }
     list.append(row);
   });
   area.append(list);
@@ -883,6 +914,17 @@ $("#watchSeriesLink").addEventListener("click", (e) => {
 });
 $("#watchPrev").addEventListener("click", () => { if (watch) goToEp(watch.ep - 1); });
 $("#watchNext").addEventListener("click", () => { if (watch) goToEp(watch.ep + 1); });
+// Fullscreen the video (the Android client locks landscape on video fullscreen).
+function enterVideoFullscreen() {
+  const v = $("#watchVideo");
+  try {
+    if (v.requestFullscreen) v.requestFullscreen().catch(() => {});
+    else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();      // iOS
+    else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();  // older webkit
+  } catch { /* ignore */ }
+  try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock("landscape").catch(() => {}); } catch { /* unsupported */ }
+}
+$("#watchFs").addEventListener("click", enterVideoFullscreen);
 $("#watchSeason").addEventListener("change", (e) => play(Number(e.target.value), 1));
 $("#anPlay").addEventListener("click", () => { if (watch) { const n = watch.ep + 1; cancelAutoNext(); goToEp(n); } });
 $("#anCancel").addEventListener("click", cancelAutoNext);

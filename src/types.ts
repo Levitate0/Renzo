@@ -94,6 +94,7 @@ export interface UserRecord {
   titleFolder?: Record<string, string>; // titleId -> folder name (default folder if unset)
   titleProvider?: Record<string, string>; // titleId -> preferred release group (all eps/seasons)
   progress?: Record<string, number>;   // titleId -> last episode watched (for "up next")
+  history?: WatchHistoryEntry[];        // recently-watched titles, most-recent first
   watchIds?: Record<string, string>;   // titleId -> stable per-user watch token (for saved titles)
   updatesSeen?: Record<string, number>; // titleId -> aired-count last acknowledged in Updates
   realDebridToken?: string;        // per-user RD creds — required to stream/download
@@ -147,6 +148,13 @@ export interface SmtpSettings {
   user: string;
   pass: string;
   from: string;
+}
+
+/** One entry in a user's watch history. */
+export interface WatchHistoryEntry {
+  id: number;      // AniList title id
+  ep: number;      // episode last watched
+  at: string;      // ISO timestamp
 }
 
 /** A shareable/bookmarkable per-series watch URL id (temp or per-user stable). */
