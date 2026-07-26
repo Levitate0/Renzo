@@ -5,8 +5,8 @@ import { config, assertConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { db } from "./db.js";
 import { api } from "./routes/api.js";
-import { authRoutes, accountRoutes, userAdminRoutes } from "./routes/auth.js";
-import { requireAuth, requireAdmin, type AuthedRequest } from "./services/auth.js";
+import { authRoutes, accountRoutes, userAdminRoutes, inviteRoutes, smtpRoutes } from "./routes/auth.js";
+import { requireAuth, requireStaff, requireOwner, type AuthedRequest } from "./services/auth.js";
 import { queue } from "./services/downloader.js";
 import { userRoot } from "./services/library.js";
 import * as autodl from "./services/autodl.js";
@@ -36,7 +36,9 @@ function securityHeaders(req: Request, res: Response, next: NextFunction): void 
       "form-action 'self'",
     ].join("; "),
   );
-  if (req.secure || config.publicUrl.startsWith("https")) {
+  // HSTS only on genuine HTTPS requests (req.secure via trust-proxy), so plain
+  // HTTP LAN access keeps working.
+  if (req.secure) {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   }
   next();
@@ -83,7 +85,9 @@ async function main() {
   app.use("/api/auth", authRoutes);
   // --- Authenticated self-service + admin ---
   app.use("/api/account", requireAuth, accountRoutes);
-  app.use("/api/users", requireAuth, requireAdmin, userAdminRoutes);
+  app.use("/api/users", requireAuth, requireStaff, userAdminRoutes);
+  app.use("/api/invites", requireAuth, requireStaff, inviteRoutes);
+  app.use("/api/smtp", requireAuth, requireOwner, smtpRoutes);
   // --- Everything else requires a session ---
   app.use("/api", requireAuth, api);
 
