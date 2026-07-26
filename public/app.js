@@ -1,5 +1,9 @@
 "use strict";
 
+// history.length when the app loaded — lets Back tell genuine in-app navigation
+// (hash pushes) from pre-load entries, so deep-linked users are never ejected.
+const START_LEN = history.length;
+
 // ---------------------------------------------------------------------------
 // tiny helpers
 // ---------------------------------------------------------------------------
@@ -357,6 +361,7 @@ async function enterDetail(id) {
 async function renderDetail(id) {
   try {
     const d = await api(`/titles/${id}`);
+    if (parseTitleHash()?.id !== id) return; // a newer navigation superseded this render
     current = d;
     detailShownId = d.id;
     $("#detailBanner").style.backgroundImage = `url(${d.banner || d.poster || ""})`;
@@ -395,10 +400,19 @@ async function renderDetail(id) {
   }
 }
 
+// Server state for a title changed (episode watched / downloaded): drop the
+// instant-Back cache so the series page re-renders next open — and refresh it
+// live if it's the page currently on screen.
+function invalidateDetail(titleId) {
+  if (detailShownId !== titleId) return;
+  detailShownId = null;
+  if (!$("#detail").classList.contains("hidden") && parseTitleHash()?.id === titleId) enterDetail(titleId);
+}
+
 // Detail page controls (bound once).
 $("#detailBack").addEventListener("click", (e) => {
   e.preventDefault();
-  if (history.length > 1) history.back(); else location.hash = "";
+  if (history.length > START_LEN) history.back(); else location.hash = "";
 });
 $("#detailMore").addEventListener("click", () => {
   const clamped = $("#detailDesc").classList.toggle("clamp");
@@ -852,13 +866,18 @@ function startAutoNext(nextEp) {
 // --- watch controls (bound once) -------------------------------------------
 $("#watchBack").addEventListener("click", () => {
   const tid = watch && watch.titleId;
-  if (history.length > 1) history.back();
+  if (history.length > START_LEN) history.back();
   else location.hash = tid ? `#/title/${tid}` : ""; // deep-linked → fall back to the series page
 });
 // The series title (orange) doubles as a back-to-series link, Crunchyroll-style.
+// Pop back to the series (no duplicate entry) when it's the entry behind us,
+// else navigate (deep-link case with no series page in history).
 $("#watchSeriesLink").addEventListener("click", (e) => {
   e.preventDefault();
-  if (watch) location.hash = `#/title/${watch.titleId}`;
+  if (!watch) return;
+  const tid = watch.titleId;
+  if (detailShownId === tid && history.length > START_LEN) history.back();
+  else location.hash = `#/title/${tid}`;
 });
 $("#watchPrev").addEventListener("click", () => { if (watch) goToEp(watch.ep - 1); });
 $("#watchNext").addEventListener("click", () => { if (watch) goToEp(watch.ep + 1); });
@@ -882,7 +901,7 @@ $("#watchVideo").addEventListener("ended", async () => {
   try {
     await api(`/titles/${titleId}/watched/${endedEp}`, { method: "POST" });
     refreshUpdatesBadge();
-    if (detailShownId === titleId) detailShownId = null; // series page re-renders Watched on Back
+    invalidateDetail(titleId); // series page reflects the new Watched state on Back / live
   } catch { /* trackers optional */ }
   if (!watch || watch.titleId !== titleId || watch.ep !== endedEp) return; // exited or moved on
   const max = airedCount(detail);
@@ -891,6 +910,7 @@ $("#watchVideo").addEventListener("ended", async () => {
 
 function stopPoller(iv) { clearInterval(iv); watchPollers.delete(iv); }
 function watchJob(jobId) {
+  const jobTitleId = watch && watch.titleId; // which title this download belongs to
   const iv = setInterval(async () => {
     try {
       const jobs = await api("/jobs");
@@ -901,6 +921,7 @@ function watchJob(jobId) {
         if (watch) $("#watchNote").textContent = "Saved to library ✓";
         toast("Download complete");
         loadJobs();
+        invalidateDetail(jobTitleId); // series page shows the new ✓ Saved on Back / live
       } else if (j.status === "failed") {
         stopPoller(iv);
         $("#watchNote").textContent = "Download failed: " + (j.message || "");
@@ -1248,11 +1269,13 @@ function startApp(user) {
   loadJobs();
   refreshUpdatesBadge();
   if (!jobsTimer) jobsTimer = setInterval(loadJobs, 4000);
-  if (!parseWatchHash() && !user.realDebridConnected) {
+  route(); // honor a bookmarked #/watch or #/title URL first (shows the overlay)
+  // Only nudge to connect Real-Debrid when NOT deep-linking into an overlay —
+  // otherwise showDetailView/showWatchView would instantly hide the prompt.
+  if (!parseWatchHash() && !parseTitleHash() && !user.realDebridConnected) {
     toast("Connect Real-Debrid in Settings to start streaming");
     openSettings("realdebrid");
   }
-  route(); // honor a bookmarked #/watch/... URL
 }
 
 // ---------------------------------------------------------------------------
