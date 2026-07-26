@@ -123,7 +123,8 @@ function applyAddDefaults(user: UserRecord, t: Title): void {
     user.autoTitles ??= [];
     if (!user.autoTitles.includes(t.id)) user.autoTitles.push(t.id);
   }
-  if (d.track && isTrackStatus(d.track) && (user.anilistToken || user.malToken)) {
+  if (d.track && isTrackStatus(d.track)) {
+    // setTracking resolves the tracker token itself (incl. the auth site).
     tracker.setTracking(t, user, { status: d.track }).catch((e) => log.warn("addDefaults track", t.id, String(e)));
   }
 }
@@ -137,7 +138,9 @@ function applyAddDefaults(user: UserRecord, t: Title): void {
  */
 async function syncWatchStatus(t: Title, user: UserRecord): Promise<void> {
   if (user.autoStatus === false) return; // per-user "Auto-update status" set to Off
-  if (!user.anilistToken && !user.malToken) return;
+  // NB: don't gate on user.anilistToken/malToken — trackers are usually linked
+  // via the auth site, so those are empty. setTracking resolves the token itself
+  // (user → env → auth site) and no-ops when none is available.
   const finished = t.type === "movie" || t.airingStatus === "FINISHED";
   const total = t.type === "movie" ? 1 : (t.episodeCount ?? availableEpisodes(t));
   const watched = watchedEp(user, t.id);

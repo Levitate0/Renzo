@@ -2,11 +2,12 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { logger } from "../logger.js";
+import { db } from "../db.js";
 import * as anilist from "../services/anilist.js";
 import * as apikeys from "../services/apikeys.js";
 import * as library from "../services/library.js";
-import { getOrCreateTitle, resolveStream, availableEpisodes } from "../services/downloader.js";
-import type { UserRecord } from "../types.js";
+import { getOrCreateTitle, resolveStream, availableEpisodes, userFolders, folderOf } from "../services/downloader.js";
+import type { UserRecord, Title } from "../types.js";
 
 // Public API consumed by the Renzo Jellyfin plugin (catalog / search / episodes /
 // stream). Every request under /api carries a PER-USER API key: it resolves to
@@ -46,7 +47,45 @@ function toItem(m: anilist.AniListMedia) {
   };
 }
 
+// Same card shape as toItem(), but from a stored Renzo Title (library items).
+function toItemFromTitle(t: Title) {
+  return {
+    id: t.id,
+    name: t.english || t.romaji || `#${t.id}`,
+    year: t.year ?? null,
+    overview: (t.description || "").replace(/<[^>]+>/g, "").trim(),
+    poster: t.poster || null,
+    banner: t.banner || null,
+    type: t.type,
+    episodes: t.type === "movie" ? 1 : t.episodeCount ?? null,
+    genres: (t.genres || []).slice(0, 4),
+  };
+}
+
 jellyfinPluginRoutes.use("/api", requireKey);
+
+// This user's library organisation: physical folders/collections + named lists
+// (watchlist, favorites, custom). The plugin turns each into a channel folder.
+jellyfinPluginRoutes.get("/api/groups", (req, res) => {
+  const user = (req as KeyedRequest).renzoUser!;
+  const folders = userFolders(user);
+  const lists = Object.keys(user.lists ?? {}).filter((n) => (user.lists[n]?.length ?? 0) > 0);
+  res.json({ folders, lists });
+});
+
+// Titles in one of this user's folders (?folder=) or lists (?list=), else the
+// whole library. Returns library-card items (from stored Title metadata).
+jellyfinPluginRoutes.get("/api/library", (req, res) => {
+  const user = (req as KeyedRequest).renzoUser!;
+  const folder = String(req.query.folder ?? "");
+  const list = String(req.query.list ?? "");
+  let ids: number[] = [];
+  if (list) ids = user.lists?.[list] ?? [];
+  else if (folder) ids = (user.library ?? []).filter((id) => folderOf(user, id) === folder);
+  else ids = user.library ?? [];
+  const items = ids.map((id) => db.getTitle(id)).filter((t): t is Title => !!t).map(toItemFromTitle);
+  res.json(items);
+});
 
 // Catalog by category (trending / season / recommended) or a search query.
 // The plugin exposes each category as a folder, so browsing/refreshing indexes
