@@ -33,7 +33,7 @@ function clientIp(req: Request): string {
 function publicUser(u: {
   id: string; username: string; role: string; email?: string;
   realDebridToken?: string; anilistToken?: string; malToken?: string; theme?: ThemeSettings;
-  downloadsDenied?: boolean; addDefaults?: AddDefaults; autoStatus?: boolean;
+  downloadsDenied?: boolean; addDefaults?: AddDefaults; autoStatus?: boolean; ccLang?: string;
 }) {
   return {
     id: u.id,
@@ -47,6 +47,7 @@ function publicUser(u: {
     downloadsDenied: Boolean(u.downloadsDenied),
     addDefaults: u.addDefaults ?? null,
     autoStatus: u.autoStatus !== false, // default on
+    ccLang: u.ccLang ?? "en",           // preferred caption language (default English)
   };
 }
 
@@ -301,6 +302,10 @@ accountRoutes.post("/add-defaults", wrap(async (req: AuthedRequest, res) => {
   }
   user.addDefaults = Object.keys(defaults).length ? defaults : undefined;
   if ("autoStatus" in body) user.autoStatus = Boolean(body.autoStatus); // auto-update tracking status
+  if ("ccLang" in body) {
+    const cc = String(body.ccLang ?? "").trim().toLowerCase();
+    user.ccLang = /^(off|[a-z]{2,3})$/.test(cc) ? cc : "en"; // preferred caption language
+  }
   await db.save();
   res.json(publicUser(user));
 }));

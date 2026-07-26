@@ -760,3 +760,64 @@ html { overflow-x: clip; }                 /* no horizontal page scroll (sticky-
   backdrop-filter: blur(6px); display: grid; place-items: center;
 }
 .watch-fs:hover { background: rgba(10,11,16,.85); }
+
+/* ---------------------------------------------------------------------------
+   Custom player (reliable captions: cues rendered into .cc-box, not native)
+--------------------------------------------------------------------------- */
+.watch-stage { cursor: default; }
+.watch-stage.hide-controls { cursor: none; }
+.watch-stage #watchVideo { object-fit: contain; }
+
+/* caption overlay */
+.cc-box {
+  position: absolute; left: 0; right: 0; bottom: 84px; z-index: 3;
+  text-align: center; pointer-events: none; padding: 0 6%; transition: bottom .2s;
+}
+.watch-stage.hide-controls .cc-box { bottom: 40px; }
+.cc-box .cc-line {
+  display: inline-block; background: rgba(0,0,0,.72); color: #fff;
+  font-size: clamp(15px, 2.5vw, 26px); line-height: 1.35; padding: 2px 9px;
+  border-radius: 5px; margin: 2px auto; text-shadow: 0 1px 2px rgba(0,0,0,.8);
+}
+
+/* center play/pause */
+.pc-center { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; transition: opacity .15s; z-index: 3; }
+.watch-stage.paused .pc-center { opacity: 1; }
+.pc-big {
+  pointer-events: auto; width: 74px; height: 74px; border-radius: 50%;
+  background: rgba(10,11,16,.55); border: 1px solid rgba(255,255,255,.25); color: #fff;
+  font-size: 26px; cursor: pointer; backdrop-filter: blur(4px);
+}
+.pc-big:hover { background: rgba(10,11,16,.8); }
+
+/* control bar */
+.pc-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
+  display: flex; align-items: center; gap: 10px; padding: 22px 14px 12px;
+  background: linear-gradient(transparent, rgba(0,0,0,.78)); transition: opacity .2s;
+}
+.watch-stage.hide-controls .pc-bar,
+.watch-stage.hide-controls .watch-back { opacity: 0; pointer-events: none; }
+.pc-btn { background: none; border: 0; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; padding: 4px 6px; opacity: .92; }
+.pc-btn:hover { opacity: 1; }
+.pc-btn.on { color: var(--accent); }
+.pc-time { color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 40px; text-align: center; }
+.pc-seek { flex: 1; min-width: 60px; -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px; background: rgba(255,255,255,.28); cursor: pointer; }
+.pc-seek::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+.pc-seek::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: var(--accent); cursor: pointer; }
+
+/* caption language menu */
+.cc-menu {
+  position: absolute; right: 14px; bottom: 62px; z-index: 6; min-width: 150px;
+  background: rgba(16,17,24,.97); border: 1px solid var(--line-2); border-radius: 10px;
+  padding: 6px; box-shadow: 0 14px 44px rgba(0,0,0,.55);
+}
+.cc-menu.hidden { display: none; }
+.cc-menu .cc-head { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 4px 10px 6px; }
+.cc-item { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--fg); padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.cc-item:hover { background: var(--s3); }
+.cc-item.on { color: var(--accent); font-weight: 600; }
+
+/* fullscreen: fill the screen, keep our controls + captions */
+.watch-stage:fullscreen { max-height: none; aspect-ratio: auto; width: 100vw; height: 100vh; }
+.watch-stage:-webkit-full-screen { max-height: none; aspect-ratio: auto; width: 100vw; height: 100vh; }

@@ -101,6 +101,7 @@ export interface UserRecord {
   apiKey?: string;                 // per-user API key (Jellyfin plugin / external clients)
   downloadsDenied?: boolean;       // staff can block this user from ALL downloads (streaming still allowed)
   autoStatus?: boolean;            // auto-manage tracking status as you watch (default on; undefined = on)
+  ccLang?: string;                 // preferred subtitle/caption language ("en", "ja", … or "off")
   autoTitles?: number[];           // titles this user auto-downloads to THEIR OWN Real-Debrid
   addDefaults?: AddDefaults;       // states applied when a title first enters this user's library
   anilistToken?: string;           // per-user tracker connections

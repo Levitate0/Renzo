@@ -819,15 +819,16 @@ async function goToEp(ep) {
     badge.textContent = r.source === "local" ? "● Local file" : "● Real-Debrid";
     badge.className = "source-badge " + (r.source === "local" ? "local" : "rd");
     video.src = r.url;
-    (r.subtitles || []).forEach((s, i) => {
+    (r.subtitles || []).forEach((s) => {
       const track = el("track");
       track.kind = "subtitles"; track.label = s.label || s.lang; track.srclang = s.lang || "en";
-      track.src = `/api/captions/${s.id}.vtt`; if (i === 0) track.default = true;
+      track.src = `/api/captions/${s.id}.vtt`;
       video.append(track);
     });
     video.load();
     video.play().catch(() => {});
-    if (video.textTracks[0]) video.textTracks[0].mode = "showing";
+    setupCaptions(video);   // custom caption rendering + language menu + preferred language
+    showControls();
     $("#watchDownload").style.display = (me && me.downloadsDenied) ? "none" : "";
     $("#watchDownload").textContent = r.source === "local" ? "✓ In library" : "⬇ Download to library";
     $("#watchDownload").disabled = r.source === "local";
@@ -864,6 +865,10 @@ function showWatchView() {
 }
 function exitWatch() {
   const video = $("#watchVideo");
+  if (ccActive >= 0 && ccTracks[ccActive]) ccTracks[ccActive].track.removeEventListener("cuechange", ccCueHandler);
+  ccActive = -1; $("#ccBox").innerHTML = ""; $("#ccMenu").classList.add("hidden");
+  if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
+  clearTimeout(hideTimer);
   video.pause(); video.removeAttribute("src"); clearTracks(video); video.load();
   cancelAutoNext();
   watchPollers.forEach((iv) => clearInterval(iv)); watchPollers.clear();
@@ -914,17 +919,125 @@ $("#watchSeriesLink").addEventListener("click", (e) => {
 });
 $("#watchPrev").addEventListener("click", () => { if (watch) goToEp(watch.ep - 1); });
 $("#watchNext").addEventListener("click", () => { if (watch) goToEp(watch.ep + 1); });
-// Fullscreen the video (the Android client locks landscape on video fullscreen).
+// --- Custom player: controls + captions rendered by us (reliable) ----------
+let ccTracks = [], ccActive = -1, ccCueHandler = null, hideTimer = null;
+const CC_NAMES = { en: "English", ja: "Japanese", es: "Spanish", "es-la": "Spanish (LA)", pt: "Portuguese",
+  "pt-br": "Portuguese (BR)", fr: "French", de: "German", it: "Italian", ru: "Russian", ar: "Arabic",
+  zh: "Chinese", ko: "Korean", id: "Indonesian", ms: "Malay", vi: "Vietnamese", th: "Thai", tr: "Turkish", hi: "Hindi", pl: "Polish" };
+function ccName(lang) { const l = (lang || "").toLowerCase(); return CC_NAMES[l] || (l ? l.toUpperCase() : "Unknown"); }
+function fmtTime(s) { s = Math.max(0, s | 0); const h = (s / 3600) | 0, m = ((s % 3600) / 60) | 0, ss = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`; }
+
+function showControls() {
+  const s = $("#watchStage"); if (!s) return;
+  s.classList.remove("hide-controls");
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => { const v = $("#watchVideo"); if (v && !v.paused) s.classList.add("hide-controls"); }, 3000);
+}
+function renderCues(track) {
+  const box = $("#ccBox"); box.innerHTML = "";
+  const cues = track && track.activeCues;
+  if (!cues) return;
+  for (let i = 0; i < cues.length; i++) {
+    const line = el("div", "cc-line");
+    try { line.appendChild(cues[i].getCueAsHTML()); } catch { line.textContent = cues[i].text || ""; }
+    box.appendChild(line);
+  }
+}
+function applyCaption(idx) {
+  if (ccActive >= 0 && ccTracks[ccActive]) ccTracks[ccActive].track.removeEventListener("cuechange", ccCueHandler);
+  ccActive = idx;
+  $("#ccBox").innerHTML = "";
+  $("#pcCc").classList.toggle("on", idx >= 0);
+  if (idx < 0 || !ccTracks[idx]) return;
+  const track = ccTracks[idx].track;
+  track.mode = "hidden";                 // parse cues but let us render them
+  ccCueHandler = () => renderCues(track);
+  track.addEventListener("cuechange", ccCueHandler);
+  renderCues(track);
+}
+function buildCcMenu() {
+  const menu = $("#ccMenu");
+  let html = '<div class="cc-head">Subtitles</div>';
+  html += `<button class="cc-item${ccActive < 0 ? " on" : ""}" data-idx="-1">Off</button>`;
+  ccTracks.forEach((t, i) => { html += `<button class="cc-item${ccActive === i ? " on" : ""}" data-idx="${i}">${esc(ccName(t.lang))}</button>`; });
+  menu.innerHTML = html;
+  menu.querySelectorAll(".cc-item").forEach((b) => b.addEventListener("click", () => {
+    const idx = Number(b.dataset.idx);
+    applyCaption(idx); buildCcMenu(); menu.classList.add("hidden");
+    saveCcLang(idx < 0 ? "off" : ccTracks[idx].lang);
+  }));
+}
+function setupCaptions(video) {
+  if (ccActive >= 0 && ccTracks[ccActive]) ccTracks[ccActive].track.removeEventListener("cuechange", ccCueHandler);
+  ccTracks = []; ccActive = -1;
+  const tt = video.textTracks;
+  for (let i = 0; i < tt.length; i++) { tt[i].mode = "hidden"; ccTracks.push({ lang: (tt[i].language || "en").toLowerCase(), track: tt[i] }); }
+  const pref = (me && me.ccLang) || "en";
+  let idx = -1;
+  if (pref !== "off" && ccTracks.length) {
+    idx = ccTracks.findIndex((t) => t.lang === pref || t.lang.startsWith(pref) || pref.startsWith(t.lang));
+    if (idx < 0) idx = 0;                 // no match for the preferred language → first available
+  }
+  applyCaption(idx);
+  buildCcMenu();
+}
+async function saveCcLang(lang) {
+  if (me) me.ccLang = lang;
+  try { await api("/account/add-defaults", { method: "POST", body: JSON.stringify({ ccLang: lang }) }); } catch { /* ignore */ }
+}
+
+// Fullscreen the STAGE (keeps our controls + captions); the Android client locks landscape.
 function enterVideoFullscreen() {
-  const v = $("#watchVideo");
+  const stage = $("#watchStage"), v = $("#watchVideo");
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
+    return;
+  }
   try {
-    if (v.requestFullscreen) v.requestFullscreen().catch(() => {});
-    else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();      // iOS
-    else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();  // older webkit
+    if (stage.requestFullscreen) stage.requestFullscreen().catch(() => {});
+    else if (stage.webkitRequestFullscreen) stage.webkitRequestFullscreen();
+    else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen(); // iOS: video-only
   } catch { /* ignore */ }
   try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock("landscape").catch(() => {}); } catch { /* unsupported */ }
 }
-$("#watchFs").addEventListener("click", enterVideoFullscreen);
+
+let playerInit = false;
+function initPlayer() {
+  if (playerInit) return; playerInit = true;
+  const v = $("#watchVideo"), stage = $("#watchStage");
+  let scrubbing = false;
+  const toggle = () => { if (v.paused) v.play().catch(() => {}); else v.pause(); };
+  $("#pcPlay").addEventListener("click", toggle);
+  $("#pcBig").addEventListener("click", toggle);
+  v.addEventListener("click", toggle);
+  v.addEventListener("play", () => { $("#pcPlay").textContent = "❚❚"; $("#pcBig").textContent = "❚❚"; stage.classList.remove("paused"); showControls(); });
+  v.addEventListener("pause", () => { $("#pcPlay").textContent = "▶"; $("#pcBig").textContent = "▶"; stage.classList.add("paused"); showControls(); });
+  v.addEventListener("timeupdate", () => {
+    if (!scrubbing && v.duration) $("#pcSeek").value = String(((v.currentTime / v.duration) * 1000) | 0);
+    $("#pcCur").textContent = fmtTime(v.currentTime);
+  });
+  v.addEventListener("loadedmetadata", () => { $("#pcDur").textContent = fmtTime(v.duration); });
+  v.addEventListener("volumechange", () => { $("#pcMute").textContent = (v.muted || !v.volume) ? "🔇" : "🔊"; });
+  $("#pcSeek").addEventListener("input", () => { scrubbing = true; if (v.duration) $("#pcCur").textContent = fmtTime(v.duration * $("#pcSeek").value / 1000); });
+  $("#pcSeek").addEventListener("change", () => { if (v.duration) v.currentTime = v.duration * $("#pcSeek").value / 1000; scrubbing = false; });
+  $("#pcMute").addEventListener("click", () => { v.muted = !v.muted; });
+  const rates = [1, 1.25, 1.5, 2, 0.5]; let ri = 0;
+  $("#pcRate").addEventListener("click", () => { ri = (ri + 1) % rates.length; v.playbackRate = rates[ri]; $("#pcRate").textContent = rates[ri] + "×"; });
+  $("#pcCc").addEventListener("click", (e) => { e.stopPropagation(); $("#ccMenu").classList.toggle("hidden"); });
+  $("#pcFs").addEventListener("click", enterVideoFullscreen);
+  stage.addEventListener("mousemove", showControls);
+  stage.addEventListener("touchstart", showControls, { passive: true });
+  stage.addEventListener("click", (e) => { if (!e.target.closest("#ccMenu") && !e.target.closest("#pcCc")) $("#ccMenu").classList.add("hidden"); });
+  document.addEventListener("keydown", (e) => {
+    if (!watch || document.querySelector(".modal:not(.hidden)")) return;
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+    if (e.key === " " || e.key === "k") { e.preventDefault(); toggle(); }
+    else if (e.key === "f") enterVideoFullscreen();
+    else if (e.key === "ArrowRight") v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 5);
+    else if (e.key === "ArrowLeft") v.currentTime = Math.max(0, v.currentTime - 5);
+  });
+}
+initPlayer();
 $("#watchSeason").addEventListener("change", (e) => play(Number(e.target.value), 1));
 $("#anPlay").addEventListener("click", () => { if (watch) { const n = watch.ep + 1; cancelAutoNext(); goToEp(n); } });
 $("#anCancel").addEventListener("click", cancelAutoNext);
@@ -1577,6 +1690,7 @@ async function loadDefaults() {
   const d = (me && me.addDefaults) || {};
   $("#defTrack").value = d.track || "";
   $("#defAutoStatus").value = (me && me.autoStatus === false) ? "off" : "on";
+  $("#defCc").value = (me && me.ccLang) || "en";
   $("#defAuto").checked = !!d.autoDownload;
   $("#defAutoRow").style.display = (me && me.downloadsDenied) ? "none" : ""; // can't auto-download if denied
   try {
@@ -1596,9 +1710,10 @@ $("#defSave")?.addEventListener("click", async () => {
         autoDownload: $("#defAuto").checked,
         folder: $("#defFolder").value,
         autoStatus: $("#defAutoStatus").value === "on",
+        ccLang: $("#defCc").value,
       }),
     });
-    if (me) { me.addDefaults = u.addDefaults; me.autoStatus = u.autoStatus; }
+    if (me) { me.addDefaults = u.addDefaults; me.autoStatus = u.autoStatus; me.ccLang = u.ccLang; }
     toast("Library defaults saved");
   } catch (e) { toast(e.message); }
 });
