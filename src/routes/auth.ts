@@ -7,7 +7,7 @@ import * as auth from "../services/auth.js";
 import * as rd from "../services/realdebrid.js";
 import * as mailer from "../services/mailer.js";
 import type { AuthedRequest } from "../services/auth.js";
-import type { Role, InviteRecord, SmtpSettings } from "../types.js";
+import type { Role, InviteRecord, SmtpSettings, ThemeSettings } from "../types.js";
 
 const log = logger("auth-routes");
 export const authRoutes = Router();
@@ -30,7 +30,7 @@ function clientIp(req: Request): string {
 
 function publicUser(u: {
   id: string; username: string; role: string; email?: string;
-  realDebridToken?: string; anilistToken?: string; malToken?: string;
+  realDebridToken?: string; anilistToken?: string; malToken?: string; theme?: ThemeSettings;
 }) {
   return {
     id: u.id,
@@ -40,6 +40,7 @@ function publicUser(u: {
     realDebridConnected: Boolean(u.realDebridToken),
     anilistConnected: Boolean(u.anilistToken),
     malConnected: Boolean(u.malToken),
+    theme: u.theme ?? null,
   };
 }
 
@@ -130,6 +131,68 @@ authRoutes.post("/invite/accept", wrap(async (req, res) => {
   res.json({ user: publicUser(user) });
 }));
 
+// --- Password reset (public; username-gated + no account enumeration) -------
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+}
+
+// Requires the USERNAME. Always responds identically so it can't be used to
+// discover which accounts (or emails) exist. Only sends a link when the account
+// exists, has an email, and SMTP is configured.
+authRoutes.post("/forgot", wrap(async (req, res) => {
+  const ip = clientIp(req);
+  if (!auth.forgotAllowed(ip)) {
+    return res.status(429).json({ error: "Too many requests — try again in 15 minutes" });
+  }
+  const username = String(req.body?.username ?? "").trim();
+  const user = username ? db.getUserByName(username) : undefined;
+  if (user && user.id !== "system" && user.email && mailer.smtpConfigured()) {
+    const token = randomBytes(24).toString("base64url");
+    user.resetToken = token;
+    user.resetExpires = Date.now() + 30 * 60_000;
+    await db.save();
+    const link = `${config.publicUrl}/?reset=${token}`;
+    mailer.sendMail(
+      user.email,
+      "Reset your Renzo password",
+      `<p>A password reset was requested for <b>${escapeHtml(user.username)}</b>.</p>
+       <p><a href="${link}">Reset your password</a> — valid for 30 minutes.</p>
+       <p>If you didn't request this, ignore this email.</p>`,
+      `Reset your Renzo password: ${link} (valid 30 minutes). If you didn't request this, ignore this email.`,
+    ).catch((e) => log.warn("reset mail failed", String(e)));
+  } else {
+    await auth.dummyVerify("timing-equalizer"); // keep response time uniform
+  }
+  res.json({ ok: true });
+}));
+
+// Validate a reset token for the reset page.
+authRoutes.get("/reset/:token", wrap(async (req, res) => {
+  const user = db.users().find((u) => u.resetToken === req.params.token && (u.resetExpires ?? 0) > Date.now());
+  if (!user) return res.status(404).json({ valid: false, error: "This reset link is invalid or has expired" });
+  res.json({ valid: true, username: user.username });
+}));
+
+authRoutes.post("/reset", wrap(async (req, res) => {
+  const token = String(req.body?.token ?? "");
+  const user = token
+    ? db.users().find((u) => u.resetToken === token && (u.resetExpires ?? 0) > Date.now())
+    : undefined;
+  if (!user) return res.status(400).json({ error: "This reset link is invalid or has expired" });
+  const password = String(req.body?.password ?? "");
+  const shapeErr = auth.validCredentialShape(user.username, password);
+  if (shapeErr) return res.status(400).json({ error: shapeErr });
+  user.passHash = await auth.hashPassword(password);
+  user.resetToken = undefined;
+  user.resetExpires = undefined;
+  await db.removeSessionsForUser(user.id); // a reset invalidates every existing session
+  await db.save();
+  const session = await auth.createSession(user.id);
+  res.setHeader("Set-Cookie", auth.sessionCookie(session, config.sessionTtlDays * 24 * 3600, req.secure));
+  log.info(`password reset completed: ${user.username}`);
+  res.json({ user: publicUser(user) });
+}));
+
 // --- Authenticated self-service ---------------------------------------------
 // (mounted behind requireAuth in server.ts via the /api/account prefix)
 export const accountRoutes = Router();
@@ -152,6 +215,35 @@ accountRoutes.post("/password", wrap(async (req: AuthedRequest, res) => {
   await db.removeSession(currentToken ?? "");
   res.setHeader("Set-Cookie", auth.sessionCookie(fresh, config.sessionTtlDays * 24 * 3600, req.secure));
   res.json({ ok: true });
+}));
+
+// Save my appearance/theme (validated; applied client-side).
+accountRoutes.post("/theme", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  if (user.id === "system") return res.status(400).json({ error: "auth is disabled" });
+  const body = req.body ?? {};
+  const hex = (v: unknown) => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : undefined);
+  const theme: ThemeSettings = {
+    preset: (String(body.preset ?? "renzo").replace(/[^\w-]/g, "").slice(0, 32)) || "renzo",
+  };
+  const accent = hex(body.accent); if (accent) theme.accent = accent;
+  const bg = hex(body.bg); if (bg) theme.bg = bg;
+  user.theme = theme;
+  await db.save();
+  res.json(publicUser(user));
+}));
+
+// Change my own email (used for password-reset delivery).
+accountRoutes.post("/email", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  if (user.id === "system") return res.status(400).json({ error: "auth is disabled" });
+  const email = String(req.body?.email ?? "").trim();
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return res.status(400).json({ error: "Invalid email address" });
+  }
+  user.email = email || undefined;
+  await db.save();
+  res.json(publicUser(user));
 }));
 
 accountRoutes.post("/trackers", wrap(async (req: AuthedRequest, res) => {

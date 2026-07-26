@@ -149,6 +149,17 @@ export function recordLoginSuccess(ip: string): void {
   attempts.delete(ip);
 }
 
+// Separate throttle for password-reset requests (per IP): a real per-request
+// limiter so /forgot can't be used to spam reset emails or probe the endpoint.
+const forgotHits = new Map<string, number[]>();
+export function forgotAllowed(ip: string): boolean {
+  const now = Date.now();
+  const hits = (forgotHits.get(ip) ?? []).filter((t) => now - t < LOCKOUT_MS);
+  hits.push(now);
+  forgotHits.set(ip, hits);
+  return hits.length <= 3; // max 3 reset requests / 15 min / IP
+}
+
 // ---------------------------------------------------------------------------
 // Cookies & middleware
 // ---------------------------------------------------------------------------
