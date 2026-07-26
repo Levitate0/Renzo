@@ -320,6 +320,7 @@ async function openDetail(id) {
     renderSeasons(d);
     renderEpisodes(d);
     loadProviders(d);          // async — populates the release-group picker
+    loadTracking(d.id);        // async — AniList/MAL list status
     openModal("#detail");
   } catch (e) { toast("Detail failed: " + e.message); }
 }
@@ -371,6 +372,44 @@ async function loadProviders(d) {
     sel.value = d.provider || "";
   }
 }
+
+// --- Per-title tracking (AniList/MAL status, progress, score) --------------
+async function loadTracking(id) {
+  const row = $("#trackRow");
+  const controls = row.querySelectorAll("select, input, button");
+  try {
+    const t = await api(`/titles/${id}/tracking`);
+    if (!current || current.id !== id) return; // detail changed while loading
+    const providers = [];
+    if ("anilist" in t) providers.push("AniList");
+    if ("mal" in t) providers.push("MyAnimeList");
+    if (!providers.length) {
+      controls.forEach((e) => (e.disabled = true));
+      $("#trackStatus").value = ""; $("#trackProgress").value = ""; $("#trackScore").value = ""; $("#trackTotal").textContent = "";
+      $("#trackNote").textContent = "Connect AniList or MAL in Settings to track";
+      return;
+    }
+    controls.forEach((e) => (e.disabled = false));
+    const e = t.anilist || t.mal || {};          // prefer AniList's values for display
+    $("#trackStatus").value = e.status || "";
+    $("#trackProgress").value = e.progress || 0;
+    $("#trackScore").value = e.score || "";
+    $("#trackTotal").textContent = e.total ? `/ ${e.total}` : "";
+    $("#trackNote").textContent = "Syncs to " + providers.join(" + ");
+  } catch { $("#trackNote").textContent = ""; }
+}
+$("#trackSave").addEventListener("click", async () => {
+  if (!current) return;
+  const body = { progress: Number($("#trackProgress").value) || 0 };
+  if ($("#trackStatus").value) body.status = $("#trackStatus").value;
+  if ($("#trackScore").value !== "") body.score = Number($("#trackScore").value);
+  $("#trackSave").disabled = true;
+  try {
+    await api(`/titles/${current.id}/tracking`, { method: "POST", body: JSON.stringify(body) });
+    toast("Tracking synced");
+    loadTracking(current.id);
+  } catch (e) { toast(e.message); $("#trackSave").disabled = false; }
+});
 
 $("#providerSelect").addEventListener("change", async () => {
   if (!current) return;

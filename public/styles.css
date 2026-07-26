@@ -563,3 +563,15 @@ body.watching { overflow: hidden; }
 .tp-sub { color: var(--muted); font-size: 13px; margin: 2px 0 12px; }
 .tp-actions { display: flex; gap: 8px; }
 .tp-actions .primary, .tp-actions .ghost { padding: 8px 12px; font-size: 13px; }
+
+/* header brand: use the login banner image instead of icon+text */
+.brand-logo { height: 30px; width: auto; display: block; }
+
+/* per-title tracking row (detail page) */
+.track-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.track-label { color: var(--muted); font-size: 13px; }
+.track-sel, .track-num { background: var(--s2); border: 1px solid var(--line); color: var(--fg); border-radius: var(--r-sm); padding: 7px 9px; outline: none; }
+.track-sel:focus, .track-num:focus { border-color: var(--accent-2); }
+.track-num { width: 62px; }
+.track-total { color: var(--muted); font-size: 13px; }
+.track-row [disabled] { opacity: .5; }

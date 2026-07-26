@@ -14,7 +14,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><img src="/brand/renzo-logo.png" alt="" class="brand-mark" /><span class="brand-name">Renzo</span></div>
+    <div class="brand"><img src="/brand/renzo-banner.png" alt="Renzo" class="brand-logo" /></div>
     <nav class="tabs">
       <button data-tab="discover" class="active">Discover</button>
       <button data-tab="library">Library</button>
@@ -130,6 +130,23 @@
               <button id="autoBtn" class="ghost hidden">Auto: off</button>
               <label class="folder-pick" title="Folder">📁 <select id="folderSelect"></select></label>
               <label class="folder-pick" title="Preferred release group (all episodes)">▤ <select id="providerSelect"></select></label>
+            </div>
+            <div class="track-row" id="trackRow">
+              <span class="track-label">Track</span>
+              <select id="trackStatus" class="track-sel">
+                <option value="">— Not tracked —</option>
+                <option value="watching">Watching</option>
+                <option value="completed">Completed</option>
+                <option value="planning">Plan to watch</option>
+                <option value="paused">Paused</option>
+                <option value="dropped">Dropped</option>
+                <option value="rewatching">Rewatching</option>
+              </select>
+              <input id="trackProgress" class="track-num" type="number" min="0" title="Episodes watched" />
+              <span id="trackTotal" class="track-total"></span>
+              <input id="trackScore" class="track-num" type="number" min="0" max="10" placeholder="/10" title="Score out of 10" />
+              <button id="trackSave" class="ghost">Sync</button>
+              <span id="trackNote" class="hint"></span>
             </div>
           </div>
         </div>
