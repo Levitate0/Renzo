@@ -97,7 +97,11 @@ authRoutes.post("/login", wrap(async (req, res) => {
   auth.recordLoginSuccess(ip);
   log.info(`login ok: ${user.username} from ${ip}`);
   const token = await auth.createSession(user.id);
-  res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
+  // "Remember me" (default on): a persistent cookie kept for the full session
+  // TTL. Unchecked: a session cookie the browser drops when it closes.
+  const remember = req.body?.remember !== false;
+  const maxAge = remember ? config.sessionTtlDays * 24 * 3600 : null;
+  res.setHeader("Set-Cookie", auth.sessionCookie(token, maxAge, req.secure));
   res.json({ user: publicUser(user) });
 }));
 

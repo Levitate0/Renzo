@@ -1127,7 +1127,7 @@ async function submitAuth() {
     const r = await fetch(`/api/auth/login`, {
       method: "POST", credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, remember: $("#authRemember").checked }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || "failed");

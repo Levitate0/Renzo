@@ -178,8 +178,14 @@ export function parseCookies(header: string | undefined): Record<string, string>
 // `secure` is decided PER REQUEST (req.secure) so HTTPS clients get a Secure
 // cookie while plain-HTTP LAN clients still work (a Secure cookie wouldn't be
 // sent back over http).
-export function sessionCookie(token: string, maxAgeSec: number, secure: boolean): string {
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure ? "; Secure" : ""}`;
+// maxAgeSec: a number sets a persistent cookie (Max-Age); `null` makes it a
+// SESSION cookie (no Max-Age → the browser drops it on close, i.e. "Remember me"
+// unchecked); 0 deletes the cookie (logout).
+export function sessionCookie(token: string, maxAgeSec: number | null, secure: boolean): string {
+  const parts = [`${SESSION_COOKIE}=${token}`, "Path=/", "HttpOnly", "SameSite=Lax"];
+  if (maxAgeSec !== null) parts.push(`Max-Age=${maxAgeSec}`);
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
 }
 
 export interface AuthedRequest extends Request {
