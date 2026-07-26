@@ -51,6 +51,30 @@ function switchTab(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   if (name === "library") loadLibrary();
   if (name === "downloads") loadJobs();
+  if (name === "updates") loadUpdates();
+}
+
+async function loadUpdates() {
+  try {
+    const items = await api("/updates");
+    const badge = $("#updBadge");
+    badge.textContent = items.length;
+    badge.classList.toggle("hidden", items.length === 0);
+    const cards = items.map((u) => ({
+      id: u.id, type: u.type, title: u.title, poster: u.poster, year: u.year,
+      updKind: u.kind, ep: u.ep, upcoming: u.upcoming,
+    }));
+    renderGrid($("#updatesGrid"), cards);
+    if (!items.length) $("#updatesGrid").innerHTML = '<div class="empty">You\'re all caught up — no new episodes or seasons.</div>';
+  } catch (e) { /* ignore */ }
+}
+async function refreshUpdatesBadge() {
+  try {
+    const items = await api("/updates");
+    const badge = $("#updBadge");
+    badge.textContent = items.length;
+    badge.classList.toggle("hidden", items.length === 0);
+  } catch { /* ignore */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,15 +98,21 @@ async function loadStatus() {
 // ---------------------------------------------------------------------------
 function makeCard(item) {
   const c = el("div", "card");
+  const ribbon = item.updKind === "episode" ? `<span class="upd-ribbon">New · E${item.ep}</span>`
+    : item.updKind === "season" ? `<span class="upd-ribbon season">${item.upcoming ? "Soon" : "New season"}</span>`
+    : item.updKind === "movie" ? `<span class="upd-ribbon">Available</span>` : "";
+  const upnext = item.upNext ? `<div class="upnext">▶ Up next · E${item.upNext}</div>` : "";
   c.innerHTML = `
-    <span class="pill">${item.type === "movie" ? "Movie" : "Series"}</span>
+    ${ribbon || `<span class="pill">${item.type === "movie" ? "Movie" : "Series"}</span>`}
     ${item.downloaded ? '<span class="dot" title="downloaded episodes"></span>' : ""}
     <img class="poster" loading="lazy" src="${esc(item.poster || "")}" alt="" onerror="this.style.opacity=.15" />
     <div class="cap">
       <div class="t">${esc(item.title)}</div>
       <div class="m">${[item.year, (item.genres || [])[0]].filter(Boolean).map(esc).join(" · ")}</div>
+      ${upnext}
     </div>`;
-  c.addEventListener("click", () => openDetail(item.id));
+  c.addEventListener("click", () => item.updKind === "episode" || item.updKind === "movie"
+    ? play(item.id, item.ep || 1, item.title) : openDetail(item.id));
   return c;
 }
 function renderGrid(target, items) {
@@ -192,19 +222,88 @@ async function openDetail(id) {
     $("#detailBanner").style.backgroundImage = `url(${d.banner || d.poster || ""})`;
     $("#detailPoster").src = d.poster || "";
     $("#detailTitle").textContent = d.english || d.romaji;
-    $("#detailTags").innerHTML = [d.type === "movie" ? "Movie" : "Series", d.year, ...(d.genres || []).slice(0, 4)]
-      .filter(Boolean).map((g) => `<span>${esc(g)}</span>`).join("");
+    const meta = [
+      `<span class="type-tag">${d.type === "movie" ? "Movie" : "Series"}</span>`,
+      d.year, `${d.episodesTotal || 1} ep`, ...(d.genres || []).slice(0, 3),
+    ].filter(Boolean);
+    $("#detailMetaline").innerHTML = meta.map((m, i) =>
+      `${i ? '<span class="sep">•</span>' : ""}<span>${typeof m === "string" && m.startsWith("<") ? m : esc(m)}</span>`).join("");
     $("#detailDesc").textContent = d.description || "";
     const isSeries = d.type === "series";
+    // Hero Play -> first not-downloaded aired episode (or E1 / movie).
+    const firstEp = (d.episodeList || []).find((e) => e.aired !== false && !e.hasFile)
+      || (d.episodeList || []).find((e) => e.aired !== false) || { number: 1 };
+    $("#heroPlay").textContent = isSeries ? `▶ Play E${firstEp.number}` : "▶ Play";
+    $("#heroPlay").onclick = () => play(d.id, isSeries ? firstEp.number : 1, `${d.english || d.romaji}${isSeries ? ` · E${firstEp.number}` : ""}`);
     $("#seasonBtn").classList.toggle("hidden", !isSeries);
     $("#autoBtn").classList.toggle("hidden", !isSeries);
     setAutoBtn(!!d.autoDownload);
     setListBtns(d.lists || []);
     populateFolderSelect(d.folders || [], d.folder);
+    renderSeasons(d);
     renderEpisodes(d);
+    loadProviders(d);          // async — populates the release-group picker
     openModal("#detail");
   } catch (e) { toast("Detail failed: " + e.message); }
 }
+
+// Seasons: current entry + related prequel/sequel entries, ordered by year.
+function renderSeasons(d) {
+  const row = $("#seasonsRow");
+  row.innerHTML = "";
+  const seasons = [
+    { id: d.id, title: d.english || d.romaji, year: d.year, poster: d.poster, current: true },
+    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, poster: s.poster })),
+  ];
+  if (seasons.length < 2) { row.classList.add("hidden"); return; }
+  seasons.sort((a, b) => (a.year || 0) - (b.year || 0));
+  row.classList.remove("hidden");
+  seasons.forEach((s, i) => {
+    const card = el("div", "season-card" + (s.current ? " current" : ""));
+    card.innerHTML = `<img loading="lazy" src="${esc(s.poster || "")}" alt="" onerror="this.style.opacity=.15" />
+      <div class="lbl">S${i + 1}${s.year ? ` · ${s.year}` : ""}${s.current ? " (this)" : ""}</div>`;
+    if (!s.current) card.addEventListener("click", () => openDetail(s.id));
+    row.append(card);
+  });
+}
+
+// Release-group provider picker (async: needs a torrent search).
+async function loadProviders(d) {
+  const sel = $("#providerSelect");
+  sel.innerHTML = `<option value="">Auto (best)</option><option disabled>loading…</option>`;
+  sel.value = "";
+  try {
+    const providers = await api(`/titles/${d.id}/providers`);
+    if (!current || current.id !== d.id) return; // detail changed while loading
+    sel.innerHTML = `<option value="">Auto (best)</option>`;
+    providers.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p.group;
+      const res = (p.resolutions || []).sort((a, b) => b - a)[0];
+      o.textContent = `${p.group}${res ? ` · ${res}p` : ""} (${p.count})`;
+      sel.append(o);
+    });
+    // If the user's saved provider isn't in the list, add it so it stays selected.
+    if (d.provider && !providers.some((p) => p.group.toLowerCase() === d.provider.toLowerCase())) {
+      const o = document.createElement("option");
+      o.value = d.provider; o.textContent = d.provider; sel.append(o);
+    }
+    sel.value = d.provider || "";
+  } catch {
+    sel.innerHTML = `<option value="">Auto (best)</option>`;
+    sel.value = d.provider || "";
+  }
+}
+
+$("#providerSelect").addEventListener("change", async () => {
+  if (!current) return;
+  const group = $("#providerSelect").value;
+  try {
+    const r = await api(`/titles/${current.id}/provider`, { method: "POST", body: JSON.stringify({ group }) });
+    current.provider = r.provider;
+    toast(r.provider ? `Provider set: ${r.provider}` : "Provider: Auto (best)");
+  } catch (e) { toast(e.message); }
+});
 
 function populateFolderSelect(folders, current) {
   const sel = $("#folderSelect");
@@ -249,9 +348,11 @@ function setAutoBtn(on) {
 function setListBtns(lists) {
   const inW = lists.includes("watchlist");
   const inF = lists.includes("favorites");
-  $("#watchlistBtn").textContent = inW ? "★ Watchlisted" : "☆ Watchlist";
+  $("#watchlistBtn").textContent = inW ? "★" : "☆";
+  $("#watchlistBtn").title = inW ? "In watchlist" : "Add to watchlist";
   $("#watchlistBtn").classList.toggle("on", inW);
-  $("#favBtn").textContent = inF ? "♥ Favorited" : "♡ Favorite";
+  $("#favBtn").textContent = inF ? "♥" : "♡";
+  $("#favBtn").title = inF ? "Favorited" : "Add to favorites";
   $("#favBtn").classList.toggle("on", inF);
 }
 
@@ -264,21 +365,40 @@ function renderEpisodes(d) {
     area.append(b);
     return;
   }
-  const grid = el("div", "ep-grid");
+  const aired = d.episodeList.filter((e) => e.aired !== false).length;
+  const header = el("div", "season-header");
+  header.innerHTML = `Season 1 <span class="cnt">${aired} of ${d.episodeList.length} available</span>`;
+  area.append(header);
+
+  const list = el("div", "ep-list");
+  const fallback = d.banner || d.poster || "";
   d.episodeList.forEach((ep) => {
-    const cell = el("div", `ep ${ep.status}${ep.aired === false ? " unaired" : ""}`);
-    const label = ep.hasFile ? "local" : ep.aired === false ? "soon" : ep.status;
-    cell.innerHTML = `<span class="n">${ep.number}</span><span class="s">${label}</span>` +
-      (ep.progress > 0 && ep.progress < 1 ? `<span class="bar" style="width:${Math.round(ep.progress * 100)}%"></span>` : "");
-    cell.title = ep.aired === false ? `Episode ${ep.number} — not aired yet` : `Episode ${ep.number} — click to stream`;
-    if (ep.aired === false) {
-      cell.addEventListener("click", () => toast(`Episode ${ep.number} hasn't aired yet`));
-    } else {
-      cell.addEventListener("click", () => play(d.id, ep.number, `${d.english || d.romaji} · E${ep.number}`));
-    }
-    grid.append(cell);
+    const unaired = ep.aired === false;
+    const row = el("div", `ep-row${unaired ? " unaired" : ""}`);
+    const busy = ["downloading", "queued", "searching"].includes(ep.status);
+    const pct = Math.round((ep.progress || 0) * 100);
+    let status = "";
+    if (ep.hasFile) status = `<span class="ep-st local">✓ Saved</span>`;
+    else if (busy) status = `<span class="ep-st busy">${ep.status}${pct ? " " + pct + "%" : ""}</span>`;
+    else if (unaired) status = `<span class="ep-st">Soon</span>`;
+    row.innerHTML = `
+      <div class="ep-thumb-wrap">
+        <img class="ep-thumb" loading="lazy" src="${esc(ep.thumbnail || fallback)}" alt="" onerror="this.src='${esc(fallback)}'" />
+        <span class="num-badge">${ep.number}</span>
+        ${!unaired ? '<div class="play-ov">▶</div>' : ""}
+        ${pct > 0 && pct < 100 ? `<div class="ep-prog" style="width:${pct}%"></div>` : ""}
+      </div>
+      <div class="ep-main">
+        <div class="ep-no">S1 E${ep.number}${ep.epTitle ? ` · ${esc(ep.epTitle)}` : ""}</div>
+        <div class="ep-t">${esc(ep.epTitle ? "" : `Episode ${ep.number}`)}</div>
+      </div>
+      ${status}`;
+    row.title = unaired ? `Episode ${ep.number} — not aired yet` : `Play episode ${ep.number}`;
+    if (unaired) row.addEventListener("click", () => toast(`Episode ${ep.number} hasn't aired yet`));
+    else row.addEventListener("click", () => play(d.id, ep.number, `${d.english || d.romaji} · E${ep.number}`));
+    list.append(row);
   });
-  area.append(grid);
+  area.append(list);
 }
 
 async function toggleList(listName) {
@@ -378,8 +498,12 @@ $("#playerDownload").addEventListener("click", async () => {
 // auto-scrobble on finish
 $("#video").addEventListener("ended", async () => {
   if (!playing) return;
-  try { await api(`/titles/${playing.id}/watched/${playing.ep}`, { method: "POST" });
-    toast("Marked watched"); } catch { /* trackers optional */ }
+  try {
+    await api(`/titles/${playing.id}/watched/${playing.ep}`, { method: "POST" });
+    toast("Marked watched");
+    refreshUpdatesBadge();
+    if ($("#view-library").classList.contains("active")) loadLibrary();
+  } catch { /* trackers optional */ }
 });
 
 function watchJob(jobId) {
@@ -448,6 +572,16 @@ async function loadJobs() {
           <span class="st">${esc(j.status)}${j.status === "downloading" ? " " + pct + "%" : ""}</span></div>
         <div class="row"><span class="st">${esc(j.message || "")}</span></div>
         <div class="track"><div class="fill" style="width:${j.status === "downloaded" ? 100 : pct}%"></div></div>`;
+      if (j.status === "failed" && j.mine !== false) {
+        const retry = el("button", "retry-btn", "↻ Retry");
+        retry.style.marginTop = "8px";
+        retry.addEventListener("click", async () => {
+          retry.disabled = true;
+          try { await api(`/titles/${j.titleId}/retry/${j.episode}`, { method: "POST" }); toast("Retrying…"); loadJobs(); }
+          catch (e) { toast(e.message); retry.disabled = false; }
+        });
+        node.append(retry);
+      }
       list.append(node);
     });
   } catch { /* ignore */ }
@@ -476,6 +610,10 @@ let me = null;
 let jobsTimer = null;
 
 async function boot() {
+  // Invite acceptance link: /invite/<token>
+  const inviteMatch = location.pathname.match(/^\/invite\/([\w-]+)$/);
+  if (inviteMatch) return showInvite(inviteMatch[1]);
+
   let info;
   try {
     const res = await fetch("/api/auth/me", { credentials: "same-origin" });
@@ -487,6 +625,46 @@ async function boot() {
   if (info.unauthorized || !info.user) return showAuthGate("login");
   startApp(info.user);
 }
+
+// ---- invite acceptance ----
+let inviteToken = null;
+async function showInvite(token) {
+  inviteToken = token;
+  const gate = document.getElementById("inviteGate");
+  gate.classList.remove("hidden");
+  try {
+    const info = await fetch(`/api/auth/invite/${token}`, { credentials: "same-origin" }).then((r) => r.json());
+    if (!info.valid) { $("#inviteError").textContent = info.error || "Invalid invite"; $("#inviteSubmit").disabled = true; return; }
+    $("#inviteRoleNote").textContent = `You'll join as a ${info.role}.`;
+    if (info.presetUsername) { $("#inviteUser").value = info.username; $("#inviteUser").disabled = true; }
+    $("#inviteUser").focus();
+  } catch { $("#inviteError").textContent = "Could not load invite"; }
+}
+$("#invitePass").addEventListener("input", () => {
+  const s = pwStrength($("#invitePass").value); $("#invitePwBar").className = s <= 1 ? "weak" : s <= 2 ? "ok" : "strong";
+});
+async function submitInvite() {
+  $("#inviteError").textContent = "";
+  const username = $("#inviteUser").value.trim();
+  const password = $("#invitePass").value;
+  if (password.length < 8) return void ($("#inviteError").textContent = "Password must be at least 8 characters");
+  if (password !== $("#invitePass2").value) return void ($("#inviteError").textContent = "Passwords don't match");
+  $("#inviteSubmit").disabled = true;
+  try {
+    const r = await fetch("/api/auth/invite/accept", {
+      method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: inviteToken, username, password }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "failed");
+    history.replaceState(null, "", "/");
+    document.getElementById("inviteGate").classList.add("hidden");
+    startApp(data.user);
+    if (!data.user.realDebridConnected) openSettings("realdebrid");
+  } catch (e) { $("#inviteError").textContent = e.message; $("#inviteSubmit").disabled = false; }
+}
+$("#inviteSubmit").addEventListener("click", submitInvite);
+$("#invitePass2").addEventListener("keydown", (e) => { if (e.key === "Enter") submitInvite(); });
 
 // ---- login ----
 function showAuthGate() {
@@ -607,18 +785,25 @@ $("#logoutBtn").addEventListener("click", async () => {
 
 function initial(name) { return (name || "·").trim().charAt(0).toUpperCase() || "·"; }
 
+const roleLabel = (r) => r === "owner" ? "Owner" : r === "manager" ? "Manager" : "User";
 function startApp(user) {
   me = user;
-  const isAdmin = user.role === "admin";
-  $("#usersBlock").style.display = isAdmin ? "" : "none";
-  $("#usersNavBtn").style.display = isAdmin ? "" : "none";
+  const isStaff = user.role === "owner" || user.role === "manager";
+  const isOwner = user.role === "owner";
+  $("#usersBlock").style.display = isStaff ? "" : "none";
+  $("#usersNavBtn").style.display = isStaff ? "" : "none";
+  $("#emailNavBtn").style.display = isOwner ? "" : "none";
+  $("#emailBlock").style.display = isOwner ? "" : "none";
+  // Managers can't create other managers — hide that option.
+  document.querySelectorAll("#inviteRole option[data-owner]").forEach((o) => { o.hidden = !isOwner; });
   // Account menu header + avatar
   $("#acctBtn").textContent = initial(user.username);
   $("#acctMenuName").textContent = user.username;
-  $("#acctMenuRole").textContent = isAdmin ? "Owner" : "User";
+  $("#acctMenuRole").textContent = roleLabel(user.role);
   loadStatus();
   loadTrending();
   loadJobs();
+  refreshUpdatesBadge();
   if (!jobsTimer) jobsTimer = setInterval(loadJobs, 4000);
   if (!user.realDebridConnected) {
     toast("Connect Real-Debrid in Settings to start streaming");
@@ -712,10 +897,11 @@ async function openSettings(pane) {
     $("#acctAvatar").textContent = initial(u.username);
     $("#acctName").textContent = u.username || "—";
     const roleEl = $("#acctRole");
-    roleEl.textContent = u.role === "admin" ? "Owner" : "User";
-    roleEl.className = "role-badge" + (u.role === "admin" ? " owner" : "");
+    roleEl.textContent = roleLabel(u.role);
+    roleEl.className = "role-badge" + (u.role === "owner" ? " owner" : u.role === "manager" ? " manager" : "");
     applyHealth(h);
-    if (u.role === "admin") loadUsers();
+    if (u.role === "owner" || u.role === "manager") loadUsers();
+    if (u.role === "owner") loadSmtp();
   } catch { /* ignore */ }
 }
 
@@ -823,32 +1009,47 @@ $("#passSave").addEventListener("click", async () => {
   } catch (e) { toast(e.message); }
 });
 
+const rank = { owner: 0, manager: 1, user: 2 };
 async function loadUsers() {
   try {
     const users = await api("/users");
     $("#usersCount").textContent = `${users.length} ${users.length === 1 ? "account" : "accounts"}`;
     const list = $("#usersList");
     list.innerHTML = "";
-    // owner first, then alphabetical
-    users.sort((a, b) => (a.role === b.role ? a.username.localeCompare(b.username) : a.role === "admin" ? -1 : 1));
+    const iAmOwner = me.role === "owner";
+    users.sort((a, b) => (rank[a.role] - rank[b.role]) || a.username.localeCompare(b.username));
     users.forEach((u) => {
       const isMe = u.id === me.id;
       const card = el("div", "user-card");
       const chip = (on, label) => `<span class="mini-chip${on ? " on" : ""}">${label}</span>`;
+      const badgeCls = u.role === "owner" ? " owner" : u.role === "manager" ? " manager" : "";
       card.innerHTML = `
         <div class="avatar">${esc(initial(u.username))}</div>
         <div class="u-main">
           <div class="u-name">${esc(u.username)}
-            <span class="role-badge${u.role === "admin" ? " owner" : ""}">${u.role === "admin" ? "Owner" : "User"}</span>
+            <span class="role-badge${badgeCls}">${roleLabel(u.role)}</span>
             ${isMe ? '<span class="you-tag">You</span>' : ""}
           </div>
           <div class="u-chips">
+            ${u.email ? `<span class="mini-chip">${esc(u.email)}</span>` : ""}
             ${chip(u.realDebridConnected, "RD")}
             ${chip(u.anilistConnected, "AniList")}
             ${chip(u.malConnected, "MAL")}
           </div>
         </div>`;
-      if (!isMe && u.role !== "admin") {
+      // Owner can change roles (except the owner's own).
+      if (iAmOwner && !isMe && u.role !== "owner") {
+        const sel = el("select", "user-role-sel");
+        sel.innerHTML = `<option value="user"${u.role === "user" ? " selected" : ""}>User</option><option value="manager"${u.role === "manager" ? " selected" : ""}>Manager</option>`;
+        sel.addEventListener("change", async () => {
+          try { await api(`/users/${u.id}/role`, { method: "POST", body: JSON.stringify({ role: sel.value }) }); toast(`${u.username} → ${sel.value}`); loadUsers(); }
+          catch (e) { toast(e.message); loadUsers(); }
+        });
+        card.append(sel);
+      }
+      // Remove (owner: anyone but self/owner; manager: only users).
+      const canRemove = !isMe && u.role !== "owner" && (iAmOwner || u.role === "user");
+      if (canRemove) {
         const del = el("button", "icon-danger", "✕");
         del.title = `Remove ${u.username}`;
         del.addEventListener("click", async () => {
@@ -860,8 +1061,49 @@ async function loadUsers() {
       }
       list.append(card);
     });
-  } catch { /* non-admins never see this */ }
+  } catch { /* non-staff never see this */ }
 }
+
+// --- Invites ---
+$("#inviteBtn").addEventListener("click", async () => {
+  const email = $("#inviteEmail").value.trim();
+  const role = $("#inviteRole").value;
+  try {
+    const r = await api("/invites", { method: "POST", body: JSON.stringify({ email, role }) });
+    $("#inviteLink").value = r.url;
+    $("#inviteResult").classList.remove("hidden");
+    $("#inviteEmail").value = "";
+    toast(r.emailed ? `Invite emailed to ${email}` : "Invite link created — copy it below");
+  } catch (e) { toast(e.message); }
+});
+$("#inviteCopy").addEventListener("click", () => {
+  const inp = $("#inviteLink"); inp.select();
+  navigator.clipboard?.writeText(inp.value).then(() => toast("Link copied")).catch(() => { document.execCommand("copy"); toast("Link copied"); });
+});
+
+// --- SMTP settings (owner) ---
+async function loadSmtp() {
+  try {
+    const s = await api("/smtp");
+    if (!s) { ["smtpHost","smtpUser","smtpFrom"].forEach((id)=>$("#"+id).value=""); $("#smtpPort").value="587"; $("#smtpSecure").checked=false; return; }
+    $("#smtpHost").value = s.host || ""; $("#smtpPort").value = s.port || 587;
+    $("#smtpUser").value = s.user || ""; $("#smtpFrom").value = s.from || "";
+    $("#smtpSecure").checked = !!s.secure;
+    $("#smtpPass").placeholder = s.hasPassword ? "•••••• (saved — blank keeps it)" : "password";
+  } catch { /* not owner */ }
+}
+$("#smtpSave").addEventListener("click", async () => {
+  const body = { host: $("#smtpHost").value.trim(), port: $("#smtpPort").value, user: $("#smtpUser").value.trim(),
+    pass: $("#smtpPass").value, from: $("#smtpFrom").value.trim(), secure: $("#smtpSecure").checked };
+  try { const r = await api("/smtp", { method: "POST", body: JSON.stringify(body) }); $("#smtpPass").value = "";
+    toast(r.cleared ? "Email disabled" : "SMTP saved"); loadSmtp(); } catch (e) { toast(e.message); }
+});
+$("#smtpTestBtn").addEventListener("click", async () => {
+  const to = $("#smtpTest").value.trim();
+  if (!to) return toast("Enter a recipient");
+  try { await api("/smtp/test", { method: "POST", body: JSON.stringify({ to }) }); toast(`Test email sent to ${to}`); }
+  catch (e) { toast("Test failed: " + e.message); }
+});
 
 $("#addUserBtn").addEventListener("click", async () => {
   const username = $("#newUserName").value.trim();
