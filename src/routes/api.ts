@@ -136,6 +136,7 @@ function applyAddDefaults(user: UserRecord, t: Title): void {
  * connected tracker (status lives only on AniList / MAL).
  */
 async function syncWatchStatus(t: Title, user: UserRecord): Promise<void> {
+  if (user.autoStatus === false) return; // per-user "Auto-update status" set to Off
   if (!user.anilistToken && !user.malToken) return;
   const finished = t.type === "movie" || t.airingStatus === "FINISHED";
   const total = t.type === "movie" ? 1 : (t.episodeCount ?? availableEpisodes(t));

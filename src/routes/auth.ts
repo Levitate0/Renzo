@@ -33,7 +33,7 @@ function clientIp(req: Request): string {
 function publicUser(u: {
   id: string; username: string; role: string; email?: string;
   realDebridToken?: string; anilistToken?: string; malToken?: string; theme?: ThemeSettings;
-  downloadsDenied?: boolean; addDefaults?: AddDefaults;
+  downloadsDenied?: boolean; addDefaults?: AddDefaults; autoStatus?: boolean;
 }) {
   return {
     id: u.id,
@@ -46,6 +46,7 @@ function publicUser(u: {
     theme: u.theme ?? null,
     downloadsDenied: Boolean(u.downloadsDenied),
     addDefaults: u.addDefaults ?? null,
+    autoStatus: u.autoStatus !== false, // default on
   };
 }
 
@@ -299,6 +300,7 @@ accountRoutes.post("/add-defaults", wrap(async (req: AuthedRequest, res) => {
     defaults.folder = folder;
   }
   user.addDefaults = Object.keys(defaults).length ? defaults : undefined;
+  if ("autoStatus" in body) user.autoStatus = Boolean(body.autoStatus); // auto-update tracking status
   await db.save();
   res.json(publicUser(user));
 }));

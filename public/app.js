@@ -1534,6 +1534,7 @@ $("#apiKeyRotate")?.addEventListener("click", async (e) => {
 async function loadDefaults() {
   const d = (me && me.addDefaults) || {};
   $("#defTrack").value = d.track || "";
+  $("#defAutoStatus").value = (me && me.autoStatus === false) ? "off" : "on";
   $("#defAuto").checked = !!d.autoDownload;
   $("#defAutoRow").style.display = (me && me.downloadsDenied) ? "none" : ""; // can't auto-download if denied
   try {
@@ -1548,9 +1549,14 @@ $("#defSave")?.addEventListener("click", async () => {
   try {
     const u = await api("/account/add-defaults", {
       method: "POST",
-      body: JSON.stringify({ track: $("#defTrack").value, autoDownload: $("#defAuto").checked, folder: $("#defFolder").value }),
+      body: JSON.stringify({
+        track: $("#defTrack").value,
+        autoDownload: $("#defAuto").checked,
+        folder: $("#defFolder").value,
+        autoStatus: $("#defAutoStatus").value === "on",
+      }),
     });
-    if (me) me.addDefaults = u.addDefaults;
+    if (me) { me.addDefaults = u.addDefaults; me.autoStatus = u.autoStatus; }
     toast("Library defaults saved");
   } catch (e) { toast(e.message); }
 });
