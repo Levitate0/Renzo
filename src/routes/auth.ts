@@ -1,10 +1,13 @@
 import { Router, type Request, type Response } from "express";
+import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { db } from "../db.js";
 import * as auth from "../services/auth.js";
 import * as rd from "../services/realdebrid.js";
+import * as mailer from "../services/mailer.js";
 import type { AuthedRequest } from "../services/auth.js";
+import type { Role, InviteRecord, SmtpSettings } from "../types.js";
 
 const log = logger("auth-routes");
 export const authRoutes = Router();
@@ -26,13 +29,14 @@ function clientIp(req: Request): string {
 }
 
 function publicUser(u: {
-  id: string; username: string; role: string;
+  id: string; username: string; role: string; email?: string;
   realDebridToken?: string; anilistToken?: string; malToken?: string;
 }) {
   return {
     id: u.id,
     username: u.username,
     role: u.role,
+    email: u.email ?? null,
     realDebridConnected: Boolean(u.realDebridToken),
     anilistConnected: Boolean(u.anilistToken),
     malConnected: Boolean(u.malToken),
@@ -42,7 +46,7 @@ function publicUser(u: {
 // --- Session state ----------------------------------------------------------
 authRoutes.get("/me", wrap(async (req, res) => {
   if (config.authDisabled) {
-    return res.json({ user: { id: "system", username: "local", role: "admin" }, authDisabled: true });
+    return res.json({ user: { id: "system", username: "local", role: "owner" }, authDisabled: true });
   }
   if (auth.setupRequired()) return res.json({ setupRequired: true });
   const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
@@ -61,9 +65,10 @@ authRoutes.post("/setup", wrap(async (req, res) => {
   if (setupClaimed || !auth.setupRequired()) return res.status(403).json({ error: "already set up" });
   setupClaimed = true;
   try {
-    const user = await auth.createUser(String(req.body?.username ?? ""), String(req.body?.password ?? ""), "admin");
+    const user = await auth.createUser(String(req.body?.username ?? ""), String(req.body?.password ?? ""), "owner");
+    log.info(`owner account created: ${user.username}`);
     const token = await auth.createSession(user.id);
-    res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600));
+    res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
     res.json({ user: publicUser(user) });
   } catch (e) {
     setupClaimed = false; // allow the owner to retry after a validation error
@@ -88,16 +93,41 @@ authRoutes.post("/login", wrap(async (req, res) => {
     return res.status(401).json({ error: "Invalid username or password" });
   }
   auth.recordLoginSuccess(ip);
+  log.info(`login ok: ${user.username} from ${ip}`);
   const token = await auth.createSession(user.id);
-  res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600));
+  res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
   res.json({ user: publicUser(user) });
 }));
 
 authRoutes.post("/logout", wrap(async (req, res) => {
   const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
   await auth.destroySession(token);
-  res.setHeader("Set-Cookie", auth.sessionCookie("", 0));
+  res.setHeader("Set-Cookie", auth.sessionCookie("", 0, req.secure));
   res.json({ ok: true });
+}));
+
+// --- Invite acceptance (public) ---------------------------------------------
+authRoutes.get("/invite/:token", wrap(async (req, res) => {
+  const inv = db.getInvite(req.params.token);
+  if (!inv || inv.usedAt || new Date(inv.expiresAt).getTime() < Date.now()) {
+    return res.status(404).json({ valid: false, error: "This invite is invalid or has expired" });
+  }
+  res.json({ valid: true, role: inv.role, username: inv.username ?? null, presetUsername: Boolean(inv.username) });
+}));
+
+authRoutes.post("/invite/accept", wrap(async (req, res) => {
+  const inv = db.getInvite(String(req.body?.token ?? ""));
+  if (!inv || inv.usedAt || new Date(inv.expiresAt).getTime() < Date.now()) {
+    return res.status(404).json({ error: "This invite is invalid or has expired" });
+  }
+  const username = inv.username || String(req.body?.username ?? "");
+  const user = await auth.createUser(username, String(req.body?.password ?? ""), inv.role, inv.email);
+  inv.usedAt = new Date().toISOString();
+  await db.save();
+  const token = await auth.createSession(user.id);
+  res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
+  log.info(`invite accepted: ${user.username} (${inv.role})`);
+  res.json({ user: publicUser(user) });
 }));
 
 // --- Authenticated self-service ---------------------------------------------
@@ -120,7 +150,7 @@ accountRoutes.post("/password", wrap(async (req: AuthedRequest, res) => {
   await db.removeSessionsForUser(user.id, currentToken);
   const fresh = await auth.createSession(user.id);
   await db.removeSession(currentToken ?? "");
-  res.setHeader("Set-Cookie", auth.sessionCookie(fresh, config.sessionTtlDays * 24 * 3600));
+  res.setHeader("Set-Cookie", auth.sessionCookie(fresh, config.sessionTtlDays * 24 * 3600, req.secure));
   res.json({ ok: true });
 }));
 
@@ -153,24 +183,128 @@ accountRoutes.post("/realdebrid", wrap(async (req: AuthedRequest, res) => {
   res.json({ ...publicUser(user), premium: rd.isPremium(acct), username_rd: acct.username });
 }));
 
-// --- Admin: user management --------------------------------------------------
+// --- Staff: user management (owner + manager) -------------------------------
 export const userAdminRoutes = Router();
+
+function assignableRole(actorRole: string, requested: unknown): Role {
+  const r = requested === "manager" ? "manager" : "user";
+  // Only the owner can create managers; managers can only create plain users.
+  return actorRole === "owner" ? r : "user";
+}
 
 userAdminRoutes.get("/", wrap(async (_req, res) => {
   res.json(db.users().filter((u) => u.id !== "system").map(publicUser));
 }));
 
-userAdminRoutes.post("/", wrap(async (req, res) => {
-  // Only the owner (the first-run admin) reaches this route, and every account
-  // it creates is a regular user — the API can never mint a second admin.
-  const user = await auth.createUser(String(req.body?.username ?? ""), String(req.body?.password ?? ""), "user");
+userAdminRoutes.post("/", wrap(async (req: AuthedRequest, res) => {
+  const role = assignableRole(req.user!.role, req.body?.role);
+  const user = await auth.createUser(
+    String(req.body?.username ?? ""), String(req.body?.password ?? ""), role, String(req.body?.email ?? "") || undefined,
+  );
+  log.info(`${role} added: ${user.username} by ${req.user!.username}`);
   res.json(publicUser(user));
 }));
 
-userAdminRoutes.delete("/:id", wrap(async (req: AuthedRequest, res) => {
-  if (req.params.id === req.user!.id) return res.status(400).json({ error: "cannot delete yourself" });
+// Owner-only: change a user's role.
+userAdminRoutes.post("/:id/role", wrap(async (req: AuthedRequest, res) => {
+  if (req.user!.role !== "owner") return res.status(403).json({ error: "owner only" });
   const target = db.getUser(req.params.id);
   if (!target) return res.status(404).json({ error: "no such user" });
+  if (target.role === "owner") return res.status(400).json({ error: "cannot change the owner's role" });
+  const role: Role = req.body?.role === "manager" ? "manager" : "user";
+  target.role = role;
+  await db.save();
+  log.info(`role changed: ${target.username} -> ${role}`);
+  res.json(publicUser(target));
+}));
+
+userAdminRoutes.delete("/:id", wrap(async (req: AuthedRequest, res) => {
+  const actor = req.user!;
+  if (req.params.id === actor.id) return res.status(400).json({ error: "cannot delete yourself" });
+  const target = db.getUser(req.params.id);
+  if (!target) return res.status(404).json({ error: "no such user" });
+  if (target.role === "owner") return res.status(400).json({ error: "cannot delete the owner" });
+  // Managers may only remove plain users.
+  if (actor.role !== "owner" && target.role !== "user") return res.status(403).json({ error: "managers can only remove users" });
   await db.removeUser(target.id);
+  log.info(`user removed: ${target.username} by ${actor.username}`);
+  res.json({ ok: true });
+}));
+
+// --- Invites (staff create; public accept) ----------------------------------
+export const inviteRoutes = Router();
+
+inviteRoutes.get("/", wrap(async (_req, res) => {
+  const now = Date.now();
+  res.json(db.invites()
+    .filter((i) => !i.usedAt && new Date(i.expiresAt).getTime() > now)
+    .map((i) => ({ token: i.token, role: i.role, email: i.email ?? null, username: i.username ?? null,
+      expiresAt: i.expiresAt, url: `${config.publicUrl}/invite/${i.token}` })));
+}));
+
+inviteRoutes.post("/", wrap(async (req: AuthedRequest, res) => {
+  const role: Role = req.user!.role === "owner" && req.body?.role === "manager" ? "manager" : "user";
+  const invite: InviteRecord = {
+    token: randomBytes(24).toString("base64url"),
+    role,
+    email: String(req.body?.email ?? "").trim() || undefined,
+    username: String(req.body?.username ?? "").trim() || undefined,
+    createdBy: req.user!.id,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(),
+  };
+  await db.addInvite(invite);
+  const url = `${config.publicUrl}/invite/${invite.token}`;
+  let emailed = false;
+  if (invite.email && mailer.smtpConfigured()) {
+    try {
+      await mailer.sendMail(invite.email, "You're invited to Renzo",
+        `<p>You've been invited to <b>Renzo</b>.</p><p><a href="${url}">Click here to set your password and join</a>.</p><p>This link expires in 7 days.</p>`);
+      emailed = true;
+    } catch (e) { log.warn("invite email failed", String(e)); }
+  }
+  log.info(`invite created (${role})${invite.email ? ` for ${invite.email}` : ""} by ${req.user!.username}`);
+  res.json({ token: invite.token, role, url, emailed });
+}));
+
+inviteRoutes.delete("/:token", wrap(async (req, res) => {
+  await db.removeInvite(req.params.token);
+  res.json({ ok: true });
+}));
+
+// --- SMTP (owner-only) ------------------------------------------------------
+export const smtpRoutes = Router();
+
+function readSmtp(body: Record<string, unknown>, keepPass?: string): SmtpSettings {
+  const passIn = String(body.pass ?? "");
+  return {
+    host: String(body.host ?? "").trim(),
+    port: Number.parseInt(String(body.port ?? "587"), 10) || 587,
+    secure: Boolean(body.secure),
+    user: String(body.user ?? "").trim(),
+    pass: passIn || keepPass || "", // blank keeps the existing password
+    from: String(body.from ?? "").trim(),
+  };
+}
+
+smtpRoutes.get("/", wrap(async (_req, res) => {
+  res.json(mailer.smtpPublic());
+}));
+
+smtpRoutes.post("/", wrap(async (req, res) => {
+  const b = req.body ?? {};
+  if (!String(b.host ?? "").trim()) { await db.setSmtp(undefined); return res.json({ ok: true, cleared: true }); }
+  const settings = readSmtp(b, db.smtp()?.pass);
+  if (!settings.from) return res.status(400).json({ error: "From Address is required" });
+  await db.setSmtp(settings);
+  log.info("SMTP settings saved");
+  res.json({ ok: true });
+}));
+
+smtpRoutes.post("/test", wrap(async (req: AuthedRequest, res) => {
+  const to = String(req.body?.to ?? "").trim();
+  if (!to) return res.status(400).json({ error: "recipient required" });
+  if (!mailer.smtpConfigured()) return res.status(400).json({ error: "Save SMTP settings first" });
+  await mailer.sendMail(to, "Renzo SMTP test", "<p>✅ Your Renzo SMTP settings work.</p>");
   res.json({ ok: true });
 }));

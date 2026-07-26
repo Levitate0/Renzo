@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import type { DbShape, Title, DownloadJob, UserRecord, SessionRecord } from "./types.js";
+import type { DbShape, Title, DownloadJob, UserRecord, SessionRecord, InviteRecord, SmtpSettings } from "./types.js";
 
 const log = logger("db");
 
@@ -12,7 +12,7 @@ const log = logger("db");
  */
 class Store {
   private path = join(config.dataDir, "db.json");
-  private data: DbShape = { titles: [], jobs: [], users: [], sessions: [] };
+  private data: DbShape = { titles: [], jobs: [], users: [], sessions: [], invites: [], settings: {} };
   private writing: Promise<void> = Promise.resolve();
   private loaded = false;
 
@@ -25,6 +25,14 @@ class Store {
       this.data.jobs ??= [];
       this.data.users ??= [];
       this.data.sessions ??= [];
+      this.data.invites ??= [];
+      this.data.settings ??= {};
+      // Migrate legacy role "admin" -> "owner".
+      let migrated = false;
+      for (const u of this.data.users) {
+        if ((u.role as string) === "admin") { u.role = "owner"; migrated = true; }
+      }
+      if (migrated) await this.flush();
     } catch {
       log.info("no db found, starting fresh at", this.path);
       await this.flush();
@@ -135,6 +143,36 @@ class Store {
   /** Revoke all of a user's sessions except (optionally) one to keep. */
   async removeSessionsForUser(userId: string, keepToken?: string): Promise<void> {
     this.data.sessions = this.data.sessions.filter((s) => s.userId !== userId || s.token === keepToken);
+    await this.flush();
+  }
+
+  // --- invites ---------------------------------------------------------------
+  invites(): InviteRecord[] {
+    return this.data.invites;
+  }
+  getInvite(token: string): InviteRecord | undefined {
+    return this.data.invites.find((i) => i.token === token);
+  }
+  async addInvite(i: InviteRecord): Promise<void> {
+    // Prune expired/used-long-ago invites opportunistically.
+    const now = Date.now();
+    this.data.invites = this.data.invites.filter(
+      (x) => !x.usedAt && new Date(x.expiresAt).getTime() > now,
+    );
+    this.data.invites.push(i);
+    await this.flush();
+  }
+  async removeInvite(token: string): Promise<void> {
+    this.data.invites = this.data.invites.filter((i) => i.token !== token);
+    await this.flush();
+  }
+
+  // --- settings --------------------------------------------------------------
+  smtp(): SmtpSettings | undefined {
+    return this.data.settings.smtp;
+  }
+  async setSmtp(s: SmtpSettings | undefined): Promise<void> {
+    this.data.settings.smtp = s;
     await this.flush();
   }
 

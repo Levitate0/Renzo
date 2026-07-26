@@ -41,7 +41,7 @@ export function getStatus(): AutoDlStatus {
 
 /** The account whose Real-Debrid creds fund auto-downloads (owner by default). */
 function autoDownloadUser(): UserRecord | undefined {
-  const admins = db.users().filter((u) => u.role === "admin" && u.realDebridToken);
+  const admins = db.users().filter((u) => u.role === "owner" && u.realDebridToken);
   if (admins.length) return admins[0];
   return db.users().find((u) => u.realDebridToken);
 }

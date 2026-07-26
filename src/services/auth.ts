@@ -4,7 +4,7 @@ import type { Request, Response, NextFunction } from "express";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { db } from "../db.js";
-import type { UserRecord } from "../types.js";
+import type { UserRecord, Role } from "../types.js";
 
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
 const log = logger("auth");
@@ -55,7 +55,8 @@ export function setupRequired(): boolean {
 export async function createUser(
   username: string,
   password: string,
-  role: "admin" | "user",
+  role: Role,
+  email?: string,
 ): Promise<UserRecord> {
   const shapeErr = validCredentialShape(username, password);
   if (shapeErr) throw new Error(shapeErr);
@@ -67,6 +68,7 @@ export async function createUser(
     username,
     passHash: await hashPassword(password),
     role,
+    email: email || undefined,
     createdAt: new Date().toISOString(),
     library: [],
     lists: {},
@@ -77,6 +79,22 @@ export async function createUser(
   await db.upsertUser(user);
   log.info(`created ${role} user "${username}"`);
   return user;
+}
+
+// ---------------------------------------------------------------------------
+// Roles
+// ---------------------------------------------------------------------------
+export const ROLES: Role[] = ["owner", "manager", "user"];
+export function isStaff(role: Role | undefined): boolean {
+  return role === "owner" || role === "manager";
+}
+export function requireOwner(req: AuthedRequest, res: Response, next: NextFunction): void {
+  if (req.user?.role !== "owner") { res.status(403).json({ error: "owner only" }); return; }
+  next();
+}
+export function requireStaff(req: AuthedRequest, res: Response, next: NextFunction): void {
+  if (!isStaff(req.user?.role)) { res.status(403).json({ error: "staff only" }); return; }
+  next();
 }
 
 // ---------------------------------------------------------------------------
@@ -144,9 +162,11 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out;
 }
 
-export function sessionCookie(token: string, maxAgeSec: number): string {
-  const secure = config.publicUrl.startsWith("https") ? "; Secure" : "";
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`;
+// `secure` is decided PER REQUEST (req.secure) so HTTPS clients get a Secure
+// cookie while plain-HTTP LAN clients still work (a Secure cookie wouldn't be
+// sent back over http).
+export function sessionCookie(token: string, maxAgeSec: number, secure: boolean): string {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure ? "; Secure" : ""}`;
 }
 
 export interface AuthedRequest extends Request {
@@ -158,7 +178,7 @@ const systemUser: UserRecord = {
   id: "system",
   username: "local",
   passHash: "",
-  role: "admin",
+  role: "owner",
   createdAt: new Date(0).toISOString(),
   library: [],
   lists: {},
@@ -185,10 +205,5 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
   next();
 }
 
-export function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction): void {
-  if (req.user?.role !== "admin") {
-    res.status(403).json({ error: "admin only" });
-    return;
-  }
-  next();
-}
+// Back-compat alias (owner-level).
+export const requireAdmin = requireOwner;
