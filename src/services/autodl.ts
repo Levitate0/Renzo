@@ -83,16 +83,26 @@ export async function tick(): Promise<{ queued: number }> {
         u.library ??= [];
         if (!u.library.includes(titleId)) { u.library.push(titleId); await db.save(); }
         const avail = availableEpisodes(t);
+        let capped = false;
         for (let n = 1; n <= avail && userQueued < config.autoDownloadMaxPerTick; n++) {
           const rec = peekUserEp(u, t.id, n);
           if (rec && ["downloaded", "downloading", "queued", "searching"].includes(rec.status)) continue;
           // Don't hammer a permanently-failing episode: retry at most daily.
           if (rec?.status === "failed" && Date.now() - new Date(rec.updatedAt).getTime() < 24 * 3600_000) continue;
-          await queue.enqueue(t.id, n, u.id);
-          userQueued++; queued++;
-          log.info(`queued ${t.romaji} E${n} for ${u.username}`);
+          try {
+            await queue.enqueue(t.id, n, u.id);
+            userQueued++; queued++;
+            log.info(`queued ${t.romaji} E${n} for ${u.username}`);
+          } catch (e) {
+            // e.g. "Too many active downloads" — isolate so one user can't abort
+            // the whole pass and starve everyone after them.
+            log.warn("autodl enqueue", u.username, t.romaji, `E${n}`, String(e));
+            capped = true;
+            break;
+          }
         }
         await sleep(300);
+        if (capped) break; // move on to the next user
       }
     }
     state.lastQueued = queued;

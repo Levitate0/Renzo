@@ -128,6 +128,23 @@ function applyAddDefaults(user: UserRecord, t: Title): void {
   }
 }
 
+/**
+ * Dynamic tracking status. scrobble() already marks a title "watching" as the
+ * user progresses; this escalates it to "completed" the moment they've watched
+ * the final episode of a FINISHED series (or a movie). A returning / RELEASING
+ * series with an unwatched aired episode stays "watching". No-op without a
+ * connected tracker (status lives only on AniList / MAL).
+ */
+async function syncWatchStatus(t: Title, user: UserRecord): Promise<void> {
+  if (!user.anilistToken && !user.malToken) return;
+  const finished = t.type === "movie" || t.airingStatus === "FINISHED";
+  const total = t.type === "movie" ? 1 : (t.episodeCount ?? availableEpisodes(t));
+  const watched = watchedEp(user, t.id);
+  if (finished && total > 0 && watched >= total) {
+    await tracker.setTracking(t, user, { status: "completed" }).catch((e) => log.warn("dyn-status", t.id, String(e)));
+  }
+}
+
 function cardFromTitle(t: Title, user?: UserRecord) {
   return {
     id: t.id,
@@ -484,7 +501,8 @@ api.post("/titles/:id/watched/:ep", wrap(async (req: AuthedRequest, res) => {
   const t = await getOrCreateTitle(id);
   setWatched(req.user!, id, ep);   // powers "up next"
   await db.save();
-  await tracker.scrobble(t, ep, req.user);
+  await tracker.scrobble(t, ep, req.user); // progress + "watching" on the trackers
+  await syncWatchStatus(t, req.user!);     // …escalate to "completed" once fully watched
   res.json({ ok: true, upNext: upNextFor(req.user!, t) });
 }));
 
@@ -551,6 +569,7 @@ api.get("/jobs", wrap(async (req, res) => {
 // --- Retry a failed download (re-search from scratch) ----------------------
 api.post("/titles/:id/retry/:ep", wrap(async (req, res) => {
   const user = req.user!;
+  if (downloadBlocked(user, res)) return; // retry also enqueues a real download — honor the deny flag
   requireToken(user);
   const id = Number(req.params.id);
   const ep = Math.max(1, Number(req.params.ep) || 1);

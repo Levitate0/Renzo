@@ -980,7 +980,7 @@ async function loadJobs() {
           <span class="st">${esc(j.status)}${j.status === "downloading" ? " " + pct + "%" : ""}</span></div>
         <div class="row"><span class="st">${esc(j.message || "")}</span></div>
         <div class="track"><div class="fill" style="width:${j.status === "downloaded" ? 100 : pct}%"></div></div>`;
-      if (j.status === "failed" && j.mine !== false) {
+      if (j.status === "failed" && j.mine !== false && !(me && me.downloadsDenied)) {
         const retry = el("button", "retry-btn", "↻ Retry");
         retry.style.marginTop = "8px";
         retry.addEventListener("click", async () => {
