@@ -18,13 +18,15 @@
   --r-lg: 16px;
   --shadow: 0 18px 50px rgba(0,0,0,.5);
   --ring: 0 0 0 3px rgba(108,140,255,.25);
+  --glow-1: #1a1f31;   /* ambient background glows (themeable) */
+  --glow-2: #1a1526;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
   background:
-    radial-gradient(1100px 520px at 82% -12%, #1a1f31 0%, transparent 60%),
-    radial-gradient(900px 500px at 0% 0%, #1a1526 0%, transparent 55%),
+    radial-gradient(1100px 520px at 82% -12%, var(--glow-1) 0%, transparent 60%),
+    radial-gradient(900px 500px at 0% 0%, var(--glow-2) 0%, transparent 55%),
     var(--bg);
   color: var(--fg);
   font: 14.5px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
@@ -455,3 +457,109 @@ main { padding: 26px 22px 60px; max-width: 1440px; margin: 0 auto; }
   .detail-body { flex-direction: column; align-items: center; text-align: center; margin-top: -64px; }
   .detail-meta { padding-top: 8px; }
 }
+
+/* ---------------------------------------------------------------------------
+   Watch page (Crunchyroll-style routed player)
+--------------------------------------------------------------------------- */
+body.watching { overflow: hidden; }
+#view-watch.watch {
+  position: fixed; inset: 0; z-index: 200;
+  background: var(--bg); overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+#view-watch.watch.hidden { display: none; }
+
+.watch-stage {
+  position: relative; width: 100%; background: #000;
+  aspect-ratio: 16 / 9; max-height: 82vh; flex: none;
+}
+.watch-stage #watchVideo { width: 100%; height: 100%; background: #000; display: block; }
+.watch-back {
+  position: absolute; top: 14px; left: 14px; z-index: 3;
+  background: rgba(10,11,16,.6); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 8px 14px; cursor: pointer; backdrop-filter: blur(6px);
+}
+.watch-back:hover { background: rgba(10,11,16,.85); }
+
+/* auto-next card */
+.autonext {
+  position: absolute; right: 18px; bottom: 74px; z-index: 4;
+  display: flex; gap: 12px; width: 340px; max-width: 70vw;
+  background: rgba(16,17,24,.94); border: 1px solid var(--line-2);
+  border-radius: 12px; padding: 12px; backdrop-filter: blur(8px);
+  box-shadow: 0 12px 40px rgba(0,0,0,.5);
+}
+.autonext.hidden { display: none; }
+.an-thumb { width: 104px; height: 60px; object-fit: cover; border-radius: 8px; flex: none; background: var(--s2); }
+.an-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.an-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.an-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.an-count { font-size: 12px; color: var(--muted); }
+.an-actions { display: flex; gap: 8px; margin-top: 6px; }
+.an-actions .primary, .an-actions .ghost { padding: 6px 10px; font-size: 13px; }
+
+/* info below the stage */
+.watch-info { width: min(1100px, 100%); margin: 0 auto; padding: 20px 22px 60px; }
+.watch-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.watch-epno { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.watch-title { font-size: 24px; margin: 0; }
+.watch-nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
+.watch-nav .watch-season { background: var(--s1); border: 1px solid var(--line); color: var(--fg); border-radius: 8px; padding: 8px 10px; }
+.watch-nav .note { color: var(--muted); font-size: 13px; }
+.watch-desc { color: var(--muted); line-height: 1.55; max-width: 760px; }
+
+.watch-eplist { margin-top: 22px; display: flex; flex-direction: column; gap: 8px; }
+.wep {
+  display: flex; align-items: center; gap: 12px; padding: 8px;
+  border: 1px solid transparent; border-radius: 10px; cursor: pointer;
+}
+.wep:hover { background: var(--s1); }
+.wep.playing { border-color: var(--accent); background: rgba(255,92,138,.08); }
+.wep-thumb { width: 128px; height: 72px; object-fit: cover; border-radius: 8px; flex: none; background: var(--s2); }
+.wep-main { min-width: 0; flex: 1; }
+.wep-no { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wep.unaired { opacity: .55; cursor: default; }
+.wep.unaired:hover { background: none; }
+
+@media (max-width: 720px) {
+  .watch-stage { max-height: 60vh; }
+  .wep-thumb { width: 96px; height: 54px; }
+  .autonext { right: 10px; bottom: 66px; width: 280px; }
+}
+
+/* Browse rows (Trending / Recommended / New this season) */
+.browse-row { margin-bottom: 30px; }
+.browse-row > h2 { margin: 0 0 12px; font-size: 18px; }
+
+/* "Forgot password?" link on the login card */
+.link-btn { background: none; border: 0; color: var(--muted); font-size: 13px; cursor: pointer; margin-top: 12px; }
+.link-btn:hover { color: var(--fg); text-decoration: underline; }
+.link-btn:disabled { opacity: .5; cursor: default; }
+
+/* ---------------------------------------------------------------------------
+   Appearance / themes page
+--------------------------------------------------------------------------- */
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin: 16px 0 26px; }
+.theme-swatch { border: 2px solid var(--line); border-radius: var(--r); background: var(--s1); padding: 8px; cursor: pointer; transition: border-color .15s, transform .1s; }
+.theme-swatch:hover { border-color: var(--line-2); }
+.theme-swatch.active { border-color: var(--accent); }
+.sw-prev { position: relative; height: 74px; border-radius: var(--r-sm); overflow: hidden; }
+.sw-card { position: absolute; left: 10px; bottom: 10px; width: 62px; height: 34px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,.35); }
+.sw-accent { position: absolute; right: 10px; top: 10px; width: 22px; height: 22px; border-radius: 999px; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+.sw-name { margin-top: 8px; font-size: 13px; font-weight: 600; text-align: center; }
+
+.theme-custom { border: 1px solid var(--line); border-radius: var(--r); background: var(--s1); padding: 14px 16px; max-width: 560px; }
+.tc-row { display: flex; align-items: center; gap: 14px; }
+.tc-row > div:first-child { flex: 1; }
+.tc-label { font-weight: 600; }
+.tc-hint { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.accent-pick { width: 44px; height: 34px; padding: 0; border: 1px solid var(--line-2); border-radius: 8px; background: none; cursor: pointer; }
+
+.theme-preview { margin-top: 26px; }
+.tp-heading { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+.tp-card { width: 230px; background: var(--s2); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; box-shadow: var(--shadow); }
+.tp-title { font-size: 18px; font-weight: 700; margin-top: 8px; }
+.tp-sub { color: var(--muted); font-size: 13px; margin: 2px 0 12px; }
+.tp-actions { display: flex; gap: 8px; }
+.tp-actions .primary, .tp-actions .ghost { padding: 8px 12px; font-size: 13px; }

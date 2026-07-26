@@ -52,7 +52,68 @@ function switchTab(name) {
   if (name === "library") loadLibrary();
   if (name === "downloads") loadJobs();
   if (name === "updates") loadUpdates();
+  if (name === "appearance") renderAppearance();
 }
+
+// ---------------------------------------------------------------------------
+// Themes (per-user, persisted; applied via CSS variables)
+// ---------------------------------------------------------------------------
+const THEMES = {
+  renzo:    { name: "Renzo", vars: {} },
+  amoled:   { name: "AMOLED", vars: { "--bg": "#000000", "--s1": "#0a0a0c", "--s2": "#101014", "--s3": "#17171e", "--line": "#1d1d26", "--line-2": "#2b2b36", "--glow-1": "transparent", "--glow-2": "transparent" } },
+  midnight: { name: "Midnight", vars: { "--bg": "#0a0e1a", "--s1": "#0f1424", "--s2": "#141b2e", "--s3": "#1d2540", "--line": "#232c46", "--line-2": "#34406a", "--accent": "#6c8cff", "--accent-2": "#9a86ff", "--glow-1": "#12203f", "--glow-2": "#161a36" } },
+  sakura:   { name: "Sakura", vars: { "--accent": "#ff8fb3", "--accent-2": "#c792ea", "--glow-1": "#2a1826", "--glow-2": "#241a2e" } },
+  matcha:   { name: "Matcha", vars: { "--accent": "#4fc98a", "--accent-2": "#8bc34a", "--glow-1": "#122318", "--glow-2": "#16211a" } },
+  ember:    { name: "Ember", vars: { "--accent": "#ff7a45", "--accent-2": "#ffb347", "--glow-1": "#2a170f", "--glow-2": "#241a12" } },
+  ocean:    { name: "Ocean", vars: { "--bg": "#08131a", "--s1": "#0c1c26", "--s2": "#102631", "--s3": "#173544", "--line": "#1e3949", "--line-2": "#2b5266", "--accent": "#22c1c3", "--accent-2": "#3f8cff", "--glow-1": "#0d2733", "--glow-2": "#0c1f2e" } },
+  light:    { name: "Daylight", vars: { "--bg": "#eef1f6", "--s1": "#ffffff", "--s2": "#ffffff", "--s3": "#e9edf4", "--line": "#dfe4ee", "--line-2": "#cbd3e1", "--fg": "#141824", "--muted": "#5b6473", "--faint": "#8a93a3", "--accent": "#e0356f", "--accent-2": "#3f6bff", "--glow-1": "transparent", "--glow-2": "transparent", "--shadow": "0 18px 50px rgba(20,30,60,.15)" } },
+};
+const THEME_VARS = ["--bg", "--s1", "--s2", "--s3", "--line", "--line-2", "--fg", "--muted", "--faint", "--accent", "--accent-2", "--glow-1", "--glow-2", "--shadow"];
+let currentTheme = { preset: "renzo" };
+
+function applyTheme(theme) {
+  const preset = theme && THEMES[theme.preset] ? theme.preset : "renzo";
+  const root = document.documentElement;
+  THEME_VARS.forEach((v) => root.style.removeProperty(v)); // reset previously-managed vars
+  Object.entries(THEMES[preset].vars).forEach(([k, v]) => root.style.setProperty(k, v));
+  if (theme?.accent) root.style.setProperty("--accent", theme.accent);
+  if (theme?.bg) root.style.setProperty("--bg", theme.bg);
+  currentTheme = { preset, ...(theme?.accent ? { accent: theme.accent } : {}), ...(theme?.bg ? { bg: theme.bg } : {}) };
+}
+
+// Apply the saved theme instantly (before /me) to avoid a flash of the default.
+try { const s = JSON.parse(localStorage.getItem("renzo:theme") || "null"); if (s) applyTheme(s); } catch { /* ignore */ }
+
+function persistTheme() {
+  try { localStorage.setItem("renzo:theme", JSON.stringify(currentTheme)); } catch { /* ignore */ }
+  if (typeof me !== "undefined" && me) me.theme = currentTheme;
+  api("/account/theme", { method: "POST", body: JSON.stringify(currentTheme) }).catch(() => {});
+}
+function selectTheme(theme) { applyTheme(theme); persistTheme(); renderAppearance(); }
+
+function renderAppearance() {
+  const grid = $("#themeGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  Object.entries(THEMES).forEach(([id, t]) => {
+    const bg = t.vars["--bg"] || "#0b0c10";
+    const s2 = t.vars["--s2"] || "#1a1d29";
+    const accent = t.vars["--accent"] || "#ff5c8a";
+    const sw = el("div", "theme-swatch" + (currentTheme.preset === id ? " active" : ""));
+    sw.innerHTML = `<div class="sw-prev" style="background:${bg}">
+        <span class="sw-card" style="background:${s2}"></span>
+        <span class="sw-accent" style="background:${accent}"></span>
+      </div><div class="sw-name">${esc(t.name)}</div>`;
+    sw.addEventListener("click", () => selectTheme({ preset: id, accent: currentTheme.accent }));
+    grid.append(sw);
+  });
+  const pick = $("#accentPick");
+  if (pick) pick.value = currentTheme.accent || THEMES[currentTheme.preset]?.vars["--accent"] || "#ff5c8a";
+}
+
+$("#accentPick").addEventListener("input", () => selectTheme({ preset: currentTheme.preset, accent: $("#accentPick").value }));
+$("#accentClear").addEventListener("click", () => selectTheme({ preset: currentTheme.preset }));
+$("#appearanceBtn").addEventListener("click", () => { $("#acctMenu").classList.add("hidden"); switchTab("appearance"); });
 
 async function loadUpdates() {
   try {
@@ -111,8 +172,15 @@ function makeCard(item) {
       <div class="m">${[item.year, (item.genres || [])[0]].filter(Boolean).map(esc).join(" · ")}</div>
       ${upnext}
     </div>`;
-  c.addEventListener("click", () => item.updKind === "episode" || item.updKind === "movie"
-    ? play(item.id, item.ep || 1, item.title) : openDetail(item.id));
+  c.addEventListener("click", async () => {
+    if (item.source === "mal") { // AniList-down fallback card — resolve id first
+      try { const r = await api(`/titles/resolve?mal=${item.malId}`); openDetail(r.id); }
+      catch { toast("Details unavailable right now — try again in a moment"); }
+      return;
+    }
+    if (item.updKind === "episode" || item.updKind === "movie") play(item.id, item.ep || 1, item.title);
+    else openDetail(item.id);
+  });
   return c;
 }
 function renderGrid(target, items) {
@@ -121,10 +189,17 @@ function renderGrid(target, items) {
   items.forEach((it) => target.append(makeCard(it)));
 }
 
-async function loadTrending() {
-  $("#discoverHeading").textContent = "Trending";
-  try { renderGrid($("#discoverGrid"), await api("/discover/trending")); }
-  catch (e) { toast("Discover failed: " + e.message); }
+async function loadBrowse() {
+  $("#searchWrap").classList.add("hidden");
+  $("#browseWrap").classList.remove("hidden");
+  const rows = [
+    ["#trendingGrid", "/discover/trending"],
+    ["#recommendedGrid", "/discover/recommended"],
+    ["#newSeasonGrid", "/discover/new-season"],
+  ];
+  await Promise.all(rows.map(async ([sel, url]) => {
+    try { renderGrid($(sel), await api(url)); } catch { renderGrid($(sel), []); }
+  }));
 }
 
 let searchTimer;
@@ -136,7 +211,9 @@ $("#searchType").addEventListener("change", doSearch);
 async function doSearch() {
   const q = $("#search").value.trim();
   switchTab("discover");
-  if (!q) return loadTrending();
+  if (!q) { $("#searchWrap").classList.add("hidden"); $("#browseWrap").classList.remove("hidden"); return; }
+  $("#browseWrap").classList.add("hidden");
+  $("#searchWrap").classList.remove("hidden");
   $("#discoverHeading").textContent = `Results for “${q}”`;
   try {
     const type = $("#searchType").value;
@@ -444,85 +521,252 @@ $("#autoBtn").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// player  (Crunchyroll-style: instant RD stream, optional bg download)
+// Watch page  (Crunchyroll-style: own URL, series-based, no per-episode reloads)
 // ---------------------------------------------------------------------------
-let playing = null; // { id, ep }
-async function play(id, ep, label) {
-  playing = { id, ep };
-  const video = $("#video");
-  $("#playerTitle").textContent = label;
-  $("#playerSource").textContent = "resolving…";
-  $("#playerSource").className = "source-badge";
-  $("#playerNote").textContent = "";
-  video.pause(); video.removeAttribute("src"); clearTracks(video);
-  openModal("#player");
+let watch = null; // { watchId, titleId, detail, ep, prefetch }
+function clearTracks(video) { video.querySelectorAll("track").forEach((t) => t.remove()); }
+
+// Play buttons everywhere call this: mint/reuse a per-series watch id, then
+// navigate to its URL. The hash router renders the player.
+async function play(id, ep) {
+  try {
+    const r = await api(`/titles/${id}/watch`, { method: "POST" });
+    location.hash = `#/watch/${r.watchId}/${ep || 1}`;
+  } catch (e) { toast(e.message); }
+}
+
+// --- hash router -----------------------------------------------------------
+function parseWatchHash() {
+  const m = location.hash.match(/^#\/watch\/([^/]+)(?:\/(\d+))?$/);
+  return m ? { watchId: m[1], ep: m[2] ? Number(m[2]) : null } : null;
+}
+function route() {
+  if (!me) return;
+  const w = parseWatchHash();
+  if (w) enterWatch(w.watchId, w.ep);
+  else if (watch) exitWatch();
+}
+window.addEventListener("hashchange", route);
+
+async function enterWatch(watchId, epFromUrl) {
+  if (watch && watch.watchId === watchId) {         // same series -> just switch ep
+    if (epFromUrl && epFromUrl !== watch.ep) goToEp(epFromUrl);
+    return;
+  }
+  try {
+    const res = await api(`/watch/${encodeURIComponent(watchId)}`);
+    const d = await api(`/titles/${res.titleId}`);
+    watch = { watchId, titleId: res.titleId, detail: d, ep: null, prefetch: null };
+    renderWatchShell(d);
+    showWatchView();
+    goToEp(epFromUrl || res.resumeEp || 1);
+  } catch (e) {
+    toast("Couldn't open player: " + (e.message || e));
+    location.hash = "";
+  }
+}
+
+function airedCount(d) {
+  if (d.type === "movie") return 1;
+  return (d.episodeList || []).filter((e) => e.aired !== false).length || 1;
+}
+function orderedSeasons(d) {
+  return [{ id: d.id, title: d.english || d.romaji, year: d.year, current: true },
+    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year }))]
+    .sort((a, b) => (a.year || 0) - (b.year || 0));
+}
+function seasonNumber(d) {
+  const i = orderedSeasons(d).findIndex((s) => s.id === d.id);
+  return i < 0 ? 1 : i + 1;
+}
+
+function renderWatchShell(d) {
+  $("#watchTitle").textContent = d.english || d.romaji;
+  const sel = $("#watchSeason");
+  const seasons = orderedSeasons(d);
+  if (seasons.length > 1) {
+    sel.classList.remove("hidden");
+    sel.innerHTML = "";
+    seasons.forEach((s, i) => {
+      const o = document.createElement("option");
+      o.value = s.id; o.textContent = `Season ${i + 1}${s.year ? ` · ${s.year}` : ""}`;
+      if (s.id === d.id) o.selected = true;
+      sel.append(o);
+    });
+  } else sel.classList.add("hidden");
+
+  const list = $("#watchEpList");
+  list.innerHTML = "";
+  const fallback = d.banner || d.poster || "";
+  (d.episodeList || []).forEach((ep) => {
+    const unaired = ep.aired === false;
+    const row = el("div", `wep${unaired ? " unaired" : ""}`);
+    row.dataset.ep = ep.number;
+    row.innerHTML = `
+      <img class="wep-thumb" loading="lazy" src="${esc(ep.thumbnail || fallback)}" onerror="this.src='${esc(fallback)}'" alt="" />
+      <div class="wep-main"><div class="wep-no">E${ep.number}${ep.epTitle ? ` · ${esc(ep.epTitle)}` : ""}</div></div>
+      ${ep.hasFile ? '<span class="ep-st local">✓</span>' : unaired ? '<span class="ep-st">Soon</span>' : ""}`;
+    if (unaired) row.addEventListener("click", () => toast(`Episode ${ep.number} hasn't aired yet`));
+    else row.addEventListener("click", () => goToEp(ep.number));
+    list.append(row);
+  });
+}
+
+// Switch episode WITHOUT reloading the page: swap the source + meta in place.
+async function goToEp(ep) {
+  const d = watch.detail;
+  const isMovie = d.type === "movie";
+  const max = airedCount(d);
+  ep = Math.min(Math.max(1, ep), Math.max(1, max));
+  const meta = (d.episodeList || []).find((e) => e.number === ep) || { number: ep };
+  if (meta.aired === false) { toast("That episode hasn't aired yet"); return; }
+  watch.ep = ep;
+  const gen = (watch.gen = (watch.gen || 0) + 1); // guard against out-of-order stream resolves
+  cancelAutoNext();
+  history.replaceState(null, "", `#/watch/${watch.watchId}/${ep}`); // no reload (no hashchange)
+
+  $("#watchEpNo").textContent = isMovie ? "Movie" : `S${seasonNumber(d)} E${ep}${meta.epTitle ? ` · ${meta.epTitle}` : ""}`;
+  $("#watchDesc").textContent = d.description || "";
+  highlightEp(ep);
+  const isMv = isMovie;
+  $("#watchPrev").classList.toggle("hidden", isMv); $("#watchNext").classList.toggle("hidden", isMv);
+  $("#watchPrev").disabled = ep <= 1;
+  $("#watchNext").disabled = ep >= max;
+
+  const video = $("#watchVideo"), badge = $("#watchSource");
+  badge.textContent = "resolving…"; badge.className = "source-badge";
+  $("#watchNote").textContent = "";
+  video.pause(); clearTracks(video); video.removeAttribute("src");
 
   try {
-    const r = await api(`/titles/${id}/play/${ep}`);
-    $("#playerSource").textContent = r.source === "local" ? "● Local file" : "● Real-Debrid";
-    $("#playerSource").className = "source-badge " + (r.source === "local" ? "local" : "rd");
+    const r = (watch.prefetch && watch.prefetch.ep === ep && await watch.prefetch.p)
+      || await api(`/titles/${watch.titleId}/play/${ep}`);
+    if (!watch || watch.gen !== gen) return; // a newer goToEp() superseded us — don't clobber it
+    badge.textContent = r.source === "local" ? "● Local file" : "● Real-Debrid";
+    badge.className = "source-badge " + (r.source === "local" ? "local" : "rd");
     video.src = r.url;
     (r.subtitles || []).forEach((s, i) => {
       const track = el("track");
-      track.kind = "subtitles";
-      track.label = s.label || s.lang;
-      track.srclang = s.lang || "en";
-      track.src = `/api/captions/${s.id}.vtt`;
-      if (i === 0) track.default = true;
+      track.kind = "subtitles"; track.label = s.label || s.lang; track.srclang = s.lang || "en";
+      track.src = `/api/captions/${s.id}.vtt`; if (i === 0) track.default = true;
       video.append(track);
     });
     video.load();
     video.play().catch(() => {});
     if (video.textTracks[0]) video.textTracks[0].mode = "showing";
-    $("#playerDownload").textContent = r.source === "local" ? "✓ In library" : "⬇ Download to library";
-    $("#playerDownload").disabled = r.source === "local";
+    $("#watchDownload").textContent = r.source === "local" ? "✓ In library" : "⬇ Download to library";
+    $("#watchDownload").disabled = r.source === "local";
     if (r.downloading) watchJob(r.downloading.id);
+    prefetchNext(ep, max);
   } catch (e) {
-    $("#playerSource").textContent = "failed";
-    $("#playerNote").textContent = e.message;
+    badge.textContent = "failed";
+    $("#watchNote").textContent = e.message || String(e);
   }
 }
-function clearTracks(video) { video.querySelectorAll("track").forEach((t) => t.remove()); }
 
-$("#playerDownload").addEventListener("click", async () => {
-  if (!playing) return;
+// Warm the next episode's stream so advancing is instant.
+function prefetchNext(ep, max) {
+  watch.prefetch = null;
+  const next = ep + 1;
+  if (watch.detail.type === "movie" || next > max) return;
+  watch.prefetch = { ep: next, p: api(`/titles/${watch.titleId}/play/${next}`).catch(() => null) };
+}
+
+function highlightEp(ep) {
+  document.querySelectorAll("#watchEpList .wep").forEach((r) =>
+    r.classList.toggle("playing", Number(r.dataset.ep) === ep));
+  const cur = document.querySelector(`#watchEpList .wep[data-ep="${ep}"]`);
+  if (cur) cur.scrollIntoView({ block: "nearest" });
+}
+
+function showWatchView() {
+  document.querySelectorAll(".modal:not(.hidden)").forEach((m) => m.classList.add("hidden"));
+  $("#view-watch").classList.remove("hidden");
+  document.body.classList.add("watching");
+}
+function exitWatch() {
+  const video = $("#watchVideo");
+  video.pause(); video.removeAttribute("src"); clearTracks(video); video.load();
+  cancelAutoNext();
+  watchPollers.forEach((iv) => clearInterval(iv)); watchPollers.clear();
+  watch = null;
+  $("#view-watch").classList.add("hidden");
+  document.body.classList.remove("watching");
+  if ($("#view-library").classList.contains("active")) loadLibrary(); // refresh progress
+}
+
+// --- auto-next -------------------------------------------------------------
+let autoNextTimer = null;
+const watchPollers = new Set(); // active /jobs poll intervals, cleared on exit
+function cancelAutoNext() {
+  if (autoNextTimer) { clearInterval(autoNextTimer); autoNextTimer = null; }
+  $("#autoNext").classList.add("hidden");
+}
+function startAutoNext(nextEp) {
+  cancelAutoNext(); // never stack countdowns
+  const d = watch.detail;
+  const meta = (d.episodeList || []).find((e) => e.number === nextEp) || { number: nextEp };
+  $("#anThumb").src = meta.thumbnail || d.banner || d.poster || "";
+  $("#anTitle").textContent = `E${nextEp}${meta.epTitle ? ` · ${meta.epTitle}` : ""}`;
+  let n = 8;
+  $("#anCountdown").textContent = `Next episode in ${n}s`;
+  $("#autoNext").classList.remove("hidden");
+  autoNextTimer = setInterval(() => {
+    n -= 1;
+    if (n <= 0) { cancelAutoNext(); goToEp(nextEp); return; }
+    $("#anCountdown").textContent = `Next episode in ${n}s`;
+  }, 1000);
+}
+
+// --- watch controls (bound once) -------------------------------------------
+$("#watchBack").addEventListener("click", () => { if (history.length > 1) history.back(); else location.hash = ""; });
+$("#watchPrev").addEventListener("click", () => { if (watch) goToEp(watch.ep - 1); });
+$("#watchNext").addEventListener("click", () => { if (watch) goToEp(watch.ep + 1); });
+$("#watchSeason").addEventListener("change", (e) => play(Number(e.target.value), 1));
+$("#anPlay").addEventListener("click", () => { if (watch) { const n = watch.ep + 1; cancelAutoNext(); goToEp(n); } });
+$("#anCancel").addEventListener("click", cancelAutoNext);
+
+$("#watchDownload").addEventListener("click", async () => {
+  if (!watch) return;
   try {
-    const job = await api(`/titles/${playing.id}/download/${playing.ep}`, { method: "POST" });
-    $("#playerDownload").disabled = true;
-    $("#playerNote").textContent = "Downloading in background — will switch to local when done.";
-    watchJob(job.id);
-    loadJobs();
+    const job = await api(`/titles/${watch.titleId}/download/${watch.ep}`, { method: "POST" });
+    $("#watchDownload").disabled = true;
+    $("#watchNote").textContent = "Downloading in background — will switch to local when done.";
+    watchJob(job.id); loadJobs();
   } catch (e) { toast(e.message); }
 });
 
-// auto-scrobble on finish
-$("#video").addEventListener("ended", async () => {
-  if (!playing) return;
+$("#watchVideo").addEventListener("ended", async () => {
+  if (!watch) return;
+  const titleId = watch.titleId, endedEp = watch.ep, detail = watch.detail; // capture: watch may change during the await
   try {
-    await api(`/titles/${playing.id}/watched/${playing.ep}`, { method: "POST" });
-    toast("Marked watched");
+    await api(`/titles/${titleId}/watched/${endedEp}`, { method: "POST" });
     refreshUpdatesBadge();
-    if ($("#view-library").classList.contains("active")) loadLibrary();
   } catch { /* trackers optional */ }
+  if (!watch || watch.titleId !== titleId || watch.ep !== endedEp) return; // exited or moved on
+  const max = airedCount(detail);
+  if (detail.type !== "movie" && endedEp < max) startAutoNext(endedEp + 1);
 });
 
+function stopPoller(iv) { clearInterval(iv); watchPollers.delete(iv); }
 function watchJob(jobId) {
   const iv = setInterval(async () => {
     try {
       const jobs = await api("/jobs");
       const j = jobs.find((x) => x.id === jobId);
-      if (!j) return clearInterval(iv);
+      if (!j) return stopPoller(iv);
       if (j.status === "downloaded") {
-        clearInterval(iv);
-        if (playing) $("#playerNote").textContent = "Saved to library ✓ (reopen to play the local copy)";
+        stopPoller(iv);
+        if (watch) $("#watchNote").textContent = "Saved to library ✓";
         toast("Download complete");
         loadJobs();
       } else if (j.status === "failed") {
-        clearInterval(iv);
-        $("#playerNote").textContent = "Download failed: " + (j.message || "");
+        stopPoller(iv);
+        $("#watchNote").textContent = "Download failed: " + (j.message || "");
       }
-    } catch { clearInterval(iv); }
+    } catch { stopPoller(iv); }
   }, 3000);
+  watchPollers.add(iv);
 }
 
 // ---------------------------------------------------------------------------
@@ -593,7 +837,6 @@ async function loadJobs() {
 function openModal(sel) { $(sel).classList.remove("hidden"); }
 function closeModal(node) {
   node.classList.add("hidden");
-  if (node.id === "player") { const v = $("#video"); v.pause(); v.removeAttribute("src"); v.load(); playing = null; }
 }
 document.querySelectorAll("[data-close]").forEach((b) =>
   b.addEventListener("click", (e) => closeModal(e.target.closest(".modal"))));
@@ -613,6 +856,9 @@ async function boot() {
   // Invite acceptance link: /invite/<token>
   const inviteMatch = location.pathname.match(/^\/invite\/([\w-]+)$/);
   if (inviteMatch) return showInvite(inviteMatch[1]);
+  // Password-reset link: /?reset=<token>
+  const resetTok = new URLSearchParams(location.search).get("reset");
+  if (resetTok) return showReset(resetTok);
 
   let info;
   try {
@@ -666,6 +912,40 @@ async function submitInvite() {
 $("#inviteSubmit").addEventListener("click", submitInvite);
 $("#invitePass2").addEventListener("keydown", (e) => { if (e.key === "Enter") submitInvite(); });
 
+// ---- password reset ----
+let resetToken = null;
+async function showReset(token) {
+  try {
+    const info = await fetch(`/api/auth/reset/${encodeURIComponent(token)}`, { credentials: "same-origin" }).then((r) => r.json());
+    if (!info.valid) { toast(info.error || "This reset link is invalid or has expired"); history.replaceState(null, "", "/"); return showAuthGate(); }
+    resetToken = token;
+    $("#resetUser").textContent = info.username;
+    $("#resetGate").classList.remove("hidden");
+    $("#resetPass").focus();
+  } catch { toast("Could not open reset link"); showAuthGate(); }
+}
+async function submitReset() {
+  $("#resetError").textContent = "";
+  const p = $("#resetPass").value, p2 = $("#resetPass2").value;
+  if (p.length < 8) return void ($("#resetError").textContent = "Password must be at least 8 characters");
+  if (p !== p2) return void ($("#resetError").textContent = "Passwords don't match");
+  $("#resetSubmit").disabled = true;
+  try {
+    const r = await fetch("/api/auth/reset", {
+      method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: resetToken, password: p }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "failed");
+    history.replaceState(null, "", "/");
+    $("#resetGate").classList.add("hidden");
+    startApp(data.user);
+    if (!data.user.realDebridConnected) openSettings("realdebrid");
+  } catch (e) { $("#resetError").textContent = e.message; $("#resetSubmit").disabled = false; }
+}
+$("#resetSubmit").addEventListener("click", submitReset);
+$("#resetPass2").addEventListener("keydown", (e) => { if (e.key === "Enter") submitReset(); });
+
 // ---- login ----
 function showAuthGate() {
   document.getElementById("authGate").classList.remove("hidden");
@@ -694,6 +974,23 @@ async function submitAuth() {
 }
 $("#authSubmit").addEventListener("click", submitAuth);
 $("#authPass").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+
+// Forgot password: requires the username, and the response is always generic
+// (it never reveals whether the account or an email exists).
+$("#forgotBtn").addEventListener("click", async () => {
+  const username = $("#authUser").value.trim();
+  if (!username) { $("#authError").textContent = "Enter your username first"; $("#authUser").focus(); return; }
+  $("#forgotBtn").disabled = true;
+  try {
+    await fetch("/api/auth/forgot", {
+      method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+  } catch { /* generic regardless */ }
+  $("#authError").textContent = "";
+  toast("If that account exists and has an email set, a reset link was sent.");
+  $("#forgotBtn").disabled = false;
+});
 
 // ---- first-run setup ----
 function showSetup() {
@@ -788,6 +1085,8 @@ function initial(name) { return (name || "·").trim().charAt(0).toUpperCase() ||
 const roleLabel = (r) => r === "owner" ? "Owner" : r === "manager" ? "Manager" : "User";
 function startApp(user) {
   me = user;
+  applyTheme(user.theme || {}); // reconcile with the server (and refresh localStorage)
+  try { localStorage.setItem("renzo:theme", JSON.stringify(currentTheme)); } catch { /* ignore */ }
   const isStaff = user.role === "owner" || user.role === "manager";
   const isOwner = user.role === "owner";
   $("#usersBlock").style.display = isStaff ? "" : "none";
@@ -801,14 +1100,15 @@ function startApp(user) {
   $("#acctMenuName").textContent = user.username;
   $("#acctMenuRole").textContent = roleLabel(user.role);
   loadStatus();
-  loadTrending();
+  loadBrowse();
   loadJobs();
   refreshUpdatesBadge();
   if (!jobsTimer) jobsTimer = setInterval(loadJobs, 4000);
-  if (!user.realDebridConnected) {
+  if (!parseWatchHash() && !user.realDebridConnected) {
     toast("Connect Real-Debrid in Settings to start streaming");
     openSettings("realdebrid");
   }
+  route(); // honor a bookmarked #/watch/... URL
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +1194,7 @@ async function openSettings(pane) {
     ]);
     const u = meRes.user || me || {};
     if (u.username) me = { ...me, ...u };
+    $("#acctEmail").value = u.email || "";
     $("#acctAvatar").textContent = initial(u.username);
     $("#acctName").textContent = u.username || "—";
     const roleEl = $("#acctRole");
@@ -1006,6 +1307,14 @@ $("#passSave").addEventListener("click", async () => {
     });
     $("#curPass").value = ""; $("#newPass").value = "";
     toast("Password updated");
+  } catch (e) { toast(e.message); }
+});
+
+$("#emailSave").addEventListener("click", async () => {
+  try {
+    const u = await api("/account/email", { method: "POST", body: JSON.stringify({ email: $("#acctEmail").value.trim() }) });
+    if (me) me.email = u.email;
+    toast(u.email ? "Email saved" : "Email cleared");
   } catch (e) { toast(e.message); }
 });
 

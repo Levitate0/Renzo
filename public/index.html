@@ -37,6 +37,7 @@
           <div class="n" id="acctMenuName">—</div>
           <div class="r" id="acctMenuRole"></div>
         </div>
+        <button id="appearanceBtn">🎨&nbsp; Appearance</button>
         <button id="settingsBtn">⚙&nbsp; Settings</button>
         <button id="logoutBtn" class="danger">⎋&nbsp; Log out</button>
       </div>
@@ -45,8 +46,15 @@
 
   <main>
     <section id="view-discover" class="view active">
-      <h2 id="discoverHeading">Trending</h2>
-      <div id="discoverGrid" class="grid"></div>
+      <div id="searchWrap" class="hidden">
+        <h2 id="discoverHeading">Results</h2>
+        <div id="discoverGrid" class="grid"></div>
+      </div>
+      <div id="browseWrap">
+        <div class="browse-row"><h2>Trending</h2><div id="trendingGrid" class="grid"></div></div>
+        <div class="browse-row"><h2>Recommended</h2><div id="recommendedGrid" class="grid"></div></div>
+        <div class="browse-row"><h2>New &amp; this season</h2><div id="newSeasonGrid" class="grid"></div></div>
+      </div>
     </section>
 
     <section id="view-library" class="view">
@@ -72,6 +80,31 @@
         <button id="autodlRun" class="ghost">Run now</button>
       </div>
       <div id="jobsList" class="jobs"></div>
+    </section>
+
+    <section id="view-appearance" class="view">
+      <h2>Appearance</h2>
+      <p class="view-sub">Choose a theme and accent — saved to your account and used on every device you sign in on.</p>
+      <div id="themeGrid" class="theme-grid"></div>
+      <div class="theme-custom">
+        <div class="tc-row">
+          <div>
+            <div class="tc-label">Accent color</div>
+            <div class="tc-hint">Override the selected theme's highlight color.</div>
+          </div>
+          <input type="color" id="accentPick" class="accent-pick" />
+          <button id="accentClear" class="ghost">Use preset accent</button>
+        </div>
+      </div>
+      <div class="theme-preview">
+        <div class="tp-heading">Preview</div>
+        <div class="tp-card">
+          <span class="pill">Series</span>
+          <div class="tp-title">Renzo</div>
+          <div class="tp-sub">2026 · Action</div>
+          <div class="tp-actions"><button class="primary">▶ Play</button><button class="ghost">＋ List</button></div>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -108,21 +141,43 @@
     </div>
   </div>
 
-  <!-- Player -->
-  <div id="player" class="modal hidden">
-    <div class="modal-card player-card">
-      <button class="close" data-close>✕</button>
-      <div class="player-head">
-        <span id="playerTitle"></span>
-        <span id="playerSource" class="source-badge"></span>
-      </div>
-      <video id="video" controls autoplay playsinline></video>
-      <div class="player-controls">
-        <button id="playerDownload" class="primary">⬇ Download to library</button>
-        <span id="playerNote" class="note"></span>
+  <!-- Watch page (own URL, series-based — no per-episode reloads) -->
+  <section id="view-watch" class="watch hidden">
+    <div class="watch-stage">
+      <button id="watchBack" class="watch-back">‹ Back</button>
+      <video id="watchVideo" controls autoplay playsinline></video>
+      <div id="autoNext" class="autonext hidden">
+        <img id="anThumb" class="an-thumb" alt="" />
+        <div class="an-body">
+          <div class="an-label">Up next</div>
+          <div id="anTitle" class="an-title"></div>
+          <div id="anCountdown" class="an-count"></div>
+          <div class="an-actions">
+            <button id="anPlay" class="primary">▶ Play now</button>
+            <button id="anCancel" class="ghost">Cancel</button>
+          </div>
+        </div>
       </div>
     </div>
-  </div>
+    <div class="watch-info">
+      <div class="watch-head">
+        <div class="watch-headmeta">
+          <div id="watchEpNo" class="watch-epno"></div>
+          <h1 id="watchTitle" class="watch-title"></h1>
+        </div>
+        <span id="watchSource" class="source-badge"></span>
+      </div>
+      <div class="watch-nav">
+        <button id="watchPrev" class="ghost">‹ Prev</button>
+        <button id="watchNext" class="ghost">Next ›</button>
+        <select id="watchSeason" class="watch-season hidden"></select>
+        <button id="watchDownload" class="primary">⬇ Download to library</button>
+        <span id="watchNote" class="note"></span>
+      </div>
+      <p id="watchDesc" class="watch-desc"></p>
+      <div id="watchEpList" class="watch-eplist"></div>
+    </div>
+  </section>
 
   <!-- Settings -->
   <div id="settings" class="modal hidden">
@@ -237,7 +292,16 @@
           <!-- Security -->
           <section class="pane" data-pane="security">
             <h2>Security</h2>
-            <p class="sub">Change your password. This signs out all your other sessions.</p>
+            <div class="field">
+              <label for="acctEmail">Email</label>
+              <div class="inline">
+                <input id="acctEmail" class="in" type="email" placeholder="you@example.com" autocomplete="email" />
+                <button id="emailSave" class="primary">Save</button>
+              </div>
+              <span class="hint">Used to deliver password-reset links.</span>
+            </div>
+            <h3 style="margin:22px 0 6px">Password</h3>
+            <p class="sub">Changing your password signs out all your other sessions.</p>
             <div class="field">
               <label for="curPass">Current password</label>
               <input id="curPass" class="in" type="password" placeholder="Current password" autocomplete="current-password" />
@@ -339,6 +403,19 @@
       <input id="authPass" type="password" placeholder="Password" autocomplete="current-password" />
       <button id="authSubmit" class="primary wide">Sign in</button>
       <div id="authError" class="auth-error"></div>
+      <button id="forgotBtn" class="link-btn">Forgot password?</button>
+    </div>
+  </div>
+
+  <!-- Password reset (opened from an emailed link) -->
+  <div id="resetGate" class="auth-gate hidden">
+    <div class="auth-card">
+      <img src="/brand/renzo-banner.png" alt="Renzo" class="auth-banner" />
+      <p class="muted-note">Set a new password for <strong id="resetUser">your account</strong>.</p>
+      <input id="resetPass" type="password" placeholder="New password (min 8)" autocomplete="new-password" />
+      <input id="resetPass2" type="password" placeholder="Confirm new password" autocomplete="new-password" />
+      <button id="resetSubmit" class="primary wide">Set password &amp; sign in</button>
+      <div id="resetError" class="auth-error"></div>
     </div>
   </div>
 
