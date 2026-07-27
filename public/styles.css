@@ -85,6 +85,12 @@ a { color: var(--accent-2); }
 .tabs button .nav-ic { width: 16px; height: 16px; flex-shrink: 0; }
 .tabs button:hover { color: var(--fg); background: color-mix(in srgb, var(--s3) 55%, transparent); }
 .tabs button.active { color: #fff; background: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+/* Center the tab bar on wide desktop (Shiori-style), out of flex flow so the
+   brand stays left and the search/account cluster stays right. */
+@media (min-width: 1024px) {
+  .topbar { position: relative; }
+  .tabs { position: absolute; left: 50%; transform: translateX(-50%); }
+}
 .nav-toggle { display: none; background: none; border: 0; color: var(--fg); padding: 4px; cursor: pointer; }
 .nav-toggle svg { width: 24px; height: 24px; display: block; }
 .search { margin-left: auto; display: flex; gap: 8px; align-items: center; }

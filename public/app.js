@@ -70,7 +70,9 @@ const NAV_ICONS = {
   downloads: '<path d="M12 13v8"/><path d="m8 17 4 4 4-4"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/>',
 };
 function navSvg(name, cls) {
-  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${NAV_ICONS[name] || ""}</svg>`;
+  // Explicit width/height attributes (not just CSS) — some webviews render a
+  // viewBox-only inline SVG at its huge default size otherwise.
+  return `<svg class="${cls}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${NAV_ICONS[name] || ""}</svg>`;
 }
 function setupNav() {
   // Desktop: prepend an icon to each tab pill.
@@ -2243,6 +2245,7 @@ async function fetchHealth() {
 const RD_MAP = {
   premium: ["ok", "Premium"],
   "not-premium": ["warn", "Connected · not premium"],
+  connected: ["ok", "Connected"],
   "not-connected": ["err", "Not connected"],
   invalid: ["err", "Invalid token"],
 };

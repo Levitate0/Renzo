@@ -338,11 +338,12 @@ accountRoutes.post("/realdebrid", wrap(async (req: AuthedRequest, res) => {
     await db.save();
     return res.json({ ...publicUser(user), premium: false });
   }
-  const acct = await rd.accountInfo(token);
-  if (!acct) return res.status(400).json({ error: "Invalid Real-Debrid token" });
+  // Trust the pasted token and persist it FIRST — a flaky/rate-limited validation
+  // call must never discard a key the user just entered (the "not persisting" bug).
   user.realDebridToken = token;
   await db.save();
-  res.json({ ...publicUser(user), premium: rd.isPremium(acct), username_rd: acct.username });
+  const acct = await rd.accountInfo(token).catch(() => null);
+  res.json({ ...publicUser(user), premium: acct ? rd.isPremium(acct) : false, username_rd: acct?.username });
 }));
 
 // Connect / update the per-user AllDebrid API key (alternative debrid provider).
@@ -350,11 +351,11 @@ accountRoutes.post("/alldebrid", wrap(async (req: AuthedRequest, res) => {
   const user = req.user!;
   const key = String(req.body?.key ?? "").trim();
   if (!key) { user.allDebridKey = undefined; await db.save(); return res.json(publicUser(user)); }
-  const acct = await ad.accountInfo(key);
-  if (!acct) return res.status(400).json({ error: "Invalid AllDebrid API key" });
+  // Persist first (see /realdebrid) so a flaky validation call can't drop the key.
   user.allDebridKey = key;
   await db.save();
-  res.json({ ...publicUser(user), premium: ad.isPremium(acct), username_ad: acct.username });
+  const acct = await ad.accountInfo(key).catch(() => null);
+  res.json({ ...publicUser(user), premium: acct ? ad.isPremium(acct) : false, username_ad: acct?.username });
 }));
 
 // Preferred debrid provider when both are connected.

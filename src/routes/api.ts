@@ -352,8 +352,10 @@ api.get("/health", wrap(async (req, res) => {
   ]);
   res.json({
     ok: true,
-    realdebrid: !token ? "not-connected" : !acct ? "invalid" : rd.isPremium(acct) ? "premium" : "not-premium",
-    alldebrid: !adKey ? "not-connected" : !adAcct ? "invalid" : ad.isPremium(adAcct) ? "premium" : "not-premium",
+    // A saved key whose live check is inconclusive (rate-limit / network) reports
+    // "connected", not "invalid" — the key persists and streaming surfaces real errors.
+    realdebrid: !token ? "not-connected" : !acct ? "connected" : rd.isPremium(acct) ? "premium" : "not-premium",
+    alldebrid: !adKey ? "not-connected" : !adAcct ? "connected" : ad.isPremium(adAcct) ? "premium" : "not-premium",
     debrid: debrid.resolveDebrid(req.user)?.name ?? null, // active provider
     jellyfin: jf,
     trackers: { anilist: anilistOn, mal: malOn },
