@@ -276,7 +276,7 @@
           <button data-pane="account" class="active">👤&nbsp; Account</button>
           <button data-pane="credentials">🔑&nbsp; Required credentials</button>
           <button data-pane="defaults">🗂️&nbsp; Library</button>
-          <button data-pane="jellyfin">🧩&nbsp; Jellyfin</button>
+          <button data-pane="jellyfin" style="display:none">🧩&nbsp; Jellyfin</button>
           <button data-pane="security">🔒&nbsp; Security</button>
           <span class="sp"></span>
           <button data-pane="users" id="usersNavBtn">👥&nbsp; Users</button>
@@ -469,7 +469,7 @@
           </section>
 
           <!-- Jellyfin / API access -->
-          <section class="pane" data-pane="jellyfin">
+          <section class="pane" data-pane="jellyfin" style="display:none">
             <h2>Jellyfin</h2>
             <p class="sub">Watch your Renzo library inside Jellyfin. Your <b>personal API key</b> links the
               Renzo plugin to <i>your</i> account — playback streams through your own Real-Debrid and your
@@ -734,5 +734,6 @@
   </div>
 
   <script src="/app.js"></script>
+  <script src="/tvnav.js"></script>
 </body>
 </html>

@@ -110,6 +110,13 @@ a { color: var(--accent-2); }
 /* Masked text input (used in place of type=password for API tokens etc. so the
    browser's password manager stops treating every field on the page as a login). */
 .masked { -webkit-text-security: disc; text-security: disc; }
+/* TV / game-controller navigation — a bold focus ring, only while tv-nav is on
+   (spatial nav sets body.tv-nav; desktop mouse/keyboard is unaffected). */
+body.tv-nav :focus { outline: 3px solid var(--accent); outline-offset: 3px; scroll-margin: 96px 24px; }
+body.tv-nav .card:focus, body.tv-nav .ep-card:focus, body.tv-nav .season-card:focus,
+body.tv-nav .more-tile:focus, body.tv-nav .wep:focus {
+  outline: none; box-shadow: 0 0 0 3px var(--accent), 0 10px 34px rgba(0,0,0,.55); position: relative; z-index: 1;
+}
 .search select {
   background: var(--s1); border: 1px solid var(--line); color: var(--fg);
   height: 34px; padding: 0 11px; border-radius: 999px; outline: none; transition: border-color .15s, box-shadow .15s;

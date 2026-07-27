@@ -1,0 +1,188 @@
+// ---------------------------------------------------------------------------
+// Renzo TV / console navigation — D-pad + game-controller spatial focus.
+//
+// Activates ONLY on a TV/console (Android TV, Fire TV, Xbox, smart-TV browsers)
+// or when a gamepad connects, so desktop mouse/keyboard behaviour is untouched.
+// Once active it: makes the div-based cards focusable, moves focus with the
+// arrow keys / D-pad by on-screen geometry, activates with Enter / A, and goes
+// back with B. Self-contained — talks to the app only through the DOM.
+// ---------------------------------------------------------------------------
+(function () {
+  "use strict";
+
+  // Div-clickables that aren't natively focusable — give them a tabindex.
+  const DIV_NAV = ".card,.ep-card,.season-card,.more-tile,.wep";
+  // Everything the nav can land on within the visible surface.
+  const FOCUSABLE =
+    'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea,[tabindex]:not([tabindex="-1"]),' +
+    DIV_NAV;
+
+  let tvMode = false;
+
+  function enableTvMode() {
+    if (tvMode) return;
+    tvMode = true;
+    document.body.classList.add("tv-nav");
+    sweep();
+    if (!current()) { const f = focusables(); if (f.length) f[0].focus(); }
+  }
+
+  // Make the div-clickables focusable. Idempotent; re-run after re-renders.
+  function sweep(root) {
+    (root || document).querySelectorAll(DIV_NAV).forEach((el) => {
+      if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+    });
+  }
+  // Grids/lists rebuild via innerHTML, so re-sweep on DOM changes.
+  const mo = new MutationObserver(() => { if (tvMode) sweep(); });
+  try { mo.observe(document.body, { childList: true, subtree: true }); } catch (e) {}
+
+  // The surface the user is looking at — scope navigation to it (mirrors the
+  // app's Escape cascade: lightbox → modal → downloads gate → player → detail → tab).
+  function surface() {
+    const vis = (id) => { const n = document.getElementById(id); return n && !n.classList.contains("hidden") ? n : null; };
+    return vis("imgLightbox")
+      || document.querySelector(".modal:not(.hidden)")
+      || vis("offlineGate")
+      || (document.body.classList.contains("watching") ? vis("view-watch") : null)
+      || vis("detail")
+      || document.querySelector(".view.active")
+      || document.body;
+  }
+
+  function visible(el) {
+    if (el.closest("[hidden]")) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const cs = getComputedStyle(el);
+    return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
+  }
+  function focusables() {
+    return Array.prototype.filter.call(surface().querySelectorAll(FOCUSABLE), visible);
+  }
+  function current() {
+    const a = document.activeElement;
+    return a && a !== document.body && visible(a) ? a : null;
+  }
+
+  // Move focus to the best candidate in a direction, by screen geometry.
+  function move(dir) {
+    const items = focusables();
+    if (!items.length) return;
+    const cur = current();
+    if (!cur || items.indexOf(cur) < 0) { items[0].focus(); center(items[0]); return; }
+    const cr = cur.getBoundingClientRect();
+    const cx = cr.left + cr.width / 2, cy = cr.top + cr.height / 2;
+    const horiz = dir === "left" || dir === "right";
+    let best = null, bestScore = Infinity;
+    for (const el of items) {
+      if (el === cur) continue;
+      const r = el.getBoundingClientRect();
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      const dx = x - cx, dy = y - cy;
+      if (dir === "left" && dx > -4) continue;
+      if (dir === "right" && dx < 4) continue;
+      if (dir === "up" && dy > -4) continue;
+      if (dir === "down" && dy < 4) continue;
+      const primary = horiz ? Math.abs(dx) : Math.abs(dy);
+      const cross = horiz ? Math.abs(dy) : Math.abs(dx);
+      const score = primary + cross * 2.5; // prefer the same row/column
+      if (score < bestScore) { bestScore = score; best = el; }
+    }
+    if (best) { best.focus(); center(best); }
+  }
+  function center(el) { try { el.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (e) {} }
+
+  function activate() {
+    const cur = current();
+    if (!cur) return;
+    const tag = cur.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return; // focus is enough
+    // ep-cards wire the click on a child; click the primary play target.
+    if (cur.classList.contains("ep-card")) {
+      (cur.querySelector(".ep-thumb-wrap") || cur.querySelector(".ep-title") || cur).click();
+    } else {
+      cur.click();
+    }
+  }
+
+  function back() {
+    if (document.body.classList.contains("watching")) { document.getElementById("watchBack")?.click(); return; }
+    const gate = document.getElementById("offlineGate");
+    if (gate && !gate.classList.contains("hidden")) { document.getElementById("offlineClose")?.click(); return; }
+    // Fall through to the app's Escape cascade (lightbox → modal → detail).
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  }
+
+  // --- Keyboard (arrows / Enter) — capture phase so we can preempt the player's
+  //     left/right seek when we're not on the video itself ---------------------
+  const DIRS = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
+  document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && !t.readOnly;
+    const inSelect = t && t.tagName === "SELECT";
+    if (e.key in DIRS) {
+      if (typing) return;                                   // caret movement
+      if (inSelect && (e.key === "ArrowUp" || e.key === "ArrowDown")) return; // change option
+      if (!tvMode) return;                                  // desktop: let arrows scroll
+      // In the player, keep left/right as seek when the video is focused.
+      if (document.body.classList.contains("watching")
+          && document.activeElement === document.getElementById("watchVideo")
+          && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return;
+      e.preventDefault();
+      e.stopPropagation(); // don't also trigger the app's player seek
+      move(DIRS[e.key]);
+    } else if (e.key === "Enter") {
+      if (!tvMode || typing || inSelect) return;
+      if (current() && current().tagName === "BUTTON") return; // native Enter clicks buttons
+      e.preventDefault();
+      activate();
+    }
+  }, true);
+
+  // --- Gamepad (Xbox / generic) — poll and synthesise nav -------------------
+  let padLoop = 0;
+  const held = {};                       // edge-detect + repeat timing per control
+  const REPEAT_MS = 160, DELAY_MS = 420;
+  function edge(name, down, onDown) {
+    const now = performance.now();
+    const s = held[name] || (held[name] = { down: false, next: 0 });
+    if (down) {
+      if (!s.down) { s.down = true; s.next = now + DELAY_MS; onDown(); }
+      else if (now >= s.next) { s.next = now + REPEAT_MS; onDown(); }
+    } else { s.down = false; }
+  }
+  function pollPads() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const p of pads) {
+      if (!p) continue;
+      const b = p.buttons, ax = p.axes || [];
+      const up = (b[12] && b[12].pressed) || ax[1] < -0.5;
+      const down = (b[13] && b[13].pressed) || ax[1] > 0.5;
+      const left = (b[14] && b[14].pressed) || ax[0] < -0.5;
+      const right = (b[15] && b[15].pressed) || ax[0] > 0.5;
+      edge("up", up, () => move("up"));
+      edge("down", down, () => move("down"));
+      edge("left", left, () => move("left"));
+      edge("right", right, () => move("right"));
+      edge("a", b[0] && b[0].pressed, () => activate());   // A / cross
+      edge("b", b[1] && b[1].pressed, () => back());        // B / circle
+    }
+    padLoop = requestAnimationFrame(pollPads);
+  }
+  window.addEventListener("gamepadconnected", () => {
+    enableTvMode();
+    if (!padLoop) padLoop = requestAnimationFrame(pollPads);
+  });
+
+  // Auto-enable on TVs / consoles (no controller-connect event needed there).
+  if (/Android TV|AFT[A-Z]|BRAVIA|GoogleTV|Google TV|Web0S|WebOS|Tizen|SMART-TV|SmartTV|HbbTV|CrKey|Xbox|PlayStation|Nintendo/i
+      .test(navigator.userAgent)) {
+    // Defer so the app has rendered its first view.
+    window.addEventListener("load", () => setTimeout(enableTvMode, 400));
+    if (navigator.getGamepads && !padLoop) padLoop = requestAnimationFrame(pollPads);
+  }
+
+  // Expose a manual toggle for testing / a future settings switch.
+  window.RenzoTV = { enable: enableTvMode, isOn: () => tvMode };
+})();

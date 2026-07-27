@@ -127,7 +127,8 @@ async function main() {
   const BUILD = Date.now().toString(36);
   const indexHtml = readFileSync(resolve(publicDir, "index.html"), "utf8")
     .replace('href="/styles.css"', `href="/styles.css?v=${BUILD}"`)
-    .replace('src="/app.js"', `src="/app.js?v=${BUILD}"`);
+    .replace('src="/app.js"', `src="/app.js?v=${BUILD}"`)
+    .replace('src="/tvnav.js"', `src="/tvnav.js?v=${BUILD}"`);
   const sendIndex = (res: Response) => res.set("Cache-Control", "no-store").type("html").send(indexHtml);
   // Build id for clients (Electron desktop) to poll and auto-refresh on deploy.
   // Unauthenticated + no-store so the poll is cheap and always current.

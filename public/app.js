@@ -534,11 +534,10 @@ async function refreshUpdatesBadge() {
 async function loadStatus() {
   try {
     const s = await api("/health");
-    const rdMap = { premium: "RD ✓", "not-premium": "RD ⚠ (free)", "not-connected": "RD ✗", invalid: "RD ✗" };
+    const rdMap = { premium: "RD ✓", "not-premium": "RD ⚠ (free)", connected: "RD ✓", "not-connected": "RD ✗", invalid: "RD ✗" };
     const rd = rdMap[s.realdebrid] || "RD ✗";
-    const jf = s.jellyfin === true ? "Jellyfin ✓" : s.jellyfin === "not-configured" ? "" : "Jellyfin ✗";
     const tr = [s.trackers.anilist && "AniList", s.trackers.mal && "MAL"].filter(Boolean).join("+");
-    $("#status").textContent = [rd, jf, tr && `⇄ ${tr}`].filter(Boolean).join("  ·  ");
+    $("#status").textContent = [rd, tr && `⇄ ${tr}`].filter(Boolean).join("  ·  "); // Jellyfin hidden
   } catch {
     $("#status").textContent = "offline";
   }
