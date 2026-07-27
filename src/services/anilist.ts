@@ -36,12 +36,26 @@ const MEDIA_FIELDS = `
   bannerImage
 `;
 
-async function gql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// AniList rate-limits aggressively (429, sometimes 30/min in degraded mode) and
+// occasionally 5xx. Retry with backoff so a burst of requests — e.g. walking a
+// season chain while the discovery rows also load — doesn't fail a hop and leave
+// the chain incomplete.
+async function gql<T>(query: string, variables: Record<string, unknown>, attempt = 0): Promise<T> {
   const res = await fetch(ENDPOINT, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ query, variables }),
   });
+  if ((res.status === 429 || res.status >= 500) && attempt < 4) {
+    await res.text().catch(() => {}); // drain the body so the socket can be reused
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const wait = Math.min(retryAfter > 0 ? retryAfter * 1000 : (attempt + 1) * 800, 8000);
+    log.warn(`AniList ${res.status}, retry ${attempt + 1}/4 in ${wait}ms`);
+    await sleep(wait);
+    return gql<T>(query, variables, attempt + 1);
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`AniList ${res.status}: ${body.slice(0, 200)}`);
@@ -275,24 +289,25 @@ async function relationsOf(id: number): Promise<RelInfo> {
 // present no matter which one we start from. AniList only exposes DIRECT
 // neighbours, so from S3 you'd otherwise never see S1 (it's two hops away) — the
 // old code numbered by array index and mislabelled every later season.
-async function buildSeasonChain(startId: number): Promise<Map<number, SeasonNode>> {
+async function buildSeasonChain(startId: number): Promise<{ nodes: Map<number, SeasonNode>; complete: boolean }> {
   const found = new Map<number, SeasonNode>();
   const visited = new Set<number>();
   const queue: number[] = [startId];
+  let complete = true;
   while (queue.length && found.size < 32) {
     const cur = queue.shift()!;
     if (visited.has(cur)) continue;
     visited.add(cur);
     let info: RelInfo;
     try { info = await relationsOf(cur); }
-    catch (e) { log.warn("season chain hop failed", cur, String(e)); continue; }
+    catch (e) { log.warn("season chain hop failed", cur, String(e)); complete = false; continue; }
     found.set(cur, info.node); // authoritative self metadata
     for (const nb of info.neighbours) {
       if (!found.has(nb.node.id)) found.set(nb.node.id, nb.node);
       if (!visited.has(nb.node.id)) queue.push(nb.node.id);
     }
   }
-  return found;
+  return { nodes: found, complete };
 }
 
 // Chronological order: by season year, then AniList id as a stable tiebreak
@@ -306,7 +321,8 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
   if (hit && Date.now() - hit.at < EXTRA_TTL) return hit.data;
   try {
     const self = await relationsOf(id); // episode thumbnails for THIS title
-    const chain = orderSeasons([...(await buildSeasonChain(id)).values()]);
+    const { nodes, complete } = await buildSeasonChain(id);
+    const chain = orderSeasons([...nodes.values()]);
     const numById = new Map(chain.map((n, i) => [n.id, i + 1]));
     const seasonNum = numById.get(id) ?? 1;
     // Other seasons in the chain, each carrying its true (chronological) number.
@@ -326,7 +342,10 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
         relation: numById.get(n.id)! > seasonNum ? "SEQUEL" : "PREQUEL",
       }));
     const result: DetailExtra = { episodes: self.thumbs, seasons, seasonNum };
-    extraCache.set(id, { at: Date.now(), data: result });
+    // Only cache a chain we walked in full — never poison the cache with a
+    // partial chain (a rate-limited hop), which would mislabel seasons for an
+    // hour. An incomplete result is returned best-effort but re-fetched next time.
+    if (complete) extraCache.set(id, { at: Date.now(), data: result });
     return result;
   } catch (e) {
     log.warn("detailExtra failed", id, String(e));
