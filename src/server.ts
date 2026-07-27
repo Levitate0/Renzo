@@ -120,6 +120,9 @@ async function main() {
     .replace('href="/styles.css"', `href="/styles.css?v=${BUILD}"`)
     .replace('src="/app.js"', `src="/app.js?v=${BUILD}"`);
   const sendIndex = (res: Response) => res.set("Cache-Control", "no-store").type("html").send(indexHtml);
+  // Build id for clients (Electron desktop) to poll and auto-refresh on deploy.
+  // Unauthenticated + no-store so the poll is cheap and always current.
+  app.get("/version", (_req, res) => res.set("Cache-Control", "no-store").json({ build: BUILD }));
   app.use(express.static(publicDir, { index: false }));
   app.get("/", (_req, res) => sendIndex(res));
   app.get("*", (_req, res) => sendIndex(res));
