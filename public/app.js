@@ -81,16 +81,34 @@ async function loadHistory() {
   // Preferred: the RenzoSaf plugin — user picks any folder (SD card, etc.), files
   // stream into it, and playback copies to cache on demand (prepare()).
   const Saf = Cap.Plugins && Cap.Plugins.RenzoSaf;
+  const Dl = Cap.Plugins && Cap.Plugins.RenzoDownloader; // background foreground-service downloader
   if (Saf) {
     window.RenzoNative = {
       platform: "capacitor-saf",
       getFolder: async () => { try { return (await Saf.getFolder()).path || null; } catch { return null; } },
       chooseFolder: async () => { try { return (await Saf.pickFolder()).path || null; } catch { return null; } },
-      save: ({ key, video, subs }) => Saf.save({ key, video: abs(video), subs: (subs || []).map((s) => ({ label: s.label, lang: s.lang, src: abs(s.src) })) }),
+      // Prefer the native background downloader (continues when app is closed);
+      // fall back to RenzoSaf.save (in-app thread) on older builds without it.
+      save: ({ key, video, subs, title }) => {
+        const payload = {
+          key, video: abs(video), title: title || "Episode",
+          subs: (subs || []).map((s) => ({ label: s.label, lang: s.lang, src: abs(s.src) })),
+        };
+        return Dl ? Dl.enqueue(payload) : Saf.save(payload);
+      },
       prepare: (key) => Saf.prepare({ key }),      // -> { url: file://, subs:[{label,lang,src:file://}] }
       remove: (key) => Saf.remove({ key }),
       purge: () => Saf.purge(),
       list: async () => { try { return (await Saf.list()).keys || []; } catch { return []; } },
+      background: !!Dl,     // downloads keep running outside the app
+      // Keep-alive: exempt Renzo from battery optimisation so a backgrounded
+      // WebView process isn't killed (which would force a reload on return).
+      keepAliveSupported: !!Dl,
+      keepAlive: () => (Dl ? Dl.requestKeepAlive() : Promise.resolve()),
+      keepAliveEnabled: async () => { try { return Dl ? (await Dl.isKeepAliveEnabled()).enabled : false; } catch { return false; } },
+      requestNotifications: () => (Dl ? Dl.requestNotifications() : Promise.resolve()),
+      downloadStatus: async () => { try { return Dl ? (await Dl.status()).jobs : {}; } catch { return {}; } },
+      onProgress: (cb) => { try { if (Dl && Dl.addListener) Dl.addListener("progress", cb); } catch { /* no live events */ } },
     };
     return;
   }
@@ -169,8 +187,10 @@ const Offline = {
     let entry;
     if (this.native()) {
       // { url, subs:[{label,lang,src}] } with on-disk playable sources.
-      const res = await this.bridge.save({ key: this.k(id, ep), video: r.url, subs });
-      entry = { id, ep, url: res.url, subtitles: res.subs || [], label: label || "", at: Date.now() };
+      const res = await this.bridge.save({ key: this.k(id, ep), video: r.url, subs, title: label || `E${ep}` });
+      // Background downloader resolves immediately (deferred); the file lands via
+      // the foreground service and playback resolves through prepare() later.
+      entry = { id, ep, url: res.url, subtitles: res.subs || [], label: label || "", at: Date.now(), pending: !!res.deferred };
     } else {
       if (!this.supported()) throw new Error("Offline isn't supported in this browser");
       const c = await caches.open(this.CACHE);
@@ -257,6 +277,30 @@ window.addEventListener("offline", () => { markOffline(); updateOfflineUi(); });
 if (!navigator.onLine) markOffline();
 updateOfflineUi();                         // reflect current state on boot
 if (navigator.onLine) schedulePurge();     // reconnected while closed? purge (only if we'd been offline)
+
+// Native shells (Capacitor): relay background-download progress and, once, ask the
+// OS to keep Renzo alive so backgrounding it doesn't force a full reload on return.
+async function maybeSetupNativeBackground() {
+  const b = Offline.bridge;
+  if (!b) return;
+  if (b.onProgress) b.onProgress((ev) => {
+    if (!ev) return;
+    if (ev.state === "done") { markOfflineReady(ev.key); toast(`Downloaded ${ev.title || ""}`.trim()); }
+    else if (ev.state === "error") toast(`Download failed: ${ev.error || "unknown"}`);
+  });
+  if (!b.keepAliveSupported) return;
+  try { if (b.requestNotifications) await b.requestNotifications(); } catch { /* ignore */ }
+  try {
+    if (localStorage.getItem("renzo:keepAliveAsked") === "1") return;
+    if (!(await b.keepAliveEnabled())) await b.keepAlive(); // one-time OS exemption prompt
+    localStorage.setItem("renzo:keepAliveAsked", "1");
+  } catch { /* ignore */ }
+}
+// A deferred (background) download finished — clear the pending flag on its entry.
+function markOfflineReady(key) {
+  const m = Offline.man();
+  if (m[key] && m[key].pending) { m[key].pending = false; Offline.saveMan(m); }
+}
 
 // Register the offline service worker (kept here, not inline in index.html, so it
 // passes the strict CSP script-src 'self').
@@ -1959,6 +2003,7 @@ function startApp(user) {
   $("#acctMenuRole").textContent = roleLabel(user.role);
   loadStatus();
   renderContentChips();
+  maybeSetupNativeBackground();
   loadBrowse();
   loadJobs();
   refreshUpdatesBadge();
