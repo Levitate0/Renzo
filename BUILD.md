@@ -104,6 +104,35 @@ build (Android requires a higher `versionCode` to update in place). `versionName
 the same within a release (e.g. `1.2.0`, versionCode 10 → 11 → 12…) — a higher versionCode
 installs over the existing app and **keeps user data**. Same keystore = in-place update.
 
+**TV support:** the manifest declares a `LEANBACK_LAUNCHER` category + `uses-feature`
+`leanback`/`touchscreen` `required=false` + a 320×180 `@drawable/renzo_tv_banner`, so the SAME
+APK installs on phones **and** Android TV / Fire TV. Fire TV = free sideload / Amazon Appstore.
+
+### Google Play — App Bundle for no-sideload TV installs
+
+Play needs an **`.aab`** (App Bundle), not an APK, and uses **Play App Signing** (you upload
+signed with your keystore as the *upload key*; Google re-signs for distribution).
+
+```bash
+cd capacitor/android
+./gradlew :app:bundleRelease --no-daemon
+# -> app/build/outputs/bundle/release/app-release.aab   (unsigned)
+# Sign with the keystore as the upload key (jarsigner, not apksigner — AABs are JAR-signed):
+KSPASS="$(grep 'store/key pass' ../../signing/CREDENTIALS.txt | awk -F': ' '{print $2}')"
+jarsigner -keystore ../../signing/renzo-release.jks -storepass "$KSPASS" -keypass "$KSPASS" \
+  -sigalg SHA256withRSA -digestalg SHA-256 -signedjar ../../artifacts/Renzo.aab \
+  app/build/outputs/bundle/release/app-release.aab renzo
+jarsigner -verify ../../artifacts/Renzo.aab
+```
+
+**Distribution (no sideloading):** this app can't go on a **public** Play listing (anime
+torrent/debrid ⇒ IP-policy rejection, risks the account). Use a **Closed testing** track
+instead: create the app (declare the **Android TV** form factor), upload `Renzo.aab`, complete
+App content (privacy policy — see `HANDOFF_renzo-apps_privacy-policy.md`, Data safety, Content
+rating **18+**), then add testers by email / a Google Group. They install from the **Play Store**
+on the TV via the opt-in link — no unknown-sources, no ADB, auto-updates. Store fees are
+**per developer account** ($25 one-time Google Play), so one account covers Renzo + Shiori.
+
 ---
 
 ## 3. Windows desktop app (Electron)  — `renzo-clients/desktop`
