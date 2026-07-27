@@ -121,7 +121,7 @@ function logHistory(user: UserRecord, id: number, ep: number): void {
 /** Apply this user's per-title "on add" defaults the first time a title enters
  *  their library. Best-effort — folder/auto mutate the db (caller saves);
  *  tracker sync is fire-and-forget so the add stays snappy. */
-function applyAddDefaults(user: UserRecord, t: Title): void {
+function applyAddDefaults(user: UserRecord, t: Title, opts?: { track?: boolean }): void {
   const d = user.addDefaults;
   if (!d) return;
   if (d.folder && userFolders(user).includes(d.folder)) {
@@ -132,10 +132,82 @@ function applyAddDefaults(user: UserRecord, t: Title): void {
     user.autoTitles ??= [];
     if (!user.autoTitles.includes(t.id)) user.autoTitles.push(t.id);
   }
-  if (d.track && isTrackStatus(d.track)) {
+  // Tracking is per-season (each AniList entry is its own list item), so only
+  // apply the track default to the title actually being added — never siblings.
+  if (opts?.track !== false && d.track && isTrackStatus(d.track)) {
     // setTracking resolves the tracker token itself (incl. the auth site).
     tracker.setTracking(t, user, { status: d.track }).catch((e) => log.warn("addDefaults track", t.id, String(e)));
   }
+}
+
+// --- Season unification ----------------------------------------------------
+// Library membership, auto-download, folder, and list/favorite membership are
+// shared across ALL seasons of a series (user request). Tracking/watch progress
+// stay per-season. seasonChainIds resolves every season id (incl. this one);
+// the write handlers fan out to them, and reconcileSeries heals any pre-existing
+// state that predates this behaviour when a title is loaded.
+async function seasonChainIds(id: number): Promise<number[]> {
+  try { return await anilist.seasonSiblings(id); }
+  catch { return [id]; }
+}
+
+// Auto-download turned on → queue the entire aired back-catalogue (all seasons,
+// all past episodes), not just future ones. Background + best-effort: the per-user
+// active-download cap defers the tail, which the scheduled auto-downloader picks
+// up. Errors are swallowed so the toggle itself always succeeds.
+function backfillSeries(user: UserRecord, ids: number[]): void {
+  if (user.downloadsDenied) return;
+  void (async () => {
+    for (const sid of ids) {
+      try {
+        const r = await downloadSeason(sid, user);
+        if (r.queued) log.info(`auto backfill: queued ${r.queued} ep(s) of ${sid} for ${user.username}`);
+      } catch (e) {
+        log.warn("auto backfill", sid, String(e));
+      }
+    }
+  })();
+}
+
+// Add a whole series (every season) to the user's library, applying per-user add
+// defaults to each newly-added season (tracker default only for the clicked one).
+async function addSeriesToLibrary(user: UserRecord, primaryId: number): Promise<void> {
+  for (const sid of await seasonChainIds(primaryId)) {
+    const st = await getOrCreateTitle(sid);
+    if (addToLibrary(user, st.id)) applyAddDefaults(user, st, { track: sid === primaryId });
+  }
+}
+
+// Union library / auto-download / list membership across the given season ids so
+// every season matches (if ANY season has it, they all get it). Returns true if
+// anything changed. Folder is left to the explicit folder handler (it moves files).
+function reconcileSeries(user: UserRecord, ids: number[]): boolean {
+  if (ids.length < 2) return false;
+  let changed = false;
+
+  const lib = new Set(user.library ?? []);
+  if (ids.some((sid) => lib.has(sid))) {
+    for (const sid of ids) if (!lib.has(sid)) { lib.add(sid); changed = true; }
+    user.library = [...lib];
+  }
+
+  if (!user.downloadsDenied) {
+    const auto = new Set(user.autoTitles ?? []);
+    if (ids.some((sid) => auto.has(sid))) {
+      for (const sid of ids) if (!auto.has(sid)) { auto.add(sid); changed = true; }
+      user.autoTitles = [...auto];
+    }
+  }
+
+  user.lists ??= {};
+  for (const name of Object.keys(user.lists)) {
+    const set = new Set(user.lists[name]);
+    if (ids.some((sid) => set.has(sid))) {
+      for (const sid of ids) if (!set.has(sid)) { set.add(sid); changed = true; }
+      user.lists[name] = [...set];
+    }
+  }
+  return changed;
 }
 
 /**
@@ -334,9 +406,13 @@ api.post("/titles/:id/folder", wrap(async (req, res) => {
   user.folders ??= [DEFAULT_FOLDER];
   if (!user.folders.some((f) => f.toLowerCase() === folder.toLowerCase())) user.folders.push(folder);
   const canonical = user.folders.find((f) => f.toLowerCase() === folder.toLowerCase()) ?? folder;
-  const from = folderOf(user, t.id);
-  addToLibrary(user, t.id);
-  if (from !== canonical) await moveTitleToFolder(user, t, from, canonical);
+  // Folder choice applies to every season of the series (moves each one's files).
+  for (const sid of await seasonChainIds(t.id)) {
+    const st = await getOrCreateTitle(sid);
+    const from = folderOf(user, st.id);
+    addToLibrary(user, st.id);
+    if (from !== canonical) await moveTitleToFolder(user, st, from, canonical);
+  }
   await db.save();
   res.json({ id: t.id, folder: canonical });
 }));
@@ -358,11 +434,16 @@ api.post("/titles/:id/lists", wrap(async (req, res) => {
   if (!list) return res.status(400).json({ error: "invalid list name" });
   user.lists ??= {};
   const cur = new Set(user.lists[list] ?? []);
-  if (req.body?.on) {
-    cur.add(t.id);
-    if (addToLibrary(user, t.id)) applyAddDefaults(user, t); // anything you list is in your library
-  } else {
-    cur.delete(t.id);
+  const on = Boolean(req.body?.on);
+  // List/favorite membership applies to every season of the series.
+  for (const sid of await seasonChainIds(t.id)) {
+    const st = await getOrCreateTitle(sid);
+    if (on) {
+      cur.add(st.id);
+      if (addToLibrary(user, st.id)) applyAddDefaults(user, st, { track: sid === t.id }); // anything you list is in your library
+    } else {
+      cur.delete(st.id);
+    }
   }
   if (cur.size) user.lists[list] = [...cur];
   else delete user.lists[list];
@@ -374,28 +455,36 @@ api.post("/library", wrap(async (req, res) => {
   const id = Number(req.body?.anilistId ?? req.body?.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "anilistId required" });
   const t = await getOrCreateTitle(id);
-  if (addToLibrary(req.user, t.id) && req.user) applyAddDefaults(req.user, t);
+  if (req.user) await addSeriesToLibrary(req.user, t.id); // adds every season
   await db.save();
   res.json(cardFromTitle(t, req.user));
 }));
 
 // Remove a title from MY library only (shared files/metadata are untouched).
+// Removing removes the WHOLE series (all seasons) + their auto/list membership.
 api.delete("/library/:id", wrap(async (req, res) => {
   const user = req.user!;
-  const id = Number(req.params.id);
-  if (user.library) user.library = user.library.filter((x) => x !== id);
+  const ids = new Set(await seasonChainIds(Number(req.params.id)));
+  if (user.library) user.library = user.library.filter((x) => !ids.has(x));
+  if (user.autoTitles) user.autoTitles = user.autoTitles.filter((x) => !ids.has(x));
   for (const name of Object.keys(user.lists ?? {})) {
-    user.lists[name] = user.lists[name].filter((x) => x !== id);
+    user.lists[name] = user.lists[name].filter((x) => !ids.has(x));
     if (!user.lists[name].length) delete user.lists[name];
   }
-  watch.dropWatch(user, id); // forget this title's watch links
+  for (const sid of ids) watch.dropWatch(user, sid); // forget each season's watch links
   await db.save();
   res.json({ ok: true });
 }));
 
 api.get("/titles/:id", wrap(async (req, res) => {
   const t = await getOrCreateTitle(Number(req.params.id));
-  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1 }));
+  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1, seasonPart: null }));
+  // Heal legacy per-season state: if any sibling season is in the library / auto /
+  // a list, bring the whole series into lockstep before we read state below.
+  if (req.user) {
+    const siblingIds = [t.id, ...extra.seasons.map((s) => s.id)];
+    if (reconcileSeries(req.user, siblingIds)) await db.save();
+  }
   const detail = detailFromTitle(t, req.user);
   // Merge per-episode preview thumbnails + episode titles (fallback: banner/poster).
   const episodeList = detail.episodeList.map((e) => {
@@ -407,6 +496,7 @@ api.get("/titles/:id", wrap(async (req, res) => {
     episodeList,
     seasons: extra.seasons,
     seasonNum: extra.seasonNum, // this title's true season number in the chain
+    seasonPart: extra.seasonPart, // split-cour part, if any (e.g. Season 2 Part 2)
     watchedThrough: req.user ? watchedEp(req.user, t.id) : 0, // last episode marked watched
     lists: userLists(req.user, t.id),
     inLibrary: inLibrary(req.user, t.id),
@@ -493,9 +583,15 @@ api.post("/titles/:id/auto", wrap(async (req: AuthedRequest, res) => {
   const t = await getOrCreateTitle(Number(req.params.id));
   const on = Boolean(req.body?.enabled);
   const set = new Set(user.autoTitles ?? []);
-  if (on) { set.add(t.id); addToLibrary(user, t.id); } else set.delete(t.id);
+  // Auto-download applies to every season of the series.
+  const ids = await seasonChainIds(t.id);
+  for (const sid of ids) {
+    const st = await getOrCreateTitle(sid);
+    if (on) { set.add(st.id); addToLibrary(user, st.id); } else set.delete(st.id);
+  }
   user.autoTitles = [...set];
   await db.save();
+  if (on) backfillSeries(user, ids); // grab the whole aired back-catalogue now
   res.json({ id: t.id, autoDownload: on });
 }));
 
@@ -618,6 +714,11 @@ api.post("/titles/:id/retry/:ep", wrap(async (req, res) => {
   requireToken(user);
   const id = Number(req.params.id);
   const ep = Math.max(1, Number(req.params.ep) || 1);
+  // Clear the old failed job row(s) for this episode so retrying replaces it in
+  // place instead of leaving a stale "failed" instance next to the new attempt.
+  for (const j of db.jobs().filter((j) => j.userId === user.id && j.titleId === id && j.episode === ep && j.status === "failed")) {
+    await db.removeJob(j.id);
+  }
   const rec = peekUserEp(user, id, ep);
   if (rec) { rec.rdTorrentId = undefined; rec.status = "wanted"; await db.save(); } // fresh search
   const job = await queue.enqueue(id, ep, user.id);

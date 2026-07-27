@@ -454,17 +454,16 @@ function renderSeasons(d) {
   const row = $("#seasonsRow");
   row.innerHTML = "";
   const seasons = [
-    { id: d.id, title: d.english || d.romaji, year: d.year, poster: d.poster, num: d.seasonNum, current: true },
-    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, poster: s.poster, num: s.num })),
+    { id: d.id, title: d.english || d.romaji, year: d.year, poster: d.poster, num: d.seasonNum, part: d.seasonPart, current: true },
+    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, poster: s.poster, num: s.num, part: s.part })),
   ];
   if (seasons.length < 2) { row.classList.add("hidden"); return; }
-  seasons.sort((a, b) => (a.num || 0) - (b.num || 0) || (a.year || 0) - (b.year || 0));
+  seasons.sort((a, b) => (a.num || 0) - (b.num || 0) || (a.part || 0) - (b.part || 0) || (a.year || 0) - (b.year || 0));
   row.classList.remove("hidden");
   seasons.forEach((s, i) => {
-    const n = s.num || i + 1; // backend season number (chronological across the whole chain)
     const card = el("div", "season-card" + (s.current ? " current" : ""));
     card.innerHTML = `<img loading="lazy" src="${esc(s.poster || "")}" alt="" onerror="this.style.opacity=.15" />
-      <div class="lbl">S${n}${s.year ? ` · ${s.year}` : ""}${s.current ? " (this)" : ""}</div>`;
+      <div class="lbl">${esc(seasonChip(s, i))}${s.year ? ` · ${s.year}` : ""}${s.current ? " (this)" : ""}</div>`;
     if (!s.current) card.addEventListener("click", () => openDetail(s.id, true)); // flat stack → Back = menu
     row.append(card);
   });
@@ -754,14 +753,20 @@ function airedCount(d) {
   return (d.episodeList || []).filter((e) => e.aired !== false).length || 1;
 }
 function orderedSeasons(d) {
-  return [{ id: d.id, title: d.english || d.romaji, year: d.year, num: d.seasonNum, current: true },
-    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, num: s.num }))]
-    .sort((a, b) => (a.num || 0) - (b.num || 0) || (a.year || 0) - (b.year || 0));
+  return [{ id: d.id, title: d.english || d.romaji, year: d.year, num: d.seasonNum, part: d.seasonPart, current: true },
+    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, num: s.num, part: s.part }))]
+    .sort((a, b) => (a.num || 0) - (b.num || 0) || (a.part || 0) - (b.part || 0) || (a.year || 0) - (b.year || 0));
 }
 function seasonNumber(d) {
   if (d.seasonNum) return d.seasonNum; // authoritative number from the backend chain
   const i = orderedSeasons(d).findIndex((s) => s.id === d.id);
   return i < 0 ? 1 : i + 1;
+}
+// Compact chip label: "S2" or, for split-cours, "S2 Pt2". `word=true` spells it out.
+function seasonChip(s, i, word) {
+  const n = s.num || i + 1;
+  const base = word ? `Season ${n}` : `S${n}`;
+  return s.part ? `${base}${word ? " Part " : " Pt"}${s.part}` : base;
 }
 
 function renderWatchShell(d) {
@@ -773,8 +778,7 @@ function renderWatchShell(d) {
     sel.innerHTML = "";
     seasons.forEach((s, i) => {
       const o = document.createElement("option");
-      const n = s.num || i + 1;
-      o.value = s.id; o.textContent = `Season ${n}${s.year ? ` · ${s.year}` : ""}`;
+      o.value = s.id; o.textContent = `${seasonChip(s, i, true)}${s.year ? ` · ${s.year}` : ""}`;
       if (s.id === d.id) o.selected = true;
       sel.append(o);
     });
@@ -811,7 +815,7 @@ async function goToEp(ep) {
   history.replaceState(null, "", `#/watch/${watch.watchId}/${ep}`); // no reload (no hashchange)
 
   $("#watchTitle").textContent = isMovie ? (d.english || d.romaji) : `E${ep}${meta.epTitle ? ` · ${meta.epTitle}` : ""}`;
-  $("#watchEpNo").textContent = isMovie ? "Movie" : `Season ${seasonNumber(d)}`;
+  $("#watchEpNo").textContent = isMovie ? "Movie" : seasonChip({ num: seasonNumber(d), part: d.seasonPart }, 0, true);
   $("#watchDesc").textContent = d.description || "";
   highlightEp(ep);
   const isMv = isMovie;

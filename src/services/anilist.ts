@@ -190,9 +190,10 @@ export interface EpisodeThumb { title: string; thumbnail: string | null }
 export interface SeasonRef {
   id: number; title: string; year: number | null; format: string | null;
   episodes: number | null; poster: string | null; relation: string; status: string | null;
-  num: number; // 1-based chronological season number within the full chain
+  num: number;          // season number within the full chain (from title, else position)
+  part: number | null;  // split-cour part ("Season 2 Part 2" -> 2), else null
 }
-interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[]; seasonNum: number }
+interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[]; seasonNum: number; seasonPart: number | null }
 
 const extraCache = new Map<number, { at: number; data: DetailExtra }>();
 const EXTRA_TTL = 60 * 60_000;
@@ -206,7 +207,25 @@ interface RelInfo { node: SeasonNode; thumbs: EpisodeThumb[]; neighbours: { rela
 
 const relCache = new Map<number, { at: number; data: RelInfo }>();
 const REL_TTL = 60 * 60_000;
+// Formats shown as numbered seasons.
 const SEASON_FORMATS = ["TV", "TV_SHORT", "ONA"];
+// Formats we FOLLOW prequel/sequel edges through — includes OVA/Special so a
+// bridge entry (e.g. Slime's "Visions of Coleus" OVA between S1 and S2) keeps the
+// chain connected. Bridges are traversed but filtered out of the seasons list.
+const TRAVERSE_FORMATS = ["TV", "TV_SHORT", "ONA", "OVA", "SPECIAL"];
+
+// Derive a season number + split-cour part from a title, e.g.
+// "… Season 2 Part 2" -> {num:2, part:2}, "… 3rd Season" -> {num:3}. Bare
+// trailing numbers are ignored (too many false positives like "Gundam 00").
+function seasonParts(title: string): { num: number | null; part: number | null } {
+  const t = title.toLowerCase();
+  let num: number | null = null;
+  let m = t.match(/\bseason\s+(\d+)\b/) || t.match(/\b(\d+)\s*(?:st|nd|rd|th)\s+season\b/);
+  if (m) num = Number(m[1]);
+  const pm = t.match(/\bpart\s+(\d+)\b/) || t.match(/\bcour\s+(\d+)\b/);
+  const part = pm ? Number(pm[1]) : null;
+  return { num, part };
+}
 
 // Fetch a single media's own metadata, episode thumbnails, and its DIRECT
 // prequel/sequel TV/ONA neighbours. Cached per id so a chain walk that revisits
@@ -267,7 +286,7 @@ async function relationsOf(id: number): Promise<RelInfo> {
   });
   const neighbours = (m.relations?.edges ?? [])
     .filter((e) => ["PREQUEL", "SEQUEL"].includes(e.relationType) &&
-      e.node.type === "ANIME" && SEASON_FORMATS.includes(e.node.format ?? ""))
+      e.node.type === "ANIME" && TRAVERSE_FORMATS.includes(e.node.format ?? ""))
     .map((e) => ({
       relation: e.relationType,
       node: {
@@ -322,12 +341,24 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
   try {
     const self = await relationsOf(id); // episode thumbnails for THIS title
     const { nodes, complete } = await buildSeasonChain(id);
-    const chain = orderSeasons([...nodes.values()]);
-    const numById = new Map(chain.map((n, i) => [n.id, i + 1]));
+    // Drop OVA/Special bridges from the displayed seasons (but always keep the
+    // title being viewed), then order chronologically.
+    const displayed = [...nodes.values()].filter((n) => n.id === id || SEASON_FORMATS.includes(n.format ?? ""));
+    const chain = orderSeasons(displayed);
+    // Season number: prefer the number in the title ("Season 4"), so split-cours
+    // and OVA bridges don't offset it; fall back to chronological position.
+    const numById = new Map<number, number>();
+    const partById = new Map<number, number | null>();
+    chain.forEach((n, i) => {
+      const { num, part } = seasonParts(n.title);
+      numById.set(n.id, num ?? i + 1);
+      partById.set(n.id, part);
+    });
     const seasonNum = numById.get(id) ?? 1;
-    // Other seasons in the chain, each carrying its true (chronological) number.
-    // relation is derived vs. the current season so consumers (Updates feed) can
-    // still tell which are sequels — now correct even across multiple hops.
+    const seasonPart = partById.get(id) ?? null;
+    // Other seasons in the chain. relation is derived vs. the current season so
+    // consumers (Updates feed) can still tell which are sequels — correct even
+    // across multiple hops / bridge entries.
     const seasons: SeasonRef[] = chain
       .filter((n) => n.id !== id)
       .map((n) => ({
@@ -339,9 +370,10 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
         poster: n.poster,
         status: n.status,
         num: numById.get(n.id)!,
+        part: partById.get(n.id) ?? null,
         relation: numById.get(n.id)! > seasonNum ? "SEQUEL" : "PREQUEL",
       }));
-    const result: DetailExtra = { episodes: self.thumbs, seasons, seasonNum };
+    const result: DetailExtra = { episodes: self.thumbs, seasons, seasonNum, seasonPart };
     // Only cache a chain we walked in full — never poison the cache with a
     // partial chain (a rate-limited hop), which would mislabel seasons for an
     // hour. An incomplete result is returned best-effort but re-fetched next time.
@@ -349,8 +381,19 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
     return result;
   } catch (e) {
     log.warn("detailExtra failed", id, String(e));
-    return { episodes: [], seasons: [], seasonNum: 1 };
+    return { episodes: [], seasons: [], seasonNum: 1, seasonPart: null };
   }
+}
+
+/** Every season id in this title's series chain, INCLUDING the given id. Used to
+ *  keep per-user state (library/auto/folder/lists) in lockstep across seasons.
+ *  Best-effort: returns at least [id] if the chain can't be fully walked. */
+export async function seasonSiblings(id: number): Promise<number[]> {
+  const { nodes } = await buildSeasonChain(id);
+  const ids = [...nodes.values()]
+    .filter((n) => n.id === id || SEASON_FORMATS.includes(n.format ?? "")) // exclude OVA/Special bridges
+    .map((n) => n.id);
+  return ids.length ? ids : [id];
 }
 
 /** Convert an AniList record into a library Title skeleton (no episodes yet). */
