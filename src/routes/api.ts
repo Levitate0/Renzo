@@ -758,8 +758,8 @@ api.get("/titles/:id/offline/:ep", wrap(async (req, res) => {
   const ep = Math.max(1, Number(req.params.ep) || 1);
   const r = await resolveStream(id, ep, user);
   if (r.source !== "local") return res.status(409).json({ error: "Download this episode to your library first" });
-  const dt = mintDownloadToken(user.id);
-  const withTok = (u: string) => u + (u.includes("?") ? "&" : "?") + "dtoken=" + encodeURIComponent(dt);
+  // One token per URL, each bound to that exact path (a leak exposes only that file).
+  const withTok = (u: string) => u + (u.includes("?") ? "&" : "?") + "dtoken=" + encodeURIComponent(mintDownloadToken(user.id, u));
   res.json({
     source: "local",
     url: withTok(r.url),

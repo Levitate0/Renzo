@@ -228,32 +228,41 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
 // Short-lived, HMAC-signed tokens authorizing DOWNLOADS ONLY (files + captions),
 // for native downloaders (Capacitor) that can't read the httpOnly session cookie.
 // Format: <userId>.<expMs>.<hmac>. Never grants general API access.
-const DTOKEN_TTL_MS = 6 * 60 * 60_000; // 6h — enough to grab offline downloads before a trip
+const DTOKEN_TTL_MS = 2 * 60 * 60_000; // 2h — enough for large downloads, short blast radius
 
-export function mintDownloadToken(userId: string): string {
-  const body = `${userId}.${Date.now() + DTOKEN_TTL_MS}`;
+// Keyed hash binding a token to ONE resource path, so a leaked token authorizes
+// only that exact file/caption (not the user's whole library).
+function scopeHash(scope: string): string {
+  return createHmac("sha256", db.dtokenSecret()).update("scope:" + scope).digest("base64url").slice(0, 22);
+}
+export function mintDownloadToken(userId: string, scope: string): string {
+  const body = `${userId}.${Date.now() + DTOKEN_TTL_MS}.${scopeHash(scope)}`;
   const sig = createHmac("sha256", db.dtokenSecret()).update(body).digest("base64url");
   return `${body}.${sig}`;
 }
 
-export function userFromDownloadToken(token: string | undefined): UserRecord | undefined {
+export function userFromDownloadToken(token: string | undefined, scope: string): UserRecord | undefined {
   if (!token) return undefined;
   const parts = token.split(".");
-  if (parts.length !== 3) return undefined;
-  const [userId, expStr, sig] = parts;
+  if (parts.length !== 4) return undefined;
+  const [userId, expStr, sh, sig] = parts;
   const exp = Number(expStr);
   if (!Number.isFinite(exp) || exp < Date.now()) return undefined;
-  const expected = createHmac("sha256", db.dtokenSecret()).update(`${userId}.${expStr}`).digest("base64url");
+  const expected = createHmac("sha256", db.dtokenSecret()).update(`${userId}.${expStr}.${sh}`).digest("base64url");
   const a = Buffer.from(sig), b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return undefined;
-  return db.getUser(userId);
+  if (sh !== scopeHash(scope)) return undefined;          // token minted for a different path
+  const u = db.getUser(userId);
+  if (!u || u.downloadsDenied) return undefined;          // denied accounts can't use outstanding tokens
+  return u;
 }
 
-// Middleware for the file + caption download routes: accept a valid ?dtoken= as an
-// alternative to the session cookie; otherwise fall back to normal auth.
+// Middleware for the file + caption download routes: accept a ?dtoken= scoped to
+// THIS request's path as an alternative to the session cookie; else normal auth.
 export function downloadAuth(req: AuthedRequest, res: Response, next: NextFunction): void {
   const dt = typeof req.query?.dtoken === "string" ? req.query.dtoken : undefined;
-  const u = userFromDownloadToken(dt);
+  const scope = req.originalUrl.split("?")[0]; // the exact requested pathname
+  const u = userFromDownloadToken(dt, scope);
   if (u) { req.user = u; return next(); }
   return requireAuth(req, res, next);
 }
