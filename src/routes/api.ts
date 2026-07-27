@@ -551,6 +551,9 @@ api.get("/titles/:id", wrap(async (req, res) => {
   const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1, seasonPart: null, duration: null }));
   // Heal legacy per-season state: if any sibling season is in the library / auto /
   // a list, bring the whole series into lockstep before we read state below.
+  // Persist the canonical series key (same logic as the library) so offline
+  // downloads can group seasons even before the library grid is ever opened.
+  await resolveSeriesKeys([t]).catch(() => new Map());
   if (req.user) {
     const siblingIds = [t.id, ...extra.seasons.map((s) => s.id)];
     if (reconcileSeries(req.user, siblingIds)) await db.save();
@@ -732,7 +735,7 @@ api.get("/updates", wrap(async (req, res) => {
     kind: "episode" | "movie" | "season";
     id: number; type: string; title: string; poster: string | null;
     ep?: number; latest?: number; releasing?: boolean; upcoming?: boolean; year?: number | null;
-    key: number; sortYear: number; rank: number;
+    season?: number | null; key: number; sortYear: number; rank: number;
   }
   const items: Upd[] = [];
 
@@ -758,7 +761,8 @@ api.get("/updates", wrap(async (req, res) => {
       if (!["RELEASING", "NOT_YET_RELEASED", "FINISHED"].includes(s.status ?? "")) continue;
       seenSeasons.add(s.id);
       items.push({ kind: "season", id: s.id, type: "series", title: s.title, poster: s.poster ?? null, year: s.year,
-        upcoming: s.status === "NOT_YET_RELEASED", key: canon(id), sortYear: s.year ?? 0, rank: 2 });
+        upcoming: s.status === "NOT_YET_RELEASED", season: (s as { num?: number }).num ?? null,
+        key: canon(id), sortYear: s.year ?? 0, rank: 2 });
     }
   }
 
@@ -772,10 +776,12 @@ api.get("/updates", wrap(async (req, res) => {
   // Attach the representative's true season number so the card can read "New · S3 E4".
   const out: unknown[] = [];
   for (const rep of reps) {
-    const ex = await anilist.detailExtra(rep.id).catch(() => null);
-    const { key, sortYear, rank, ...card } = rep;
+    // Reuse the season number we already have (new-season reps carry it); only
+    // fall back to a detailExtra lookup when it's unknown (owned-episode reps).
+    const ex = rep.season == null ? await anilist.detailExtra(rep.id).catch(() => null) : null;
+    const { key, sortYear, rank, season, ...card } = rep;
     void key; void sortYear; void rank;
-    out.push({ ...card, title: baseSeriesName(card.title), season: ex?.seasonNum ?? null, seasonPart: ex?.seasonPart ?? null });
+    out.push({ ...card, title: baseSeriesName(card.title), season: season ?? ex?.seasonNum ?? null, seasonPart: ex?.seasonPart ?? null });
   }
   res.json(out);
 }));

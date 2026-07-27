@@ -15,6 +15,7 @@ export interface MalCard {
   year: number | null;
   poster: string | null;
   genres: string[];
+  content: string[]; // adult categories (hentai/ecchi/erotica) for the content filter
 }
 
 const cache = new Map<string, { at: number; data: MalCard[] }>();
@@ -30,6 +31,20 @@ async function jikan(path: string): Promise<{ data?: unknown[] }> {
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+// Adult categories from Jikan. Jikan keeps Hentai/Erotica in a separate
+// `explicit_genres` field (never in `genres`), plus a `rating` like "Rx - Hentai",
+// so derive the filter tags from the FULL set — not the display genres (sliced to 3).
+function malContent(a: any): string[] {
+  const names = [...(a.genres ?? []), ...(a.explicit_genres ?? [])]
+    .map((g: any) => String(g?.name || "").toLowerCase());
+  const rating = String(a.rating || "").toLowerCase();
+  const tags: string[] = [];
+  const hentai = names.includes("hentai") || rating.includes("hentai");
+  if (hentai) tags.push("hentai");
+  if (names.includes("ecchi")) tags.push("ecchi");
+  if (!hentai && (names.includes("erotica") || rating.startsWith("rx"))) tags.push("erotica");
+  return tags;
+}
 function toCard(a: any): MalCard | null {
   if (!a || !a.mal_id) return null;
   return {
@@ -40,6 +55,7 @@ function toCard(a: any): MalCard | null {
     year: a.year ?? a.aired?.prop?.from?.year ?? null,
     poster: a.images?.jpg?.large_image_url || a.images?.jpg?.image_url || null,
     genres: (a.genres ?? []).map((g: any) => g?.name).filter(Boolean).slice(0, 3),
+    content: malContent(a),
   };
 }
 

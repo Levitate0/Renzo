@@ -742,10 +742,12 @@ async function renderDetail(id) {
 // Paint the detail page from a detail object. Shared by the online page and the
 // offline page (fed from cached metadata) so both look identical; server-only
 // controls are hidden when `offline`.
+let offlineDetailOpen = false; // showing the offline (Downloads) detail page?
 function paintDetail(d, opts) {
   const offline = !!(opts && opts.offline);
   current = d;
   detailShownId = offline ? null : d.id; // offline pages aren't hash-routed
+  if (!offline) offlineDetailOpen = false; // a real online page → Back resumes normal nav
   $("#detailBanner").style.backgroundImage = `url(${d.banner || d.poster || ""})`;
   $("#detailPoster").src = d.poster || "";
   $("#detailPoster").style.visibility = d.poster ? "" : "hidden";
@@ -1117,6 +1119,9 @@ async function toggleOffline(id, ep, label, saved) {
       toast("Saved — available offline until you reconnect");
     }
     invalidateDetail(id); // refresh the ⤓ badge / menu label
+    // The offline detail page isn't hash-routed (detailShownId is null), so
+    // invalidateDetail no-ops there — repaint it directly to refresh badges.
+    if (offlineDetailOpen && current && current.id === id) paintDetail(offlineDetail(id), { offline: true });
   } catch (e) { toast(e.message || String(e)); }
 }
 
@@ -1194,6 +1199,9 @@ function clearTracks(video) { video.querySelectorAll("track").forEach((t) => t.r
 // Play buttons everywhere call this: mint/reuse a per-series watch id, then
 // navigate to its URL. The hash router renders the player.
 async function play(id, ep) {
+  // Offline: there's no server to mint a watch link — play the saved copy directly
+  // (goToEp's offline branch reads it). Fixes playback from the offline detail page.
+  if (!navigator.onLine) return playOffline(id, ep);
   try {
     const r = await api(`/titles/${id}/watch`, { method: "POST" });
     location.hash = `#/watch/${r.watchId}/${ep || 1}`;
@@ -1866,7 +1874,6 @@ function offlineDetail(id) {
   };
 }
 // Open the exact detail page for a downloaded series (from the Downloads gate).
-let offlineDetailOpen = false;
 function openOfflineDetail(id) {
   $("#offlineGate").classList.add("hidden");
   $("#detail").scrollTop = 0;
