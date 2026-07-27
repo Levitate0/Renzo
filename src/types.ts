@@ -36,6 +36,7 @@ export interface Title {
   episodeCount?: number;  // total episodes (series)
   description?: string;
   genres: string[];
+  isAdult?: boolean;      // AniList adult flag (hentai / R18) — for content filtering
   poster?: string;        // cover image url (AniList)
   banner?: string;
   airingStatus?: string;      // FINISHED | RELEASING | NOT_YET_RELEASED | ...

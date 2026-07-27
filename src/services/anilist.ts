@@ -13,6 +13,7 @@ export interface AniListMedia {
   nextAiringEpisode: { episode: number } | null;
   seasonYear: number | null;
   genres: string[];
+  isAdult: boolean;
   description: string | null;
   title: { romaji: string | null; english: string | null; native: string | null };
   synonyms: string[];
@@ -29,6 +30,7 @@ const MEDIA_FIELDS = `
   nextAiringEpisode { episode }
   seasonYear
   genres
+  isAdult
   description(asHtml: false)
   title { romaji english native }
   synonyms
@@ -70,7 +72,7 @@ export async function searchAnime(search: string, type?: MediaType): Promise<Ani
   const query = `
     query ($search: String, $formats: [MediaFormat]) {
       Page(perPage: 24) {
-        media(search: $search, type: ANIME, format_in: $formats, sort: SEARCH_MATCH, isAdult: false) {
+        media(search: $search, type: ANIME, format_in: $formats, sort: SEARCH_MATCH) {
           ${MEDIA_FIELDS}
         }
       }
@@ -86,7 +88,7 @@ export async function trendingAnime(): Promise<AniListMedia[]> {
   const query = `
     query {
       Page(perPage: 30) {
-        media(type: ANIME, sort: TRENDING_DESC, isAdult: false) {
+        media(type: ANIME, sort: TRENDING_DESC) {
           ${MEDIA_FIELDS}
         }
       }
@@ -413,6 +415,7 @@ export function toTitle(m: AniListMedia): Title {
     episodeCount: type === "movie" ? 1 : m.episodes ?? undefined,
     description: (m.description ?? undefined)?.replace(/<[^>]+>/g, "").trim(),
     genres: m.genres ?? [],
+    isAdult: m.isAdult ?? false,
     poster: m.coverImage?.extraLarge ?? m.coverImage?.large ?? undefined,
     banner: m.bannerImage ?? undefined,
     airingStatus: m.status ?? undefined,

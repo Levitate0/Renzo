@@ -41,6 +41,18 @@ function wrap(fn: (req: AuthedRequest, res: Response) => Promise<unknown>) {
 }
 
 // --- DTO mappers -----------------------------------------------------------
+// Adult-content categories for the on-page filter chips (hentai / ecchi / erotica).
+// Derived from the FULL genre list + AniList's isAdult flag (must run before any
+// genres.slice(0,3) so a category tag beyond the first 3 genres isn't lost).
+export function contentTags(genres: string[] | undefined, isAdult: boolean | undefined): string[] {
+  const g = (genres ?? []).map((x) => x.toLowerCase());
+  const tags: string[] = [];
+  const hentai = g.includes("hentai");
+  if (hentai) tags.push("hentai");
+  if (g.includes("ecchi")) tags.push("ecchi");
+  if (isAdult && !hentai) tags.push("erotica"); // adult-flagged but not hentai-genre
+  return tags;
+}
 function cardFromMedia(m: AniListMedia) {
   return {
     id: m.id,
@@ -49,6 +61,7 @@ function cardFromMedia(m: AniListMedia) {
     year: m.seasonYear,
     poster: m.coverImage?.extraLarge ?? m.coverImage?.large ?? null,
     genres: (m.genres ?? []).slice(0, 3),
+    content: contentTags(m.genres, m.isAdult),
   };
 }
 function userLists(user: UserRecord | undefined, titleId: number): string[] {
@@ -240,6 +253,7 @@ function cardFromTitle(t: Title, user?: UserRecord) {
     year: t.year ?? null,
     poster: t.poster ?? null,
     genres: t.genres.slice(0, 3),
+    content: contentTags(t.genres, t.isAdult),
     inLibrary: inLibrary(user, t.id),
     lists: userLists(user, t.id),
     folder: user ? folderOf(user, t.id) : DEFAULT_FOLDER,

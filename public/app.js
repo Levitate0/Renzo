@@ -373,6 +373,64 @@ async function loadStatus() {
 }
 
 // ---------------------------------------------------------------------------
+// content filters (hentai / ecchi / erotica) — on-page chips, not in Settings
+// ---------------------------------------------------------------------------
+const CONTENT_FILTER_KEY = "renzo:contentFilter";
+const CONTENT_CATS = [["hentai", "Hentai"], ["ecchi", "Ecchi"], ["erotica", "Erotica"]];
+// Persisted map of category -> hidden? Default: hentai + erotica hidden, ecchi shown
+// (ecchi is a mainstream genre, so hiding it by default would remove too much).
+let contentFilter = loadContentFilter();
+function loadContentFilter() {
+  const def = { hentai: true, erotica: true, ecchi: false };
+  try { return { ...def, ...JSON.parse(localStorage.getItem(CONTENT_FILTER_KEY) || "{}") }; }
+  catch { return def; }
+}
+function saveContentFilter() {
+  try { localStorage.setItem(CONTENT_FILTER_KEY, JSON.stringify(contentFilter)); } catch {}
+}
+// A card's adult categories: prefer the server-computed `content`, else derive from
+// genres (covers MAL fallback cards, which carry genres but no `content`/isAdult).
+function contentCatsOf(item) {
+  if (item && item.content && item.content.length) return item.content;
+  const g = (item.genres || []).map((x) => String(x).toLowerCase());
+  const cats = [];
+  if (g.includes("hentai")) cats.push("hentai");
+  if (g.includes("ecchi")) cats.push("ecchi");
+  return cats;
+}
+function isHidden(item) {
+  return contentCatsOf(item).some((c) => contentFilter[c]);
+}
+function renderContentChips() {
+  document.querySelectorAll(".content-chips").forEach((box) => {
+    box.innerHTML = "";
+    box.append(el("span", "content-chips-label", "🔞 Filter"));
+    CONTENT_CATS.forEach(([key, label]) => {
+      const hidden = !!contentFilter[key];
+      const chip = el("button", "chip content-chip" + (hidden ? " filtered" : ""), (hidden ? "🚫 " : "👁 ") + label);
+      chip.title = hidden ? `${label} hidden — click to show` : `${label} shown — click to hide`;
+      chip.addEventListener("click", () => {
+        contentFilter[key] = !contentFilter[key];
+        saveContentFilter();
+        renderContentChips();
+        reflowGrids();
+      });
+      box.append(chip);
+    });
+  });
+}
+// Re-render every grid from its cached items so a filter change takes effect
+// instantly without refetching. Browse rows re-append their trailing "More" tile.
+function reflowGrids() {
+  document.querySelectorAll(".grid").forEach((g) => {
+    const items = gridCache.get(g);
+    if (items) renderGrid(g, items);
+  });
+  [["#trendingGrid", "trending"], ["#recommendedGrid", "recommended"], ["#newSeasonGrid", "newSeason"]]
+    .forEach(([sel, key]) => { const g = $(sel); if (g && gridCache.get(g)) appendMoreTile(g, key); });
+}
+
+// ---------------------------------------------------------------------------
 // cards + grids
 // ---------------------------------------------------------------------------
 function makeCard(item) {
@@ -401,10 +459,14 @@ function makeCard(item) {
   });
   return c;
 }
+const gridCache = new WeakMap(); // grid element -> last items (for instant content-filter reflow)
 function renderGrid(target, items) {
+  if (!target) return;
+  gridCache.set(target, items);
   target.innerHTML = "";
-  if (!items.length) { target.append(el("div", "empty", "Nothing here yet.")); return; }
-  items.forEach((it) => target.append(makeCard(it)));
+  const vis = (items || []).filter((it) => !isHidden(it));
+  if (!vis.length) { target.append(el("div", "empty", "Nothing here yet.")); return; }
+  vis.forEach((it) => target.append(makeCard(it)));
 }
 
 const browseData = {};
@@ -758,14 +820,20 @@ function populateFolderSelect(folders, current) {
   const sel = $("#folderSelect");
   sel.innerHTML = "";
   const names = [...new Set([...(folders || []), current].filter(Boolean))];
+  // Never leave "+ New folder…" as the only (and therefore selected) option — a
+  // native <select> won't fire `change` when you pick the already-selected option,
+  // so the New-folder prompt would never open. Guarantee a real folder is present.
+  if (!names.length) names.push("Library");
+  const cur = current && names.includes(current) ? current : names[0];
   names.forEach((n) => {
     const o = document.createElement("option");
-    o.value = n; o.textContent = n; if (n === current) o.selected = true;
+    o.value = n; o.textContent = n; if (n === cur) o.selected = true;
     sel.append(o);
   });
   const nw = document.createElement("option");
   nw.value = "__new__"; nw.textContent = "+ New folder…";
   sel.append(nw);
+  sel.value = cur; // keep a real folder as the resting selection
 }
 
 $("#folderSelect").addEventListener("change", async () => {
@@ -1889,6 +1957,7 @@ function startApp(user) {
   $("#acctMenuName").textContent = user.username;
   $("#acctMenuRole").textContent = roleLabel(user.role);
   loadStatus();
+  renderContentChips();
   loadBrowse();
   loadJobs();
   refreshUpdatesBadge();
