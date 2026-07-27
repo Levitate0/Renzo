@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div id="offlineBar" class="offline-bar hidden"></div>
   <header class="topbar">
     <div class="brand"><img src="/brand/renzo-banner.png" alt="Renzo" class="brand-logo" /></div>
     <nav class="tabs">
@@ -567,6 +568,18 @@
       <div id="authError" class="auth-error"></div>
       <button id="forgotBtn" class="link-btn">Forgot password?</button>
     </div>
+  </div>
+
+  <!-- Offline mode: reached on a no-network launch; plays saved downloads -->
+  <div id="offlineGate" class="offline-gate hidden">
+    <header class="offline-gate-head">
+      <img src="/brand/renzo-banner.png" alt="Renzo" class="offline-gate-logo" />
+      <span class="offline-tag">● Offline</span>
+      <button id="offlineRetry" class="ghost">Retry connection</button>
+    </header>
+    <h2 class="offline-gate-title">Your downloads</h2>
+    <div id="offlineGrid" class="ep-grid"></div>
+    <div id="offlineEmpty" class="empty hidden">You're offline and haven't saved any downloads yet.</div>
   </div>
 
   <!-- Password reset (opened from an emailed link) -->

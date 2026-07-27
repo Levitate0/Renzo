@@ -70,6 +70,95 @@ async function loadHistory() {
   } catch { /* ignore */ }
 }
 
+// ---------------------------------------------------------------------------
+// Offline downloads — save while online, watch with no network, auto-purge on
+// reconnect. The browser/PWA path stores in the SW cache; native shells
+// (Electron/Capacitor) can override window.RenzoNative later. Storage layout is
+// a localStorage manifest of { id, ep, url, subtitles[] } keyed "id:ep".
+// ---------------------------------------------------------------------------
+const Offline = {
+  CACHE: "renzo-offline-v1",
+  KEY: "renzo:offline",
+  supported() { return "serviceWorker" in navigator && "caches" in window; },
+  man() { try { return JSON.parse(localStorage.getItem(this.KEY) || "{}"); } catch { return {}; } },
+  saveMan(m) { try { localStorage.setItem(this.KEY, JSON.stringify(m)); } catch { /* quota */ } },
+  k(id, ep) { return `${id}:${ep}`; },
+  has(id, ep) { return !!this.man()[this.k(id, ep)]; },
+  get(id, ep) { return this.man()[this.k(id, ep)] || null; },
+  count() { return Object.keys(this.man()).length; },
+  subUrls(e) { return (e.subtitles || []).map((s) => `/api/captions/${s.id}.vtt`); },
+  // Cache the local video + its subtitle tracks, then record the manifest entry.
+  async save(id, ep, r, label) {
+    if (!this.supported()) throw new Error("Offline isn't supported in this browser");
+    if (r.source !== "local") throw new Error("Download this episode to your library first");
+    const c = await caches.open(this.CACHE);
+    for (const u of [r.url, ...this.subUrls(r)]) {
+      try { await c.add(new Request(u, { credentials: "include" })); } catch { /* subtitle may 404 */ }
+    }
+    const m = this.man();
+    m[this.k(id, ep)] = { id, ep, url: r.url, subtitles: r.subtitles || [], label: label || "", at: Date.now() };
+    this.saveMan(m);
+  },
+  async remove(id, ep) {
+    const e = this.get(id, ep);
+    if (e && this.supported()) {
+      const c = await caches.open(this.CACHE);
+      for (const u of [e.url, ...this.subUrls(e)]) await c.delete(u, { ignoreSearch: true }).catch(() => {});
+    }
+    const m = this.man(); delete m[this.k(id, ep)]; this.saveMan(m);
+  },
+  async purgeAll() {
+    if (this.supported()) { try { await caches.delete(this.CACHE); } catch { /* ignore */ } }
+    this.saveMan({});
+  },
+};
+
+// Downloads are purged on RECONNECT — i.e. only after we've actually been
+// offline (so downloads saved while online, prepping for a trip, survive until
+// you've gone offline and come back). The flag records "we were offline since the
+// last purge"; it survives an app restart so a reconnect-while-closed still purges.
+const OFFLINE_FLAG = "renzo:offlineUsed";
+function markOffline() { try { localStorage.setItem(OFFLINE_FLAG, "1"); } catch { /* ignore */ } }
+function wasOffline() { try { return localStorage.getItem(OFFLINE_FLAG) === "1"; } catch { return false; } }
+function clearOfflineFlag() { try { localStorage.removeItem(OFFLINE_FLAG); } catch { /* ignore */ } }
+
+let _purgeTimer = null;
+function schedulePurge() {
+  if (!Offline.count() || !wasOffline()) return;         // only after an offline session
+  clearTimeout(_purgeTimer);
+  _purgeTimer = setTimeout(async () => {
+    if (!navigator.onLine) return;                       // dropped again — keep them (debounce flaky wifi)
+    try { await fetch("/version", { cache: "no-store" }); } catch { return; } // server truly reachable?
+    const n = Offline.count();
+    await Offline.purgeAll();
+    clearOfflineFlag();
+    if (!n) return;
+    toast(`Back online — cleared ${n} offline download${n === 1 ? "" : "s"}`);
+    updateOfflineUi();
+    if (current && !$("#detail").classList.contains("hidden")) { detailShownId = null; enterDetail(current.id); }
+  }, 8000);
+}
+function updateOfflineUi() {
+  const bar = $("#offlineBar");
+  if (!bar) return;
+  const off = !navigator.onLine;
+  bar.classList.toggle("hidden", !off);
+  if (off) bar.textContent = Offline.count()
+    ? `● Offline — ${Offline.count()} download${Offline.count() === 1 ? "" : "s"} available`
+    : "● Offline — no downloads saved";
+}
+window.addEventListener("online", () => { schedulePurge(); updateOfflineUi(); });
+window.addEventListener("offline", () => { markOffline(); updateOfflineUi(); });
+if (!navigator.onLine) markOffline();
+updateOfflineUi();                         // reflect current state on boot
+if (navigator.onLine) schedulePurge();     // reconnected while closed? purge (only if we'd been offline)
+
+// Register the offline service worker (kept here, not inline in index.html, so it
+// passes the strict CSP script-src 'self').
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+
 // The player/detail overlays sit below the sticky topbar; keep their top offset
 // in sync with the topbar's real height (it wraps taller on narrow screens).
 function syncTopbarH() {
@@ -654,6 +743,7 @@ function renderEpisodes(d) {
         <img class="ep-thumb" loading="lazy" src="${esc(ep.thumbnail || fallback)}" alt="" onerror="this.src='${esc(fallback)}'" />
         ${!unaired ? `<div class="ep-ov">${ov}</div>` : ""}
         ${badge ? `<span class="ep-badge${watched ? " done" : ep.hasFile ? " saved" : ""}">${esc(badge)}</span>` : ""}
+        ${Offline.has(d.id, ep.number) ? '<span class="ep-off">⤓ Offline</span>' : ""}
         ${pct > 0 && pct < 100 ? `<div class="ep-prog" style="width:${pct}%"></div>` : ""}
       </div>
       <div class="ep-series">${esc(series)}</div>
@@ -684,6 +774,13 @@ function renderEpisodes(d) {
           dl.addEventListener("click", (ev) => { ev.stopPropagation(); closeEpMenus(); downloadEp(d.id, ep.number); });
           menu.append(dl);
         }
+        // Offline: available once the episode is in the library. Auto-purged on reconnect.
+        if (ep.hasFile && Offline.supported()) {
+          const saved = Offline.has(d.id, ep.number);
+          const off = el("button", "", saved ? "Remove offline copy" : "Save offline");
+          off.addEventListener("click", (ev) => { ev.stopPropagation(); closeEpMenus(); toggleOffline(d.id, ep.number, `${series} · E${ep.number}`, saved); });
+          menu.append(off);
+        }
         card.querySelector(".ep-foot").append(menu);
       });
       card.querySelector(".ep-foot").append(kebab);
@@ -699,6 +796,20 @@ document.addEventListener("click", (e) => { if (!e.target.closest(".ep-foot")) c
 async function downloadEp(id, ep) {
   try { await api(`/titles/${id}/download/${ep}`, { method: "POST" }); toast(`Downloading E${ep}…`); }
   catch (e) { toast(e.message); }
+}
+
+// Save/remove an episode for offline viewing (auto-purged when back online).
+async function toggleOffline(id, ep, label, saved) {
+  try {
+    if (saved) { await Offline.remove(id, ep); toast("Removed offline copy"); }
+    else {
+      toast("Saving for offline…");
+      const r = await api(`/titles/${id}/play/${ep}`);
+      await Offline.save(id, ep, r, label);
+      toast("Saved — available offline until you reconnect");
+    }
+    invalidateDetail(id); // refresh the ⤓ badge / menu label
+  } catch (e) { toast(e.message || String(e)); }
 }
 
 async function toggleList(listName) {
@@ -876,10 +987,22 @@ async function goToEp(ep) {
   video.pause(); clearTracks(video); video.removeAttribute("src");
 
   try {
-    const r = (watch.prefetch && watch.prefetch.ep === ep && await watch.prefetch.p)
-      || await api(`/titles/${watch.titleId}/play/${ep}`);
+    // No network: play the saved offline copy if we have one, else say so.
+    const off = Offline.get(watch.titleId, ep);
+    let r;
+    if (!navigator.onLine) {
+      if (!off) {
+        badge.textContent = "offline"; badge.className = "source-badge";
+        $("#watchNote").textContent = "Not saved for offline — download it while you have a connection.";
+        return;
+      }
+      r = { source: "local", url: off.url, subtitles: off.subtitles || [], offline: true };
+    } else {
+      r = (watch.prefetch && watch.prefetch.ep === ep && await watch.prefetch.p)
+        || await api(`/titles/${watch.titleId}/play/${ep}`);
+    }
     if (!watch || watch.gen !== gen) return; // a newer goToEp() superseded us — don't clobber it
-    badge.textContent = r.source === "local" ? "● Local file" : "● Real-Debrid";
+    badge.textContent = r.offline ? "● Offline copy" : r.source === "local" ? "● Local file" : "● Real-Debrid";
     badge.className = "source-badge " + (r.source === "local" ? "local" : "rd");
     video.src = r.url;
     (r.subtitles || []).forEach((s) => {
@@ -966,6 +1089,7 @@ function startAutoNext(nextEp) {
 
 // --- watch controls (bound once) -------------------------------------------
 $("#watchBack").addEventListener("click", () => {
+  if (offlineMode) return offlineBack();
   const tid = watch && watch.titleId;
   if (history.length > START_LEN) history.back();
   else location.hash = tid ? `#/title/${tid}` : ""; // deep-linked → fall back to the series page
@@ -976,6 +1100,7 @@ $("#watchBack").addEventListener("click", () => {
 $("#watchSeriesLink").addEventListener("click", (e) => {
   e.preventDefault();
   if (!watch) return;
+  if (offlineMode) return offlineBack();
   const tid = watch.titleId;
   if (detailShownId === tid && history.length > START_LEN) history.back();
   else location.hash = `#/title/${tid}`;
@@ -1250,17 +1375,82 @@ async function boot() {
   const resetTok = new URLSearchParams(location.search).get("reset");
   if (resetTok) return showReset(resetTok);
 
-  let info;
+  let info, netFail = false;
   try {
     const res = await fetch("/api/auth/me", { credentials: "same-origin" });
     info = res.ok ? await res.json() : { setupRequired: false };
     if (res.status === 401) info = { unauthorized: true };
-  } catch { info = { unauthorized: true }; }
+  } catch { netFail = true; info = { unauthorized: true }; }
+
+  // Server unreachable (offline / down): drop into offline mode so saved
+  // downloads are still watchable. A 401 is a real auth failure → login gate.
+  if (netFail) return startOfflineMode();
 
   if (info.setupRequired) return showSetup();
   if (info.unauthorized || !info.user) return showAuthGate("login");
   startApp(info.user);
 }
+
+// ---- offline mode (no network at launch) ----------------------------------
+let offlineMode = false;
+function startOfflineMode() {
+  offlineMode = true;
+  markOffline(); // we launched with no server → we've been offline
+  $("#offlineGate").classList.remove("hidden");
+  updateOfflineUi();
+  renderOfflineLibrary();
+}
+function renderOfflineLibrary() {
+  const grid = $("#offlineGrid");
+  const items = Object.values(Offline.man()).sort((a, b) => (a.id - b.id) || (a.ep - b.ep));
+  $("#offlineEmpty").classList.toggle("hidden", items.length > 0);
+  grid.innerHTML = "";
+  items.forEach((e) => {
+    const series = (e.label || `Title ${e.id}`).split(" · ")[0];
+    const card = el("div", "ep-card");
+    card.innerHTML = `
+      <div class="ep-thumb-wrap">
+        <img class="ep-thumb" src="/android-chrome-512x512.png" alt="" style="object-fit:contain;background:#0b0c10" />
+        <div class="ep-ov">▶</div>
+        <span class="ep-off">⤓ Offline</span>
+      </div>
+      <div class="ep-series">${esc(series)}</div>
+      <div class="ep-title">E${e.ep}</div>
+      <div class="ep-foot"><span class="ep-sub">Saved</span></div>`;
+    card.querySelector(".ep-thumb-wrap").addEventListener("click", () => playOffline(e.id, e.ep));
+    card.querySelector(".ep-title").addEventListener("click", () => playOffline(e.id, e.ep));
+    grid.append(card);
+  });
+}
+// Build a minimal detail from the offline manifest so the normal player + goToEp
+// (which already prefers the saved copy when offline) can drive playback.
+function offlineDetail(id) {
+  const eps = Object.values(Offline.man()).filter((e) => e.id === id).sort((a, b) => a.ep - b.ep);
+  const series = (eps[0]?.label || `Title ${id}`).split(" · ")[0];
+  return {
+    id, type: "series", english: series, romaji: series, description: "",
+    seasonNum: 1, seasonPart: null, seasons: [], banner: "", poster: "",
+    episodeList: eps.map((e) => ({ number: e.ep, aired: true, hasFile: true, epTitle: null, thumbnail: null })),
+    watchedThrough: 0,
+  };
+}
+function playOffline(id, ep) {
+  const d = offlineDetail(id);
+  watch = { watchId: "offline:" + id, titleId: id, detail: d, ep: null, prefetch: null };
+  $("#offlineGate").classList.add("hidden");
+  renderWatchShell(d);
+  showWatchView();
+  goToEp(ep);
+}
+function offlineBack() {
+  const v = $("#watchVideo"); if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
+  document.body.classList.remove("watching");
+  $("#view-watch").classList.add("hidden");
+  watch = null;
+  $("#offlineGate").classList.remove("hidden");
+  renderOfflineLibrary();
+}
+$("#offlineRetry").addEventListener("click", () => location.reload());
 
 // ---- invite acceptance ----
 let inviteToken = null;

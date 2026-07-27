@@ -267,7 +267,24 @@ main { padding: 26px 22px 60px; max-width: 1440px; margin: 0 auto; }
 .ep-menu button:hover { background: var(--s3); }
 .ep-card.unaired { opacity: .5; cursor: default; }
 .ep-card.unaired .ep-ov { display: none; }
+.ep-off { position: absolute; left: 8px; top: 8px; font-size: 10.5px; font-weight: 700; color: #fff;
+  background: rgba(46,160,120,.92); padding: 2px 7px; border-radius: 6px; letter-spacing: .02em; }
 .movie-play { margin-top: 6px; }
+
+/* Offline banner (shown when the device has no network) */
+.offline-bar { position: sticky; top: 0; z-index: 60; text-align: center; font-size: 12.5px; font-weight: 600;
+  color: #fff; background: linear-gradient(90deg, #b4712a, #8a5320); padding: 6px 12px; }
+.offline-bar.hidden { display: none; }
+
+/* Offline mode (no-network launch) — full-screen saved-downloads browser */
+.offline-gate { position: fixed; inset: 0; z-index: 90; overflow: auto; background: var(--bg);
+  padding: 20px clamp(16px, 4vw, 40px) 60px; }
+.offline-gate.hidden { display: none; }
+.offline-gate-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.offline-gate-logo { height: 34px; }
+.offline-tag { color: #e0a458; font-weight: 700; font-size: 13px; }
+.offline-gate-head #offlineRetry { margin-left: auto; }
+.offline-gate-title { font-size: 20px; margin: 6px 0 16px; }
 
 /* ---------- player ---------- */
 .player-card { width: min(1120px, 96vw); background: #000; }
