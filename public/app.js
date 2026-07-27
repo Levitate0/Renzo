@@ -341,7 +341,7 @@ async function loadUpdates() {
     badge.classList.toggle("hidden", items.length === 0);
     const cards = items.map((u) => ({
       id: u.id, type: u.type, title: u.title, poster: u.poster, year: u.year,
-      updKind: u.kind, ep: u.ep, upcoming: u.upcoming,
+      updKind: u.kind, ep: u.ep, upcoming: u.upcoming, season: u.season,
     }));
     renderGrid($("#updatesGrid"), cards);
     if (!items.length) $("#updatesGrid").innerHTML = '<div class="empty">You\'re all caught up — no new episodes or seasons.</div>';
@@ -435,8 +435,9 @@ function reflowGrids() {
 // ---------------------------------------------------------------------------
 function makeCard(item) {
   const c = el("div", "card");
-  const ribbon = item.updKind === "episode" ? `<span class="upd-ribbon">New · E${item.ep}</span>`
-    : item.updKind === "season" ? `<span class="upd-ribbon season">${item.upcoming ? "Soon" : "New season"}</span>`
+  const sTag = item.season ? `S${item.season} ` : "";
+  const ribbon = item.updKind === "episode" ? `<span class="upd-ribbon">New · ${sTag}E${item.ep}</span>`
+    : item.updKind === "season" ? `<span class="upd-ribbon season">${item.upcoming ? "Soon" : "New season"}${item.season ? ` · S${item.season}` : ""}</span>`
     : item.updKind === "movie" ? `<span class="upd-ribbon">Available</span>` : "";
   const upnext = item.upNext ? `<div class="upnext">▶ Up next · E${item.upNext}</div>` : "";
   c.innerHTML = `

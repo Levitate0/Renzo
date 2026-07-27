@@ -273,8 +273,12 @@ function baseSeriesName(name: string): string {
 // chain, and represent each series with its LATEST season (newest cover), under
 // the base series name. Season lookups are cached, and siblings discovered from
 // one title are reused so we don't re-walk the chain for every season.
-async function groupLibraryBySeries(titles: Title[], user?: UserRecord): Promise<unknown[]> {
-  const canonicalOf = new Map<number, number>(); // title id -> canonical series key
+// Map each title id -> canonical series key (the id shared by every season of a
+// series). Uses the persisted seriesKey when available (no AniList call), else
+// walks the season chain and persists the key once fully resolved. Shared by the
+// library grouping and the updates feed so both collapse a series identically.
+async function resolveSeriesKeys(titles: Title[]): Promise<Map<number, number>> {
+  const canonicalOf = new Map<number, number>();
   let dirty = false;
   for (const t of titles) {
     if (canonicalOf.has(t.id)) continue;
@@ -291,6 +295,11 @@ async function groupLibraryBySeries(titles: Title[], user?: UserRecord): Promise
     canonicalOf.set(t.id, key);
   }
   if (dirty) await db.save();
+  return canonicalOf;
+}
+
+async function groupLibraryBySeries(titles: Title[], user?: UserRecord): Promise<unknown[]> {
+  const canonicalOf = await resolveSeriesKeys(titles);
   const groups = new Map<number, Title[]>();
   for (const t of titles) {
     const key = canonicalOf.get(t.id) ?? t.id;
@@ -714,18 +723,28 @@ api.get("/updates", wrap(async (req, res) => {
   const user = req.user!;
   const libIds = user.library ?? [];
   const inLib = new Set(libIds);
-  const items: unknown[] = [];
+  const libTitles = libIds.map((id) => db.getTitle(id)).filter((t): t is Title => !!t);
+  const keyOf = await resolveSeriesKeys(libTitles);
+  const canon = (id: number) => keyOf.get(id) ?? id;
 
-  for (const id of libIds) {
-    const t = db.getTitle(id);
-    if (!t) continue;
+  interface Upd {
+    kind: "episode" | "movie" | "season";
+    id: number; type: string; title: string; poster: string | null;
+    ep?: number; latest?: number; releasing?: boolean; upcoming?: boolean; year?: number | null;
+    key: number; sortYear: number; rank: number;
+  }
+  const items: Upd[] = [];
+
+  for (const t of libTitles) {
     const avail = availableEpisodes(t);
-    const w = watchedEp(user, id);
+    const w = watchedEp(user, t.id);
     if (t.type === "series" && avail > w) {
-      items.push({ kind: "episode", id, type: "series", title: t.english ?? t.romaji, poster: t.poster,
-        ep: w + 1, latest: avail, releasing: t.airingStatus === "RELEASING" });
+      items.push({ kind: "episode", id: t.id, type: "series", title: t.english ?? t.romaji, poster: t.poster ?? null,
+        ep: w + 1, latest: avail, releasing: t.airingStatus === "RELEASING",
+        key: canon(t.id), sortYear: t.year ?? 0, rank: 1 });
     } else if (t.type === "movie" && avail >= 1 && w < 1) {
-      items.push({ kind: "movie", id, type: "movie", title: t.english ?? t.romaji, poster: t.poster });
+      items.push({ kind: "movie", id: t.id, type: "movie", title: t.english ?? t.romaji, poster: t.poster ?? null,
+        key: canon(t.id), sortYear: t.year ?? 0, rank: 1 });
     }
   }
 
@@ -737,11 +756,27 @@ api.get("/updates", wrap(async (req, res) => {
       if (s.relation !== "SEQUEL" || inLib.has(s.id) || seenSeasons.has(s.id)) continue;
       if (!["RELEASING", "NOT_YET_RELEASED", "FINISHED"].includes(s.status ?? "")) continue;
       seenSeasons.add(s.id);
-      items.push({ kind: "season", id: s.id, type: "series", title: s.title, poster: s.poster, year: s.year,
-        upcoming: s.status === "NOT_YET_RELEASED" });
+      items.push({ kind: "season", id: s.id, type: "series", title: s.title, poster: s.poster ?? null, year: s.year,
+        upcoming: s.status === "NOT_YET_RELEASED", key: canon(id), sortYear: s.year ?? 0, rank: 2 });
     }
   }
-  res.json(items);
+
+  // Collapse to ONE representative card per series (same grouping as the library):
+  // prefer a brand-new season, else the latest owned season's episode/movie update.
+  const groups = new Map<number, Upd[]>();
+  for (const it of items) (groups.get(it.key) ?? groups.set(it.key, []).get(it.key)!).push(it);
+  const reps = [...groups.values()].map((g) =>
+    g.slice().sort((a, b) => b.rank - a.rank || b.sortYear - a.sortYear || b.id - a.id)[0]);
+
+  // Attach the representative's true season number so the card can read "New · S3 E4".
+  const out: unknown[] = [];
+  for (const rep of reps) {
+    const ex = await anilist.detailExtra(rep.id).catch(() => null);
+    const { key, sortYear, rank, ...card } = rep;
+    void key; void sortYear; void rank;
+    out.push({ ...card, title: baseSeriesName(card.title), season: ex?.seasonNum ?? null, seasonPart: ex?.seasonPart ?? null });
+  }
+  res.json(out);
 }));
 
 // --- Jobs (only MY jobs; admin sees all) -----------------------------------
