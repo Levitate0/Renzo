@@ -1298,8 +1298,15 @@ function parseTitleHash() {
   const m = location.hash.match(/^#\/title\/(\d+)$/);
   return m ? { id: Number(m[1]) } : null;
 }
+function parseSettingsHash() {
+  const m = location.hash.match(/^#\/settings(?:\/([a-z]+))?$/);
+  return m ? (m[1] || "account") : null;
+}
 function route() {
   if (!me) return;
+  const s = parseSettingsHash();
+  if (s) { if (watch) exitWatch(); hideDetail(); showSettingsPage(s); return; } // dedicated config page
+  if (!$("#settings").classList.contains("hidden")) $("#settings").classList.add("hidden"); // left the config route
   const w = parseWatchHash();
   const t = parseTitleHash();
   if (w) enterWatch(w.watchId, w.ep);              // showWatchView() hides the detail page
@@ -1832,6 +1839,7 @@ async function loadJobs() {
 // ---------------------------------------------------------------------------
 function openModal(sel) { $(sel).classList.remove("hidden"); }
 function closeModal(node) {
+  if (node && node.id === "settings") { location.hash = ""; return; } // routed config page — clear the URL
   node.classList.add("hidden");
 }
 document.querySelectorAll("[data-close]").forEach((b) =>
@@ -2253,7 +2261,7 @@ $("#settingsBtn").addEventListener("click", () => openSettings("account"));
 
 // pane navigation
 document.querySelectorAll(".settings-nav button[data-pane]").forEach((btn) => {
-  btn.addEventListener("click", () => setPane(btn.dataset.pane));
+  btn.addEventListener("click", () => { location.hash = "#/settings/" + btn.dataset.pane; });
 });
 function setPane(name) {
   document.querySelectorAll(".settings-nav button[data-pane]").forEach((b) =>
@@ -2316,10 +2324,16 @@ function applyHealth(h) {
   if (me) { me.realDebridConnected = h.realdebrid !== "not-connected"; me.allDebridConnected = h.alldebrid !== "not-connected"; }
 }
 
-async function openSettings(pane) {
+// Navigate to the dedicated config page (routed at #/settings[/pane]).
+function openSettings(pane) {
+  location.hash = "#/settings" + (pane && pane !== "account" ? "/" + pane : "");
+}
+async function showSettingsPage(pane) {
+  const wasOpen = !$("#settings").classList.contains("hidden");
   $("#acctMenu").classList.add("hidden");
   openModal("#settings");
   setPane(pane || "account");
+  if (wasOpen) return; // just switched panes — skip the (re)fetch/populate below
   try {
     const [meRes, h] = await Promise.all([
       fetch("/api/auth/me", { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
