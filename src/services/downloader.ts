@@ -393,6 +393,16 @@ class DownloadQueue {
     return job;
   }
 
+  // Move a queued job to the front of the line ("Download now"). No-op if it's
+  // already active (can't preempt) or unknown. Returns true if it's now next up.
+  prioritize(jobId: string): boolean {
+    const i = this.pending.indexOf(jobId);
+    if (i < 0) return false;
+    if (i > 0) { this.pending.splice(i, 1); this.pending.unshift(jobId); }
+    this.pump();
+    return true;
+  }
+
   private pump(): void {
     while (this.active.size < config.downloadConcurrency && this.pending.length) {
       const id = this.pending.shift()!;

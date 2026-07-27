@@ -749,6 +749,15 @@ api.get("/jobs", wrap(async (req, res) => {
   res.json(jobs);
 }));
 
+// Move a queued download to the front of the line ("Download now").
+api.post("/jobs/:id/prioritize", wrap(async (req, res) => {
+  const user = req.user!;
+  const job = db.getJob(req.params.id);
+  if (!job) return res.status(404).json({ error: "job not found" });
+  if (job.userId !== user.id && user.role === "user") return res.status(403).json({ error: "not your download" });
+  res.json({ ok: queue.prioritize(job.id) });
+}));
+
 // --- Retry a failed download (re-search from scratch) ----------------------
 api.post("/titles/:id/retry/:ep", wrap(async (req, res) => {
   const user = req.user!;

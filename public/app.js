@@ -750,6 +750,12 @@ function renderEpisodes(d) {
   const markAll = el("button", "ghost mark-all" + (seasonWatched ? " on" : ""), seasonWatched ? "✓ Season watched" : "Mark season watched");
   markAll.addEventListener("click", () => setProgress(d.id, seasonWatched ? 0 : aired));
   header.append(markAll);
+  // Batch: save every downloaded episode of this season for offline at once.
+  if (Offline.supported()) {
+    const offAll = el("button", "ghost", "⤓ Save season offline");
+    offAll.addEventListener("click", () => saveSeasonOffline(d));
+    header.append(offAll);
+  }
   area.append(header);
 
   // Responsive card grid (columns auto-fit the window width, wrap to new rows).
@@ -806,6 +812,9 @@ function renderEpisodes(d) {
           const dl = el("button", "", "Download");
           dl.addEventListener("click", (ev) => { ev.stopPropagation(); closeEpMenus(); downloadEp(d.id, ep.number); });
           menu.append(dl);
+          const dlNow = el("button", "", "Download now");
+          dlNow.addEventListener("click", (ev) => { ev.stopPropagation(); closeEpMenus(); downloadEp(d.id, ep.number, true); });
+          menu.append(dlNow);
         }
         // Offline: available once the episode is in the library. Auto-purged on reconnect.
         if (ep.hasFile && Offline.supported()) {
@@ -826,9 +835,12 @@ function renderEpisodes(d) {
 function closeEpMenus() { document.querySelectorAll(".ep-menu").forEach((m) => m.remove()); }
 document.addEventListener("click", (e) => { if (!e.target.closest(".ep-foot")) closeEpMenus(); });
 
-async function downloadEp(id, ep) {
-  try { await api(`/titles/${id}/download/${ep}`, { method: "POST" }); toast(`Downloading E${ep}…`); }
-  catch (e) { toast(e.message); }
+async function downloadEp(id, ep, now) {
+  try {
+    const job = await api(`/titles/${id}/download/${ep}`, { method: "POST" });
+    if (now && job?.id) { try { await api(`/jobs/${job.id}/prioritize`, { method: "POST" }); } catch { /* still queued */ } }
+    toast(now ? `Downloading E${ep} now…` : `Downloading E${ep}…`);
+  } catch (e) { toast(e.message); }
 }
 
 // Save/remove an episode for offline viewing (auto-purged when back online).
@@ -851,6 +863,29 @@ async function toggleOffline(id, ep, label, saved) {
     }
     invalidateDetail(id); // refresh the ⤓ badge / menu label
   } catch (e) { toast(e.message || String(e)); }
+}
+
+// Batch: save every downloaded, not-yet-saved episode of a season for offline.
+async function saveSeasonOffline(d) {
+  const eps = (d.episodeList || []).filter((e) => e.aired !== false);
+  const todo = eps.filter((e) => e.hasFile && !Offline.has(d.id, e.number));
+  const notLib = eps.filter((e) => !e.hasFile).length;
+  if (!todo.length) return void toast(notLib ? "Download these episodes to your library first" : "Season already saved offline");
+  if (Offline.native() && Offline.bridge.getFolder && Offline.bridge.chooseFolder) {
+    const folder = await Offline.bridge.getFolder();
+    if (!folder && !(await Offline.bridge.chooseFolder())) return void toast("Pick a download folder to save offline");
+  }
+  toast(`Saving ${todo.length} episode${todo.length === 1 ? "" : "s"} offline…`);
+  let ok = 0;
+  for (const e of todo) {
+    try {
+      const r = await api(`/titles/${d.id}/play/${e.number}`);
+      await Offline.save(d.id, e.number, r, `${d.english || d.romaji} · E${e.number}`);
+      ok++;
+    } catch { /* skip a failed episode, keep going */ }
+  }
+  toast(`Saved ${ok} offline${notLib ? ` · ${notLib} not in library yet` : ""}`);
+  invalidateDetail(d.id);
 }
 
 async function toggleList(listName) {
@@ -1382,26 +1417,64 @@ async function loadJobs() {
     const list = $("#jobsList");
     list.innerHTML = "";
     if (!jobs.length) { list.append(el("div", "empty", "No downloads.")); return; }
-    jobs.forEach((j) => {
-      const pct = Math.round((j.progress || 0) * 100);
-      const node = el("div", `job ${j.status}`);
-      node.innerHTML = `
-        <div class="row"><span class="name">${esc(j.title)} · E${j.episode}</span>
-          <span class="st">${esc(j.status)}${j.status === "downloading" ? " " + pct + "%" : ""}</span></div>
-        <div class="row"><span class="st">${esc(j.message || "")}</span></div>
-        <div class="track"><div class="fill" style="width:${j.status === "downloaded" ? 100 : pct}%"></div></div>`;
-      if (j.status === "failed" && j.mine !== false && !(me && me.downloadsDenied)) {
-        const retry = el("button", "retry-btn", "↻ Retry");
-        retry.style.marginTop = "8px";
-        retry.addEventListener("click", async () => {
-          retry.disabled = true;
-          try { await api(`/titles/${j.titleId}/retry/${j.episode}`, { method: "POST" }); toast("Retrying…"); loadJobs(); }
-          catch (e) { toast(e.message); retry.disabled = false; }
+
+    // Group by series so a season batch shows as one collapsible group.
+    const groups = new Map();
+    jobs.forEach((j) => { (groups.get(j.titleId) ?? groups.set(j.titleId, []).get(j.titleId)).push(j); });
+
+    for (const [, gjobs] of groups) {
+      const grp = el("div", "job-group");
+      const dl = gjobs.filter((j) => ["downloading", "searching"].includes(j.status)).length;
+      const q = gjobs.filter((j) => j.status === "queued").length;
+      const failed = gjobs.filter((j) => j.status === "failed").length;
+      const done = gjobs.filter((j) => j.status === "downloaded").length;
+      const parts = [dl && `${dl} active`, q && `${q} queued`, failed && `${failed} failed`, done && `${done} done`].filter(Boolean);
+      const head = el("div", "job-group-head");
+      head.innerHTML = `<span class="jg-title">${esc(gjobs[0].title)}</span>
+        <span class="jg-sum">${gjobs.length} ep${gjobs.length === 1 ? "" : "s"}${parts.length ? " · " + parts.join(" · ") : ""}</span>`;
+      if (gjobs.some(canRetry)) {
+        const rall = el("button", "retry-btn", "↻ Retry failed");
+        rall.addEventListener("click", async () => {
+          rall.disabled = true;
+          for (const j of gjobs.filter(canRetry)) { try { await api(`/titles/${j.titleId}/retry/${j.episode}`, { method: "POST" }); } catch { /* keep going */ } }
+          loadJobs();
         });
-        node.append(retry);
+        head.append(rall);
       }
-      list.append(node);
-    });
+      grp.append(head);
+
+      gjobs.sort((a, b) => a.episode - b.episode).forEach((j) => {
+        const pct = Math.round((j.progress || 0) * 100);
+        const node = el("div", `job ${j.status}`);
+        node.innerHTML = `
+          <div class="row"><span class="name">E${j.episode}</span>
+            <span class="st">${esc(j.status)}${j.status === "downloading" ? " " + pct + "%" : ""}</span></div>
+          ${j.message ? `<div class="row"><span class="st">${esc(j.message)}</span></div>` : ""}
+          <div class="track"><div class="fill" style="width:${j.status === "downloaded" ? 100 : pct}%"></div></div>`;
+        const actions = el("div", "job-actions");
+        if (j.status === "queued" && j.mine !== false) {
+          const now = el("button", "retry-btn", "↑ Download now");
+          now.addEventListener("click", async () => {
+            now.disabled = true;
+            try { await api(`/jobs/${j.id}/prioritize`, { method: "POST" }); toast("Moved to the front"); loadJobs(); }
+            catch (e) { toast(e.message); now.disabled = false; }
+          });
+          actions.append(now);
+        }
+        if (canRetry(j)) {
+          const retry = el("button", "retry-btn", "↻ Retry");
+          retry.addEventListener("click", async () => {
+            retry.disabled = true;
+            try { await api(`/titles/${j.titleId}/retry/${j.episode}`, { method: "POST" }); toast("Retrying…"); loadJobs(); }
+            catch (e) { toast(e.message); retry.disabled = false; }
+          });
+          actions.append(retry);
+        }
+        if (actions.children.length) node.append(actions);
+        grp.append(node);
+      });
+      list.append(grp);
+    }
   } catch { /* ignore */ }
 }
 
@@ -2033,7 +2106,22 @@ async function loadDefaults() {
       folders.map((f) => `<option value="${esc(f.name)}"${f.name === cur ? " selected" : ""}>${esc(f.name)}</option>`).join("");
   } catch { /* keep the default option */ }
 }
-document.querySelector('.settings-nav button[data-pane="defaults"]')?.addEventListener("click", loadDefaults);
+document.querySelector('.settings-nav button[data-pane="defaults"]')?.addEventListener("click", () => { loadDefaults(); initDownloadFolderUI(); });
+
+// Offline download folder (native shells only) — shown in the Library pane.
+async function initDownloadFolderUI() {
+  const row = $("#dlFolderRow");
+  if (!row) return;
+  if (!(Offline.native() && Offline.bridge.getFolder && Offline.bridge.chooseFolder)) { row.style.display = "none"; return; }
+  row.style.display = "";
+  try { $("#dlFolderPath").value = (await Offline.bridge.getFolder()) || ""; } catch { /* ignore */ }
+}
+$("#dlFolderPick")?.addEventListener("click", async () => {
+  try {
+    const f = await Offline.bridge.chooseFolder();
+    if (f) { $("#dlFolderPath").value = f; toast("Download folder set"); }
+  } catch (e) { toast(e.message || "Couldn't set folder"); }
+});
 $("#defSave")?.addEventListener("click", async () => {
   try {
     const u = await api("/account/add-defaults", {

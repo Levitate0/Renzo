@@ -426,9 +426,19 @@ main { padding: 26px 22px 60px; max-width: 1440px; margin: 0 auto; }
 .grid2 .field { margin: 0; }
 .toggle-row { flex-direction: row; align-items: center; gap: 10px; grid-column: 1 / -1; color: var(--muted); }
 .toggle-row input { width: auto; }
-.job .retry-btn { background: var(--s3); border: 1px solid var(--line); color: var(--fg);
-  padding: 5px 12px; border-radius: 7px; font-size: 12px; }
-.job .retry-btn:hover { border-color: var(--accent); }
+.job .retry-btn, .job-group-head .retry-btn { background: var(--s3); border: 1px solid var(--line); color: var(--fg);
+  padding: 5px 12px; border-radius: 7px; font-size: 12px; cursor: pointer; }
+.job .retry-btn:hover, .job-group-head .retry-btn:hover { border-color: var(--accent); }
+.job-actions { display: flex; gap: 8px; margin-top: 9px; }
+/* Grouped downloads (one box per series; season batches collapse into it) */
+.job-group { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.job-group-head { display: flex; align-items: center; gap: 12px; padding: 11px 15px; background: var(--s1); }
+.job-group-head .jg-title { font-weight: 650; }
+.job-group-head .jg-sum { color: var(--muted); font-size: 12.5px; }
+.job-group-head .retry-btn { margin-left: auto; }
+.job-group .job { border: 0; border-top: 1px solid var(--line); border-radius: 0; background: var(--s2); }
+.inline-row { display: flex; gap: 8px; align-items: center; }
+.inline-row .in { flex: 1; }
 .add-user-card { background: var(--s1); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; }
 .add-user-card h3 { margin: 0 0 3px; font-size: 14px; }
 .add-user-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; margin-top: 12px; }

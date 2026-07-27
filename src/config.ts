@@ -21,7 +21,10 @@ export const config = {
 
   preferredResolution: int(process.env.PREFERRED_RESOLUTION, 1080),
   minSeeders: int(process.env.MIN_SEEDERS, 1),
-  downloadConcurrency: Math.max(1, int(process.env.DOWNLOAD_CONCURRENCY, 2)),
+  // Default serial (1): finish each download before searching/adding the next on
+  // Real-Debrid — avoids bursts of addMagnet calls that trigger RD 451s. Override
+  // with DOWNLOAD_CONCURRENCY for premium accounts that can handle parallelism.
+  downloadConcurrency: Math.max(1, int(process.env.DOWNLOAD_CONCURRENCY, 1)),
 
   tmdbApiKey: process.env.TMDB_API_KEY ?? "",
 
