@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
@@ -175,6 +176,16 @@ class Store {
   async setSmtp(s: SmtpSettings | undefined): Promise<void> {
     this.data.settings.smtp = s;
     await this.flush();
+  }
+
+  // Stable server secret for signing short-lived download tokens (generated once).
+  dtokenSecret(): string {
+    this.assert();
+    if (!this.data.settings.dtokenSecret) {
+      this.data.settings.dtokenSecret = randomBytes(32).toString("hex");
+      void this.flush();
+    }
+    return this.data.settings.dtokenSecret;
   }
 
   // --- watch tokens ----------------------------------------------------------

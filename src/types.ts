@@ -174,6 +174,6 @@ export interface DbShape {
   users: UserRecord[];
   sessions: SessionRecord[];
   invites: InviteRecord[];
-  settings: { smtp?: SmtpSettings };
+  settings: { smtp?: SmtpSettings; dtokenSecret?: string };
   watch: Record<string, WatchToken>;   // watchId -> token
 }

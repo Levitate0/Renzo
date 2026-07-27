@@ -14,7 +14,7 @@ import * as watch from "../services/watch.js";
 import * as mal from "../services/mal.js";
 import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
 import * as autodl from "../services/autodl.js";
-import { requireAdmin, type AuthedRequest } from "../services/auth.js";
+import { requireAdmin, mintDownloadToken, type AuthedRequest } from "../services/auth.js";
 import { isTrackStatus } from "../services/tracker.js";
 import type { UserRecord } from "../types.js";
 import type { Title } from "../types.js";
@@ -747,6 +747,24 @@ api.get("/jobs", wrap(async (req, res) => {
       };
     });
   res.json(jobs);
+}));
+
+// Resolve a downloaded episode's local file + subtitle URLs, signed with a
+// short-lived download token so a native downloader (Capacitor) can fetch them
+// without the session cookie. Only works once the episode is in the library.
+api.get("/titles/:id/offline/:ep", wrap(async (req, res) => {
+  const user = req.user!;
+  const id = Number(req.params.id);
+  const ep = Math.max(1, Number(req.params.ep) || 1);
+  const r = await resolveStream(id, ep, user);
+  if (r.source !== "local") return res.status(409).json({ error: "Download this episode to your library first" });
+  const dt = mintDownloadToken(user.id);
+  const withTok = (u: string) => u + (u.includes("?") ? "&" : "?") + "dtoken=" + encodeURIComponent(dt);
+  res.json({
+    source: "local",
+    url: withTok(r.url),
+    subtitles: (r.subtitles ?? []).map((s) => ({ label: s.label, lang: s.lang, src: withTok(`/dl/captions/${s.id}.vtt`) })),
+  });
 }));
 
 // Move a queued download to the front of the line ("Download now").

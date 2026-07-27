@@ -6,7 +6,8 @@ import { logger } from "./logger.js";
 import { db } from "./db.js";
 import { api } from "./routes/api.js";
 import { authRoutes, accountRoutes, userAdminRoutes, inviteRoutes, smtpRoutes } from "./routes/auth.js";
-import { requireAuth, requireStaff, requireOwner, type AuthedRequest } from "./services/auth.js";
+import { requireAuth, requireStaff, requireOwner, downloadAuth, type AuthedRequest } from "./services/auth.js";
+import * as captions from "./services/captions.js";
 import { queue } from "./services/downloader.js";
 import { jellyfinPluginRoutes } from "./routes/jellyfin.js";
 import { userRoot } from "./services/library.js";
@@ -97,11 +98,19 @@ async function main() {
   // --- Jellyfin plugin API (public; guarded by RENZO_PLUGIN_KEY) ---
   app.use("/jellyfin", jellyfinPluginRoutes);
 
+  // Caption download for native offline savers — accepts a ?dtoken= (downloads
+  // only) so Capacitor's downloader can fetch subtitles without the session cookie.
+  app.get("/dl/captions/:id.vtt", downloadAuth, (req: AuthedRequest, res) => {
+    captions.fetchAsVtt(req.params.id, req.user?.jimakuKey)
+      .then((vtt) => res.type("text/vtt").send(vtt))
+      .catch(() => res.status(502).type("text/vtt").send(""));
+  });
+
   // Downloaded media + sidecar subtitles — gated AND isolated per user: each
   // request is served only from that user's own library subdirectory, so no
   // user can reach another's files (even by guessing paths).
   const userStatic = new Map<string, express.RequestHandler>();
-  app.use("/files", requireAuth, (req, res, next) => {
+  app.use("/files", downloadAuth, (req, res, next) => {
     const uid = (req as AuthedRequest).user!.id;
     let handler = userStatic.get(uid);
     if (!handler) {

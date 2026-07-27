@@ -70,11 +70,50 @@ async function loadHistory() {
   } catch { /* ignore */ }
 }
 
+// Capacitor (Android) offline bridge — defined here (served remotely) so the app
+// gets native disk downloads without bundling anything; uses the Filesystem +
+// Network plugins baked into the APK. Set up before Offline reads window.RenzoNative.
+(function setupCapacitorBridge() {
+  const Cap = window.Capacitor;
+  if (!Cap || !Cap.isNativePlatform || !Cap.isNativePlatform() || window.RenzoNative) return;
+  const FS = Cap.Plugins && Cap.Plugins.Filesystem;
+  if (!FS) return;
+  const DIR = "DOCUMENTS";
+  const dirFor = (key) => `Renzo/${String(key).replace(/[^\w.-]/g, "_")}`;
+  const abs = (u) => (u.startsWith("http") ? u : location.origin + u);
+  const src = async (path) => Cap.convertFileSrc((await FS.getUri({ path, directory: DIR })).uri);
+  window.RenzoNative = {
+    platform: "capacitor",
+    getFolder: async () => "Documents/Renzo",
+    chooseFolder: async () => "Documents/Renzo", // Android app Documents (SAF picker TBD)
+    async save({ key, video, subs }) {
+      const dir = dirFor(key);
+      await FS.mkdir({ path: dir, directory: DIR, recursive: true }).catch(() => {});
+      const ext = ((video.split("?")[0].match(/\.(\w{2,4})$/) || [, "mp4"])[1]) || "mp4";
+      const vpath = `${dir}/video.${ext}`;
+      await FS.downloadFile({ url: abs(video), path: vpath, directory: DIR, recursive: true });
+      const saved = [];
+      for (let i = 0; i < (subs || []).length; i++) {
+        const p = `${dir}/sub${i}.vtt`;
+        try { await FS.downloadFile({ url: abs(subs[i].src), path: p, directory: DIR }); saved.push({ label: subs[i].label, lang: subs[i].lang, path: p }); }
+        catch { /* missing subtitle is fine */ }
+      }
+      return {
+        url: await src(vpath),
+        subs: await Promise.all(saved.map(async (s) => ({ label: s.label, lang: s.lang, src: await src(s.path) }))),
+      };
+    },
+    remove: (key) => FS.rmdir({ path: dirFor(key), directory: DIR, recursive: true }).catch(() => {}),
+    purge: () => FS.rmdir({ path: "Renzo", directory: DIR, recursive: true }).catch(() => {}),
+    async list() { try { return (await FS.readdir({ path: "Renzo", directory: DIR })).files.map((f) => f.name || f); } catch { return []; } },
+  };
+})();
+
 // ---------------------------------------------------------------------------
 // Offline downloads — save while online, watch with no network, auto-purge on
 // reconnect. The browser/PWA path stores in the SW cache; native shells
-// (Electron/Capacitor) can override window.RenzoNative later. Storage layout is
-// a localStorage manifest of { id, ep, url, subtitles[] } keyed "id:ep".
+// (Electron/Capacitor) provide window.RenzoNative for on-disk storage. Storage
+// layout is a localStorage manifest of { id, ep, url, subtitles[] } keyed "id:ep".
 // ---------------------------------------------------------------------------
 const Offline = {
   CACHE: "renzo-offline-v1",
@@ -91,9 +130,13 @@ const Offline = {
   // Save the video + subtitle tracks. Native shells write to the chosen folder on
   // disk (RenzoNative); browsers/PWA cache via the service worker. Manifest entry
   // records a playback `url` + `subtitles: [{label,lang,src}]` resolved per shell.
+  // Pick the resolve endpoint: native shells get token-signed, cookie-free URLs.
+  async fetchSource(id, ep) {
+    return api(this.native() ? `/titles/${id}/offline/${ep}` : `/titles/${id}/play/${ep}`);
+  },
   async save(id, ep, r, label) {
     if (r.source !== "local") throw new Error("Download this episode to your library first");
-    const subs = (r.subtitles || []).map((s) => ({ label: s.label || s.lang || "Sub", lang: s.lang || "en", src: `/api/captions/${s.id}.vtt` }));
+    const subs = (r.subtitles || []).map((s) => ({ label: s.label || s.lang || "Sub", lang: s.lang || "en", src: s.src || `/api/captions/${s.id}.vtt` }));
     let entry;
     if (this.native()) {
       // { url, subs:[{label,lang,src}] } with on-disk playable sources.
@@ -857,7 +900,7 @@ async function toggleOffline(id, ep, label, saved) {
         }
       }
       toast("Saving for offline…");
-      const r = await api(`/titles/${id}/play/${ep}`);
+      const r = await Offline.fetchSource(id, ep);
       await Offline.save(id, ep, r, label);
       toast("Saved — available offline until you reconnect");
     }
@@ -879,7 +922,7 @@ async function saveSeasonOffline(d) {
   let ok = 0;
   for (const e of todo) {
     try {
-      const r = await api(`/titles/${d.id}/play/${e.number}`);
+      const r = await Offline.fetchSource(d.id, e.number);
       await Offline.save(d.id, e.number, r, `${d.english || d.romaji} · E${e.number}`);
       ok++;
     } catch { /* skip a failed episode, keep going */ }

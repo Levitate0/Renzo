@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual, createHmac } from "node:crypto";
 import { promisify } from "node:util";
 import type { Request, Response, NextFunction } from "express";
 import { config } from "../config.js";
@@ -222,6 +222,40 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
   }
   req.user = user;
   next();
+}
+
+// --- Download tokens -------------------------------------------------------
+// Short-lived, HMAC-signed tokens authorizing DOWNLOADS ONLY (files + captions),
+// for native downloaders (Capacitor) that can't read the httpOnly session cookie.
+// Format: <userId>.<expMs>.<hmac>. Never grants general API access.
+const DTOKEN_TTL_MS = 6 * 60 * 60_000; // 6h — enough to grab offline downloads before a trip
+
+export function mintDownloadToken(userId: string): string {
+  const body = `${userId}.${Date.now() + DTOKEN_TTL_MS}`;
+  const sig = createHmac("sha256", db.dtokenSecret()).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+export function userFromDownloadToken(token: string | undefined): UserRecord | undefined {
+  if (!token) return undefined;
+  const parts = token.split(".");
+  if (parts.length !== 3) return undefined;
+  const [userId, expStr, sig] = parts;
+  const exp = Number(expStr);
+  if (!Number.isFinite(exp) || exp < Date.now()) return undefined;
+  const expected = createHmac("sha256", db.dtokenSecret()).update(`${userId}.${expStr}`).digest("base64url");
+  const a = Buffer.from(sig), b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return undefined;
+  return db.getUser(userId);
+}
+
+// Middleware for the file + caption download routes: accept a valid ?dtoken= as an
+// alternative to the session cookie; otherwise fall back to normal auth.
+export function downloadAuth(req: AuthedRequest, res: Response, next: NextFunction): void {
+  const dt = typeof req.query?.dtoken === "string" ? req.query.dtoken : undefined;
+  const u = userFromDownloadToken(dt);
+  if (u) { req.user = u; return next(); }
+  return requireAuth(req, res, next);
 }
 
 // Back-compat alias (owner-level).
