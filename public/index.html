@@ -658,6 +658,16 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <!-- Reconnect confirmation: never purge downloads without asking (guards brief
+       signal blips). -->
+  <div id="offlinePurgePrompt" class="purge-prompt hidden">
+    <span id="offlinePurgeText"></span>
+    <div class="purge-actions">
+      <button id="offlinePurgeKeep" class="ghost">Keep</button>
+      <button id="offlinePurgeClear" class="primary">Clear downloads</button>
+    </div>
+  </div>
+
   <!-- Full-size cover viewer (click the poster to expand) -->
   <div id="imgLightbox" class="img-lightbox hidden" role="dialog" aria-modal="true">
     <button id="imgLightboxClose" class="img-lightbox-close" aria-label="Close">×</button>

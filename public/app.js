@@ -129,15 +129,34 @@ function schedulePurge() {
   _purgeTimer = setTimeout(async () => {
     if (!navigator.onLine) return;                       // dropped again — keep them (debounce flaky wifi)
     try { await fetch("/version", { cache: "no-store" }); } catch { return; } // server truly reachable?
-    const n = Offline.count();
-    await Offline.purgeAll();
-    clearOfflineFlag();
-    if (!n) return;
-    toast(`Back online — cleared ${n} offline download${n === 1 ? "" : "s"}`);
-    updateOfflineUi();
-    if (current && !$("#detail").classList.contains("hidden")) { detailShownId = null; enterDetail(current.id); }
+    if (Offline.count()) promptPurge();                  // never wipe without asking (guards signal bursts)
   }, 8000);
 }
+
+// Ask before clearing downloads on reconnect (a short blip shouldn't nuke them).
+function promptPurge() {
+  const n = Offline.count();
+  if (!n) { clearOfflineFlag(); return; }
+  const box = $("#offlinePurgePrompt");
+  if (!box || !box.classList.contains("hidden")) return; // already asking
+  $("#offlinePurgeText").textContent = `Back online — clear ${n} offline download${n === 1 ? "" : "s"}?`;
+  box.classList.remove("hidden");
+}
+async function confirmPurge() {
+  const n = Offline.count();
+  await Offline.purgeAll();
+  clearOfflineFlag();
+  $("#offlinePurgePrompt").classList.add("hidden");
+  updateOfflineUi();
+  if (current && !$("#detail").classList.contains("hidden")) { detailShownId = null; enterDetail(current.id); }
+  if (n) toast(`Cleared ${n} offline download${n === 1 ? "" : "s"}`);
+}
+function keepDownloads() {
+  clearOfflineFlag(); // honoured for now; re-prompts after the next offline session
+  $("#offlinePurgePrompt").classList.add("hidden");
+}
+$("#offlinePurgeClear").addEventListener("click", confirmPurge);
+$("#offlinePurgeKeep").addEventListener("click", keepDownloads);
 function updateOfflineUi() {
   const bar = $("#offlineBar");
   if (!bar) return;

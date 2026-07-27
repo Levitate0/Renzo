@@ -286,6 +286,15 @@ main { padding: 26px 22px 60px; max-width: 1440px; margin: 0 auto; }
 .offline-gate-head #offlineRetry { margin-left: auto; }
 .offline-gate-title { font-size: 20px; margin: 6px 0 16px; }
 
+/* Reconnect purge confirmation */
+.purge-prompt { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 120;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap; max-width: min(560px, 92vw);
+  background: var(--s2); border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 16px;
+  box-shadow: var(--shadow, 0 16px 50px rgba(0,0,0,.55)); font-size: 13.5px; }
+.purge-prompt.hidden { display: none; }
+.purge-prompt .purge-actions { display: flex; gap: 8px; margin-left: auto; }
+.purge-prompt button { padding: 7px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+
 /* ---------- player ---------- */
 .player-card { width: min(1120px, 96vw); background: #000; }
 .player-head { display: flex; align-items: center; gap: 12px; padding: 15px 18px; }
