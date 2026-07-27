@@ -93,6 +93,12 @@ npm install
 npm run build && npm start   # or: npm run dev
 ```
 
+### Building the native apps + releases
+
+The Android APK and Windows desktop app are thin shells that load this same web app, so
+**web changes need no client rebuild**. Full build/sign/release instructions for the
+server, the APK (Capacitor), and the `.exe` (Electron) live in **[BUILD.md](./BUILD.md)**.
+
 ---
 
 ## ⚠️ Real-Debrid must be **Premium**
