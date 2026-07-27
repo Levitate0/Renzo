@@ -52,7 +52,7 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 });
 function switchTab(name) {
   if (location.hash) location.hash = ""; // leave any player/detail overlay (hashchange -> route tears it down)
-  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tabs button, .drawer-tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   if (name === "library") loadLibrary();
   if (name === "downloads") loadJobs();
@@ -60,6 +60,54 @@ function switchTab(name) {
   if (name === "history") loadHistory();
   if (name === "appearance") renderAppearance();
 }
+
+// --- Navigation chrome: tab icons + mobile drawer + ⌘K search (Shiori-style) ---
+const NAV_ICONS = {
+  discover: '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/>',
+  library: '<path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>',
+  updates: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  history: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  downloads: '<path d="M12 13v8"/><path d="m8 17 4 4 4-4"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/>',
+};
+function navSvg(name, cls) {
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${NAV_ICONS[name] || ""}</svg>`;
+}
+function setupNav() {
+  // Desktop: prepend an icon to each tab pill.
+  document.querySelectorAll(".tabs button").forEach((b) => {
+    const t = b.dataset.tab;
+    if (t && NAV_ICONS[t] && !b.querySelector(".nav-ic")) b.insertAdjacentHTML("afterbegin", navSvg(t, "nav-ic"));
+  });
+  // Mobile drawer rows mirror the tabs (label + any badge).
+  const list = $("#drawerTabs");
+  if (list) {
+    list.innerHTML = "";
+    document.querySelectorAll(".tabs button").forEach((b) => {
+      const t = b.dataset.tab;
+      if (!t) return;
+      const label = (b.querySelector(".badge") ? b.textContent.replace(/\d+$/, "") : b.textContent).trim();
+      const row = el("button", "drawer-tab" + (b.classList.contains("active") ? " active" : ""));
+      row.dataset.tab = t;
+      row.innerHTML = navSvg(t, "nav-ic") + `<span>${esc(label)}</span>`;
+      row.addEventListener("click", () => { switchTab(t); closeDrawer(); });
+      list.append(row);
+    });
+  }
+}
+function openDrawer() { $("#navDrawer")?.classList.remove("hidden"); $("#navScrim")?.classList.remove("hidden"); }
+function closeDrawer() { $("#navDrawer")?.classList.add("hidden"); $("#navScrim")?.classList.add("hidden"); }
+$("#navToggle")?.addEventListener("click", openDrawer);
+$("#navClose")?.addEventListener("click", closeDrawer);
+$("#navScrim")?.addEventListener("click", closeDrawer);
+// ⌘K / Ctrl-K focuses search.
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    if (!$("#view-discover")?.classList.contains("active")) switchTab("discover");
+    $("#search")?.focus();
+  }
+});
+setupNav();
 
 async function loadHistory() {
   try {

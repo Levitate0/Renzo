@@ -15,6 +15,7 @@
 <body>
   <div id="offlineBar" class="offline-bar hidden"></div>
   <header class="topbar">
+    <button id="navToggle" class="nav-toggle" aria-label="Open menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg></button>
     <div class="brand"><img src="/brand/renzo-banner.png" alt="Renzo" class="brand-logo" /></div>
     <nav class="tabs">
       <button data-tab="discover" class="active">Discover</button>
@@ -24,7 +25,11 @@
       <button data-tab="downloads">Downloads <span id="dlBadge" class="badge hidden">0</span></button>
     </nav>
     <div class="search">
-      <input id="search" type="search" placeholder="Search anime…" autocomplete="off" />
+      <div class="search-box">
+        <svg class="search-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="search" type="search" placeholder="Search anime…" autocomplete="off" />
+        <kbd class="kbd">⌘K</kbd>
+      </div>
       <select id="searchType" title="Type">
         <option value="">All</option>
         <option value="series">Series</option>
@@ -46,6 +51,16 @@
       </div>
     </div>
   </header>
+
+  <!-- Mobile navigation drawer (mirrors the topbar tabs) -->
+  <div id="navScrim" class="nav-scrim hidden"></div>
+  <aside id="navDrawer" class="nav-drawer hidden">
+    <div class="nav-drawer-head">
+      <img src="/brand/renzo-banner.png" alt="Renzo" class="brand-logo" />
+      <button id="navClose" class="icon-btn" aria-label="Close menu">✕</button>
+    </div>
+    <nav id="drawerTabs" class="drawer-tabs"></nav>
+  </aside>
 
   <main>
     <section id="view-discover" class="view active">
@@ -108,25 +123,37 @@
 
     <section id="view-appearance" class="view">
       <h2>Appearance</h2>
-      <p class="view-sub">Choose a theme and accent — saved to your account and used on every device you sign in on.</p>
-      <div id="themeGrid" class="theme-grid"></div>
-      <div class="theme-custom">
-        <div class="tc-row">
-          <div>
-            <div class="tc-label">Accent color</div>
-            <div class="tc-hint">Override the selected theme's highlight color.</div>
-          </div>
-          <input type="color" id="accentPick" class="accent-pick" />
-          <button id="accentClear" class="ghost">Use preset accent</button>
+      <p class="view-sub">Personalize how Renzo looks — saved to your account, so it follows you on every device.</p>
+      <div class="settings-card">
+        <div class="settings-card-head">
+          <h3>Theme</h3>
+          <p>Pick a look. Applies instantly and syncs to your account.</p>
         </div>
+        <div id="themeGrid" class="theme-grid"></div>
       </div>
-      <div class="theme-preview">
-        <div class="tp-heading">Preview</div>
-        <div class="tp-card">
-          <span class="pill">Series</span>
-          <div class="tp-title">Renzo</div>
-          <div class="tp-sub">2026 · Action</div>
-          <div class="tp-actions"><button class="primary">▶ Play</button><button class="ghost">＋ List</button></div>
+      <div class="settings-card">
+        <div class="settings-card-head">
+          <h3>Accent color</h3>
+          <p>Recolors buttons, highlights, and focus rings across the app. Use a preset theme above or choose your own.</p>
+        </div>
+        <div class="theme-custom">
+          <div class="tc-row">
+            <div>
+              <div class="tc-label">Custom accent</div>
+              <div class="tc-hint">Override the selected theme's highlight color.</div>
+            </div>
+            <input type="color" id="accentPick" class="accent-pick" />
+            <button id="accentClear" class="ghost">Use preset accent</button>
+          </div>
+        </div>
+        <div class="theme-preview">
+          <div class="tp-heading">PREVIEW</div>
+          <div class="tp-card">
+            <span class="pill">Series</span>
+            <div class="tp-title">Renzo</div>
+            <div class="tp-sub">2026 · Action</div>
+            <div class="tp-actions"><button class="primary">▶ Play</button><button class="ghost">＋ List</button></div>
+          </div>
         </div>
       </div>
     </section>
