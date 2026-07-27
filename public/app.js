@@ -118,19 +118,28 @@ setupNav();
 // The auth gates (login/setup/reset) keep real password fields; logout reloads.
 function suppressAutofill() {
   // Only ever called once authenticated (auth gates are hidden and logout reloads
-  // the page), so it's safe to neutralize every password field — leaving none for
-  // the browser to anchor a login form to.
+  // the page), so it's safe to neutralize every password field — leaving no login
+  // form for the browser to anchor to.
   document.querySelectorAll('input[type="password"]').forEach((n) => {
     n.type = "text";
     n.classList.add("masked");
-    n.setAttribute("autocomplete", "off");
   });
-  document.querySelectorAll("input, textarea, select").forEach((n) => {
-    n.setAttribute("autocomplete", "off");
-    n.setAttribute("data-1p-ignore", "");
-    n.setAttribute("data-lpignore", "true");
-    n.setAttribute("data-form-type", "other");
-  });
+  // The reliable cross-browser opt-out: browsers/managers don't autofill or pop
+  // their dropdown on a READONLY field. Start read-only, unlock on first focus/tap.
+  document.querySelectorAll("input:not([type=checkbox]):not([type=radio]):not([type=color]):not([type=range]), textarea")
+    .forEach((n) => {
+      n.setAttribute("autocomplete", "off");
+      n.setAttribute("data-1p-ignore", "");
+      n.setAttribute("data-lpignore", "true");
+      n.setAttribute("data-form-type", "other");
+      if (n.dataset.afGuard) return;
+      n.dataset.afGuard = "1";
+      if (n.readOnly) return; // readonly by design (e.g. the API-key display) — leave it
+      n.setAttribute("readonly", "");
+      const unlock = () => n.removeAttribute("readonly");
+      n.addEventListener("focus", unlock);
+      n.addEventListener("pointerdown", unlock);
+    });
 }
 
 async function loadHistory() {
@@ -2328,6 +2337,7 @@ async function openSettings(pane) {
     setPill($("#jimakuState"), u.jimakuConnected ? "ok" : "warn", u.jimakuConnected ? "Connected" : "Not connected");
     if (u.role === "owner" || u.role === "manager") loadUsers();
     if (u.role === "owner") loadSmtp();
+    suppressAutofill(); // re-guard any inputs rendered into the settings panes
   } catch { /* ignore */ }
 }
 
