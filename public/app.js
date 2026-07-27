@@ -216,6 +216,50 @@ const Offline = {
     if (this.native()) { await this.bridge.purge().catch(() => {}); }
     else if (this.supported()) { try { await caches.delete(this.CACHE); } catch { /* ignore */ } }
     this.saveMan({});
+    this.saveMetaMap({}); // drop cached series metadata too
+  },
+
+  // --- cached series metadata (banner / info / episodes) so the offline library
+  // and detail page render EXACTLY like online -----------------------------
+  META_KEY: "renzo:offlineMeta",
+  meta() { try { return JSON.parse(localStorage.getItem(this.META_KEY) || "{}"); } catch { return {}; } },
+  saveMetaMap(m) { try { localStorage.setItem(this.META_KEY, JSON.stringify(m)); } catch { /* quota */ } },
+  setMeta(d) {
+    if (!d || !d.id) return;
+    const m = this.meta();
+    const prev = m[d.id] || {};
+    m[d.id] = {
+      id: d.id, type: d.type, english: d.english, romaji: d.romaji,
+      description: d.description || "", genres: d.genres || [], content: d.content || [],
+      banner: d.banner || "", poster: d.poster || "", year: d.year ?? null,
+      seasonNum: d.seasonNum ?? 1, seasonPart: d.seasonPart ?? null, seriesKey: d.seriesKey ?? null,
+      duration: d.duration ?? null, episodesTotal: d.episodesTotal ?? (d.episodeList || []).length,
+      watchedThrough: Math.max(prev.watchedThrough || 0, d.watchedThrough || 0),
+      episodeList: (d.episodeList || []).map((e) => ({
+        number: e.number, epTitle: e.epTitle || null, thumbnail: e.thumbnail || null, aired: e.aired !== false,
+      })),
+      at: Date.now(),
+    };
+    this.saveMetaMap(m);
+  },
+  getMeta(id) { return this.meta()[id] || null; },
+
+  // --- watched marks made offline, flushed to the server on reconnect ------
+  WQ_KEY: "renzo:watchQueue",
+  watchQueue() { try { return JSON.parse(localStorage.getItem(this.WQ_KEY) || "{}"); } catch { return {}; } },
+  queueWatched(id, ep) {
+    const q = this.watchQueue(); q[id] = Math.max(q[id] || 0, ep);
+    try { localStorage.setItem(this.WQ_KEY, JSON.stringify(q)); } catch { /* quota */ }
+    const m = this.meta(); if (m[id]) { m[id].watchedThrough = Math.max(m[id].watchedThrough || 0, ep); this.saveMetaMap(m); }
+  },
+  async flushWatched() {
+    const q = this.watchQueue(); const ids = Object.keys(q);
+    if (!ids.length) return;
+    for (const id of ids) {
+      try { await api(`/titles/${id}/progress`, { method: "POST", body: JSON.stringify({ ep: q[id] }) }); delete q[id]; }
+      catch { /* server unreachable — keep for the next reconnect */ }
+    }
+    try { localStorage.setItem(this.WQ_KEY, JSON.stringify(q)); } catch { /* quota */ }
   },
 };
 
@@ -264,19 +308,24 @@ function keepDownloads() {
 $("#offlinePurgeClear").addEventListener("click", confirmPurge);
 $("#offlinePurgeKeep").addEventListener("click", keepDownloads);
 function updateOfflineUi() {
-  const bar = $("#offlineBar");
-  if (!bar) return;
   const off = !navigator.onLine;
-  bar.classList.toggle("hidden", !off);
-  if (off) bar.textContent = Offline.count()
-    ? `● Offline — ${Offline.count()} download${Offline.count() === 1 ? "" : "s"} available`
-    : "● Offline — no downloads saved";
+  const bar = $("#offlineBar");
+  if (bar) {
+    bar.classList.toggle("hidden", !off);
+    if (off) bar.textContent = Offline.count()
+      ? `● Offline — ${Offline.count()} download${Offline.count() === 1 ? "" : "s"} available`
+      : "● Offline — no downloads saved";
+  }
+  // Topbar mode indicator (also the button that opens your Downloads).
+  const pill = $("#modePill");
+  if (pill) { pill.textContent = off ? "● Offline" : "● Online"; pill.classList.toggle("offline", off); }
 }
-window.addEventListener("online", () => { schedulePurge(); updateOfflineUi(); });
+$("#modePill") && $("#modePill").addEventListener("click", () => openDownloads());
+window.addEventListener("online", () => { schedulePurge(); updateOfflineUi(); Offline.flushWatched(); });
 window.addEventListener("offline", () => { markOffline(); updateOfflineUi(); });
 if (!navigator.onLine) markOffline();
 updateOfflineUi();                         // reflect current state on boot
-if (navigator.onLine) schedulePurge();     // reconnected while closed? purge (only if we'd been offline)
+if (navigator.onLine) { schedulePurge(); Offline.flushWatched(); } // sync any offline watched marks
 
 // Native shells (Capacitor): relay background-download progress and, once, ask the
 // OS to keep Renzo alive so backgrounding it doesn't force a full reload on return.
@@ -288,13 +337,11 @@ async function maybeSetupNativeBackground() {
     if (ev.state === "done") { markOfflineReady(ev.key); toast(`Downloaded ${ev.title || ""}`.trim()); }
     else if (ev.state === "error") toast(`Download failed: ${ev.error || "unknown"}`);
   });
-  if (!b.keepAliveSupported) return;
-  try { if (b.requestNotifications) await b.requestNotifications(); } catch { /* ignore */ }
-  try {
-    if (localStorage.getItem("renzo:keepAliveAsked") === "1") return;
-    if (!(await b.keepAliveEnabled())) await b.keepAlive(); // one-time OS exemption prompt
-    localStorage.setItem("renzo:keepAliveAsked", "1");
-  } catch { /* ignore */ }
+  // Keep-alive is intentionally DOWNLOAD-SCOPED: the foreground download service
+  // keeps the process resident only while downloads are running, so tabbing out
+  // won't restart the app until they finish — then normal behaviour resumes. We
+  // deliberately do NOT request a permanent battery-optimisation exemption.
+  try { if (b.background && b.requestNotifications) await b.requestNotifications(); } catch { /* ignore */ }
 }
 // A deferred (background) download finished — clear the pending flag on its entry.
 function markOfflineReady(key) {
@@ -419,21 +466,22 @@ async function loadStatus() {
 // ---------------------------------------------------------------------------
 // content filters (hentai / ecchi / erotica) — on-page chips, not in Settings
 // ---------------------------------------------------------------------------
-const CONTENT_FILTER_KEY = "renzo:contentFilter";
-const CONTENT_CATS = [["hentai", "Hentai"], ["ecchi", "Ecchi"], ["erotica", "Erotica"]];
-// Persisted map of category -> hidden? Default: hentai + erotica hidden, ecchi shown
-// (ecchi is a mainstream genre, so hiding it by default would remove too much).
-let contentFilter = loadContentFilter();
-function loadContentFilter() {
-  const def = { hentai: true, erotica: true, ecchi: false };
-  try { return { ...def, ...JSON.parse(localStorage.getItem(CONTENT_FILTER_KEY) || "{}") }; }
-  catch { return def; }
+// Graduated "show up to" content level: none < ecchi < erotica < hentai
+// (cumulative). e.g. "erotica" shows ecchi + erotica but hides hentai. Persisted;
+// default "ecchi" (ecchi is mainstream; erotica + hentai hidden by default).
+const CONTENT_LEVEL_KEY = "renzo:contentLevel";
+const CONTENT_LADDER = ["none", "ecchi", "erotica", "hentai"]; // ascending
+const CONTENT_LABELS = { none: "Off", ecchi: "Ecchi", erotica: "Erotica", hentai: "Hentai" };
+const CAT_RANK = { ecchi: 1, erotica: 2, hentai: 3 };
+let contentLevel = loadContentLevel();
+function loadContentLevel() {
+  try { const v = localStorage.getItem(CONTENT_LEVEL_KEY); return CONTENT_LADDER.includes(v) ? v : "ecchi"; }
+  catch { return "ecchi"; }
 }
-function saveContentFilter() {
-  try { localStorage.setItem(CONTENT_FILTER_KEY, JSON.stringify(contentFilter)); } catch {}
-}
-// A card's adult categories: prefer the server-computed `content`, else derive from
-// genres (covers MAL fallback cards, which carry genres but no `content`/isAdult).
+function saveContentLevel() { try { localStorage.setItem(CONTENT_LEVEL_KEY, contentLevel); } catch {} }
+function levelRank(level) { return CONTENT_LADDER.indexOf(level); } // none=0 … hentai=3
+// A card's adult categories: prefer the server-computed `content`, else derive
+// from genres (covers MAL fallback cards, which carry genres but no `content`).
 function contentCatsOf(item) {
   if (item && item.content && item.content.length) return item.content;
   const g = (item.genres || []).map((x) => String(x).toLowerCase());
@@ -443,22 +491,21 @@ function contentCatsOf(item) {
   return cats;
 }
 function isHidden(item) {
-  return contentCatsOf(item).some((c) => contentFilter[c]);
+  const cats = contentCatsOf(item);
+  if (!cats.length) return false;                        // non-adult always shown
+  const itemRank = Math.max(...cats.map((c) => CAT_RANK[c] || 0));
+  return itemRank > levelRank(contentLevel);             // hide anything above the chosen level
 }
+// Segmented "show up to" control — doubles as the current-mode indicator.
 function renderContentChips() {
   document.querySelectorAll(".content-chips").forEach((box) => {
     box.innerHTML = "";
-    box.append(el("span", "content-chips-label", "🔞 Filter"));
-    CONTENT_CATS.forEach(([key, label]) => {
-      const hidden = !!contentFilter[key];
-      const chip = el("button", "chip content-chip" + (hidden ? " filtered" : ""), (hidden ? "🚫 " : "👁 ") + label);
-      chip.title = hidden ? `${label} hidden — click to show` : `${label} shown — click to hide`;
-      chip.addEventListener("click", () => {
-        contentFilter[key] = !contentFilter[key];
-        saveContentFilter();
-        renderContentChips();
-        reflowGrids();
-      });
+    box.append(el("span", "content-chips-label", "🔞 Show up to"));
+    CONTENT_LADDER.forEach((level) => {
+      const on = level === contentLevel;
+      const chip = el("button", "chip content-chip" + (on ? " active" : ""), CONTENT_LABELS[level]);
+      chip.title = level === "none" ? "Hide all adult content" : `Show up to ${CONTENT_LABELS[level]} (and everything milder)`;
+      chip.addEventListener("click", () => { contentLevel = level; saveContentLevel(); renderContentChips(); reflowGrids(); });
       box.append(chip);
     });
   });
@@ -682,43 +729,58 @@ async function renderDetail(id) {
   try {
     const d = await api(`/titles/${id}`);
     if (parseTitleHash()?.id !== id) return; // a newer navigation superseded this render
-    current = d;
-    detailShownId = d.id;
-    $("#detailBanner").style.backgroundImage = `url(${d.banner || d.poster || ""})`;
-    $("#detailPoster").src = d.poster || "";
-    $("#detailPoster").style.visibility = d.poster ? "" : "hidden";
-    $("#detailTitle").textContent = d.english || d.romaji;
-    const meta = [
-      `<span class="type-tag">${d.type === "movie" ? "Movie" : "Series"}</span>`,
-      d.year, `${d.episodesTotal || 1} ep`, ...(d.genres || []).slice(0, 3),
-    ].filter(Boolean);
-    $("#detailMetaline").innerHTML = meta.map((m, i) =>
-      `${i ? '<span class="sep">•</span>' : ""}<span>${typeof m === "string" && m.startsWith("<") ? m : esc(m)}</span>`).join("");
-    const desc = $("#detailDesc");
-    desc.textContent = d.description || "";
-    desc.classList.add("clamp");
-    $("#detailMore").textContent = "More details";
-    $("#detailMore").style.display = (d.description || "").length > 200 ? "" : "none";
-    const isSeries = d.type === "series";
-    // Hero Play -> first not-downloaded aired episode (or E1 / movie).
-    const firstEp = (d.episodeList || []).find((e) => e.aired !== false && !e.hasFile)
-      || (d.episodeList || []).find((e) => e.aired !== false) || { number: 1 };
-    $("#heroPlay").textContent = isSeries ? `▶ Play E${firstEp.number}` : "▶ Play";
-    $("#heroPlay").onclick = () => play(d.id, isSeries ? firstEp.number : 1, `${d.english || d.romaji}${isSeries ? ` · E${firstEp.number}` : ""}`);
-    const denied = !!(me && me.downloadsDenied);
-    $("#seasonBtn").classList.toggle("hidden", !isSeries || denied);
-    $("#autoBtn").classList.toggle("hidden", !isSeries || denied);
-    setAutoBtn(!!d.autoDownload);
-    setListBtns(d.lists || []);
-    populateFolderSelect(d.folders || [], d.folder);
-    renderSeasons(d);
-    renderEpisodes(d);
+    Offline.setMeta(d);        // cache banner/info/episodes so offline looks identical
+    paintDetail(d, { offline: false });
     loadProviders(d);          // async — populates the release-group picker
     loadTracking(d.id);        // async — AniList/MAL list status
   } catch (e) {
     toast("Detail failed: " + e.message);
     location.hash = "";
   }
+}
+
+// Paint the detail page from a detail object. Shared by the online page and the
+// offline page (fed from cached metadata) so both look identical; server-only
+// controls are hidden when `offline`.
+function paintDetail(d, opts) {
+  const offline = !!(opts && opts.offline);
+  current = d;
+  detailShownId = offline ? null : d.id; // offline pages aren't hash-routed
+  $("#detailBanner").style.backgroundImage = `url(${d.banner || d.poster || ""})`;
+  $("#detailPoster").src = d.poster || "";
+  $("#detailPoster").style.visibility = d.poster ? "" : "hidden";
+  $("#detailTitle").textContent = d.english || d.romaji;
+  const meta = [
+    `<span class="type-tag">${d.type === "movie" ? "Movie" : "Series"}</span>`,
+    d.year, `${d.episodesTotal || 1} ep`, ...(d.genres || []).slice(0, 3),
+  ].filter(Boolean);
+  $("#detailMetaline").innerHTML = meta.map((m, i) =>
+    `${i ? '<span class="sep">•</span>' : ""}<span>${typeof m === "string" && m.startsWith("<") ? m : esc(m)}</span>`).join("");
+  const desc = $("#detailDesc");
+  desc.textContent = d.description || "";
+  desc.classList.add("clamp");
+  $("#detailMore").textContent = "More details";
+  $("#detailMore").style.display = (d.description || "").length > 200 ? "" : "none";
+  const isSeries = d.type === "series";
+  // Hero Play -> first not-downloaded aired episode (or E1 / movie).
+  const firstEp = (d.episodeList || []).find((e) => e.aired !== false && !e.hasFile)
+    || (d.episodeList || []).find((e) => e.aired !== false) || { number: 1 };
+  $("#heroPlay").textContent = isSeries ? `▶ Play E${firstEp.number}` : "▶ Play";
+  $("#heroPlay").onclick = () => play(d.id, isSeries ? firstEp.number : 1, `${d.english || d.romaji}${isSeries ? ` · E${firstEp.number}` : ""}`);
+  const denied = !!(me && me.downloadsDenied);
+  $("#seasonBtn").classList.toggle("hidden", offline || !isSeries || denied);
+  $("#autoBtn").classList.toggle("hidden", offline || !isSeries || denied);
+  // Server-only affordances make no sense offline — hide them.
+  const dc = document.querySelector(".detail-controls"); if (dc) dc.style.display = offline ? "none" : "";
+  const tr = $("#trackRow"); if (tr) tr.style.display = offline ? "none" : "";
+  ["#watchlistBtn", "#favBtn"].forEach((s) => { const b = $(s); if (b) b.style.display = offline ? "none" : ""; });
+  if (!offline) {
+    setAutoBtn(!!d.autoDownload);
+    setListBtns(d.lists || []);
+    populateFolderSelect(d.folders || [], d.folder);
+  }
+  renderSeasons(d);
+  renderEpisodes(d, offline);
 }
 
 // Server state for a title changed (episode watched / downloaded): drop the
@@ -733,6 +795,7 @@ function invalidateDetail(titleId) {
 // Detail page controls (bound once).
 $("#detailBack").addEventListener("click", (e) => {
   e.preventDefault();
+  if (offlineDetailOpen) { $("#detail").classList.add("hidden"); openDownloads(); return; } // back to the Downloads gate
   if (history.length > START_LEN) history.back(); else location.hash = "";
 });
 $("#detailMore").addEventListener("click", () => {
@@ -757,6 +820,13 @@ $("#imgLightboxClose").addEventListener("click", closeLightbox);
 
 // Set the exact watched-through episode (mark / un-watch / mark season).
 async function setProgress(id, ep) {
+  // Offline: record locally + queue for sync on reconnect.
+  if (!navigator.onLine && ep > 0) {
+    Offline.queueWatched(id, ep);
+    if (current && current.id === id) { current.watchedThrough = ep; renderEpisodes(current, offlineDetailOpen); }
+    toast(`Watched through E${ep} — will sync when back online`);
+    return;
+  }
   try {
     const r = await api(`/titles/${id}/progress`, { method: "POST", body: JSON.stringify({ ep }) });
     if (current && current.id === id) { current.watchedThrough = r.watchedThrough; renderEpisodes(current); loadTracking(id); }
@@ -918,7 +988,7 @@ function setListBtns(lists) {
   $("#favBtn").classList.toggle("on", inF);
 }
 
-function renderEpisodes(d) {
+function renderEpisodes(d, offline) {
   const area = $("#episodeArea");
   area.innerHTML = "";
   if (d.type === "movie") {
@@ -936,7 +1006,7 @@ function renderEpisodes(d) {
   markAll.addEventListener("click", () => setProgress(d.id, seasonWatched ? 0 : aired));
   header.append(markAll);
   // Batch: save every downloaded episode of this season for offline at once.
-  if (Offline.supported()) {
+  if (Offline.supported() && !offline) {
     const offAll = el("button", "ghost", "⤓ Save season offline");
     offAll.addEventListener("click", () => saveSeasonOffline(d));
     header.append(offAll);
@@ -1509,11 +1579,15 @@ $("#watchDownload").addEventListener("click", async () => {
 $("#watchVideo").addEventListener("ended", async () => {
   if (!watch) return;
   const titleId = watch.titleId, endedEp = watch.ep, detail = watch.detail; // capture: watch may change during the await
-  try {
-    await api(`/titles/${titleId}/watched/${endedEp}`, { method: "POST" });
-    refreshUpdatesBadge();
-    invalidateDetail(titleId); // series page reflects the new Watched state on Back / live
-  } catch { /* trackers optional */ }
+  if (!navigator.onLine) {
+    Offline.queueWatched(titleId, endedEp); // sync on reconnect
+  } else {
+    try {
+      await api(`/titles/${titleId}/watched/${endedEp}`, { method: "POST" });
+      refreshUpdatesBadge();
+      invalidateDetail(titleId); // series page reflects the new Watched state on Back / live
+    } catch { /* trackers optional */ }
+  }
   if (!watch || watch.titleId !== titleId || watch.ep !== endedEp) return; // exited or moved on
   const max = airedCount(detail);
   if (detail.type !== "movie" && endedEp < max) startAutoNext(endedEp + 1);
@@ -1718,35 +1792,70 @@ let offlineMode = false;
 function startOfflineMode() {
   offlineMode = true;
   markOffline(); // we launched with no server → we've been offline
+  $("#offlineClose").classList.add("hidden");    // cold launch: nothing to close back to
+  $("#offlineRetry").classList.remove("hidden");
   $("#offlineGate").classList.remove("hidden");
   updateOfflineUi();
   renderOfflineLibrary();
 }
 function renderOfflineLibrary() {
   const grid = $("#offlineGrid");
-  const items = Object.values(Offline.man()).sort((a, b) => (a.id - b.id) || (a.ep - b.ep));
-  $("#offlineEmpty").classList.toggle("hidden", items.length > 0);
+  const man = Offline.man();
+  const entries = Object.values(man);
+  $("#offlineEmpty").classList.toggle("hidden", entries.length > 0);
   grid.innerHTML = "";
-  items.forEach((e) => {
-    const series = (e.label || `Title ${e.id}`).split(" · ")[0];
-    const card = el("div", "ep-card");
+  // Group saved episodes by title id, then collapse seasons of the same series
+  // (shared seriesKey) into one card — the latest season's real poster/title,
+  // exactly like the online library.
+  const byTitle = {};
+  entries.forEach((e) => { (byTitle[e.id] = byTitle[e.id] || []).push(e); });
+  const groups = {};
+  Object.keys(byTitle).forEach((tid) => {
+    const meta = Offline.getMeta(Number(tid));
+    const gk = (meta && meta.seriesKey) || tid;
+    (groups[gk] = groups[gk] || []).push(Number(tid));
+  });
+  Object.values(groups).forEach((ids) => {
+    const metas = ids.map((id) => Offline.getMeta(id)).filter(Boolean);
+    const rep = metas.slice().sort((a, b) => (b.seasonNum || 0) - (a.seasonNum || 0) || (b.year || 0) - (a.year || 0))[0];
+    const repId = rep ? rep.id : ids[0];
+    const count = ids.reduce((n, id) => n + (byTitle[id] ? byTitle[id].length : 0), 0);
+    const poster = (rep && (rep.poster || rep.banner)) || "/android-chrome-512x512.png";
+    const title = rep ? (rep.english || rep.romaji)
+      : (((byTitle[ids[0]][0] || {}).label) || `Title ${ids[0]}`).split(" · ")[0];
+    const card = el("div", "card");
     card.innerHTML = `
-      <div class="ep-thumb-wrap">
-        <img class="ep-thumb" src="/android-chrome-512x512.png" alt="" style="object-fit:contain;background:#0b0c10" />
-        <div class="ep-ov">▶</div>
-        <span class="ep-off">⤓ Offline</span>
-      </div>
-      <div class="ep-series">${esc(series)}</div>
-      <div class="ep-title">E${e.ep}</div>
-      <div class="ep-foot"><span class="ep-sub">Saved</span></div>`;
-    card.querySelector(".ep-thumb-wrap").addEventListener("click", () => playOffline(e.id, e.ep));
-    card.querySelector(".ep-title").addEventListener("click", () => playOffline(e.id, e.ep));
+      <span class="pill">${ids.length > 1 ? ids.length + " seasons" : (rep && rep.type === "movie" ? "Movie" : "Series")}</span>
+      <span class="dot" title="downloaded"></span>
+      <img class="poster" loading="lazy" src="${esc(poster)}" alt="" onerror="this.style.opacity=.15" />
+      <div class="cap">
+        <div class="t">${esc(title)}</div>
+        <div class="m">${count} episode${count === 1 ? "" : "s"} saved</div>
+      </div>`;
+    card.addEventListener("click", () => openOfflineDetail(repId));
     grid.append(card);
   });
 }
-// Build a minimal detail from the offline manifest so the normal player + goToEp
-// (which already prefers the saved copy when offline) can drive playback.
+// Rich offline detail from cached metadata (banner/info/episodes) so the page
+// looks identical to online; downloaded episodes are the playable ones.
 function offlineDetail(id) {
+  const meta = Offline.getMeta(id);
+  const saved = Object.values(Offline.man()).filter((e) => e.id === id).map((e) => e.ep);
+  const has = (n) => saved.includes(n);
+  if (meta) {
+    const list = (meta.episodeList && meta.episodeList.length ? meta.episodeList
+      : saved.slice().sort((a, b) => a - b).map((n) => ({ number: n, epTitle: null, thumbnail: null, aired: true })));
+    return {
+      id, type: meta.type || "series", english: meta.english, romaji: meta.romaji,
+      description: meta.description || "", genres: meta.genres || [], content: meta.content || [],
+      banner: meta.banner || "", poster: meta.poster || "", year: meta.year ?? null,
+      seasonNum: meta.seasonNum ?? 1, seasonPart: meta.seasonPart ?? null, seasons: [],
+      duration: meta.duration ?? null, episodesTotal: meta.episodesTotal ?? list.length,
+      watchedThrough: meta.watchedThrough || 0,
+      episodeList: list.map((e) => ({ ...e, hasFile: has(e.number) })),
+    };
+  }
+  // Fallback for downloads saved before metadata caching existed.
   const eps = Object.values(Offline.man()).filter((e) => e.id === id).sort((a, b) => a.ep - b.ep);
   const series = (eps[0]?.label || `Title ${id}`).split(" · ")[0];
   return {
@@ -1755,6 +1864,15 @@ function offlineDetail(id) {
     episodeList: eps.map((e) => ({ number: e.ep, aired: true, hasFile: true, epTitle: null, thumbnail: null })),
     watchedThrough: 0,
   };
+}
+// Open the exact detail page for a downloaded series (from the Downloads gate).
+let offlineDetailOpen = false;
+function openOfflineDetail(id) {
+  $("#offlineGate").classList.add("hidden");
+  $("#detail").scrollTop = 0;
+  showDetailView();
+  paintDetail(offlineDetail(id), { offline: true });
+  offlineDetailOpen = true;
 }
 function playOffline(id, ep) {
   const d = offlineDetail(id);
@@ -1768,10 +1886,21 @@ function offlineBack() {
   const v = $("#watchVideo"); if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
   document.body.classList.remove("watching");
   $("#view-watch").classList.add("hidden");
-  watch = null;
   $("#offlineGate").classList.remove("hidden");
+  watch = null;
   renderOfflineLibrary();
 }
+// Open the Downloads library on demand (works online too) — the mode button.
+function openDownloads() {
+  offlineDetailOpen = false;
+  $("#offlineClose").classList.remove("hidden");
+  $("#offlineRetry").classList.toggle("hidden", navigator.onLine); // retry only matters offline
+  $("#offlineGate").classList.remove("hidden");
+  $("#detail").classList.add("hidden");
+  renderOfflineLibrary();
+}
+function closeDownloads() { $("#offlineGate").classList.add("hidden"); }
+$("#offlineClose").addEventListener("click", closeDownloads);
 $("#offlineRetry").addEventListener("click", () => location.reload());
 
 // ---- invite acceptance ----

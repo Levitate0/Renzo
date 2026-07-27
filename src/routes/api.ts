@@ -574,6 +574,7 @@ api.get("/titles/:id", wrap(async (req, res) => {
     folder: req.user ? folderOf(req.user, t.id) : DEFAULT_FOLDER,
     folders: req.user ? userFolders(req.user) : [DEFAULT_FOLDER],
     provider: req.user ? providerFor(req.user, t.id) ?? null : null,
+    seriesKey: t.seriesKey ?? null, // lets offline downloads group seasons like the library
   });
 }));
 

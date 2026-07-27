@@ -136,6 +136,12 @@ main { padding: 26px 22px 60px; max-width: 1440px; margin: 0 auto; }
 .chip.folder-chip.active { background: linear-gradient(120deg, var(--accent-2), #8aa2ff); }
 .chip.new-chip { border-style: dashed; color: var(--muted); }
 .chip .cnt { opacity: .55; margin-left: 5px; }
+/* Topbar network/downloads mode indicator + button */
+.mode-pill { background: var(--s1); border: 1px solid var(--line); color: var(--muted);
+  padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.mode-pill:hover { color: var(--fg); border-color: var(--line-2); }
+.mode-pill.offline { color: #ffb0b0; border-color: rgba(255,120,120,.45); background: rgba(255,90,90,.12); }
+.offline-gate-head { display: flex; align-items: center; gap: 12px; }
 /* On-page content filters (hentai/ecchi/erotica) */
 .content-chips { align-items: center; margin: 6px 0 4px; }
 .content-chips-label { color: var(--muted); font-size: 12px; font-weight: 600; margin-right: 2px; opacity: .8; }

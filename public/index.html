@@ -31,6 +31,7 @@
         <option value="movie">Movies</option>
       </select>
     </div>
+    <button id="modePill" class="mode-pill" title="Network status · tap to open your downloads">● Online</button>
     <div class="status" id="status" title="Service status">…</div>
     <div class="acct">
       <button id="acctBtn" class="avatar avatar-btn" aria-label="Account menu">·</button>
@@ -605,6 +606,7 @@
     <header class="offline-gate-head">
       <img src="/brand/renzo-banner.png" alt="Renzo" class="offline-gate-logo" />
       <span class="offline-tag">● Offline</span>
+      <button id="offlineClose" class="ghost hidden">✕ Close</button>
       <button id="offlineRetry" class="ghost">Retry connection</button>
     </header>
     <h2 class="offline-gate-title">Your downloads</h2>

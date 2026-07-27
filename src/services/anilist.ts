@@ -69,17 +69,23 @@ async function gql<T>(query: string, variables: Record<string, unknown>, attempt
 
 /** Text search. `type` narrows to movies or series (everything non-MOVIE). */
 export async function searchAnime(search: string, type?: MediaType): Promise<AniListMedia[]> {
+  const formats =
+    type === "movie" ? ["MOVIE"] : type === "series" ? ["TV", "TV_SHORT", "ONA", "OVA", "SPECIAL"] : null;
+  // AniList returns HTTP 500 on an explicit `format_in: null`, so only declare and
+  // pass the argument when a format filter is actually set (type = All omits it).
+  const fmtDecl = formats ? ", $formats: [MediaFormat]" : "";
+  const fmtArg = formats ? ", format_in: $formats" : "";
   const query = `
-    query ($search: String, $formats: [MediaFormat]) {
+    query ($search: String${fmtDecl}) {
       Page(perPage: 24) {
-        media(search: $search, type: ANIME, format_in: $formats, sort: SEARCH_MATCH) {
+        media(search: $search, type: ANIME${fmtArg}, sort: SEARCH_MATCH) {
           ${MEDIA_FIELDS}
         }
       }
     }`;
-  const formats =
-    type === "movie" ? ["MOVIE"] : type === "series" ? ["TV", "TV_SHORT", "ONA", "OVA", "SPECIAL"] : null;
-  const data = await gql<{ Page: { media: AniListMedia[] } }>(query, { search, formats });
+  const vars: Record<string, unknown> = { search };
+  if (formats) vars.formats = formats;
+  const data = await gql<{ Page: { media: AniListMedia[] } }>(query, vars);
   return data.Page.media;
 }
 
