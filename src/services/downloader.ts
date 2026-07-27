@@ -195,7 +195,7 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
     source: "realdebrid",
     url: link.download,
     filename: link.filename,
-    subtitles: await subtitleList(anilistId, episode),
+    subtitles: await subtitleList(anilistId, episode, user.jimakuKey), // use the user's key while streaming too
     downloading: activeJobFor(anilistId, episode, user.id),
   });
 }

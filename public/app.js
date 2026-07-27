@@ -1348,6 +1348,24 @@ $("#autodlRun").addEventListener("click", async () => {
   finally { loadAutodl(); }
 });
 
+// Retry every failed download at once.
+$("#retryAll").addEventListener("click", async () => {
+  const btn = $("#retryAll");
+  btn.disabled = true;
+  try {
+    const jobs = await api("/jobs");
+    const failed = jobs.filter((j) => j.status === "failed" && j.mine !== false && !(me && me.downloadsDenied));
+    if (!failed.length) { toast("Nothing to retry"); return; }
+    let ok = 0;
+    for (const j of failed) {
+      try { await api(`/titles/${j.titleId}/retry/${j.episode}`, { method: "POST" }); ok++; }
+      catch { /* keep going; one bad job shouldn't stop the rest */ }
+    }
+    toast(`Retrying ${ok} download${ok === 1 ? "" : "s"}`);
+  } catch (e) { toast(e.message); }
+  finally { btn.disabled = false; loadJobs(); }
+});
+
 async function loadJobs() {
   loadAutodl();
   try {
@@ -1356,6 +1374,10 @@ async function loadJobs() {
     const badge = $("#dlBadge");
     badge.textContent = active.length;
     badge.classList.toggle("hidden", active.length === 0);
+
+    // "Retry all" is shown only when there are failed jobs I'm allowed to retry.
+    const canRetry = (j) => j.status === "failed" && j.mine !== false && !(me && me.downloadsDenied);
+    $("#retryAll").classList.toggle("hidden", !jobs.some(canRetry));
 
     const list = $("#jobsList");
     list.innerHTML = "";

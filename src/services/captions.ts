@@ -35,13 +35,21 @@ async function jimaku<T>(path: string, key?: string): Promise<T | null> {
   }
 }
 
-/** Validate a Jimaku API key (used by the settings save). */
+/** Validate a Jimaku API key (used by the settings save). Only a definitive
+ *  401 (Jimaku's "bad API key") rejects it — a rate-limit, IP/Cloudflare 403,
+ *  5xx, or network blip must NOT reject a key the user actually copied, so those
+ *  are accepted (the key is still stored and used at download time). */
 export async function jimakuKeyValid(key: string): Promise<boolean> {
   if (!key) return false;
   try {
-    const res = await fetch(`${JIMAKU}/user`, { headers: { Authorization: key, accept: "application/json" } });
-    return res.ok;
-  } catch { return false; }
+    const res = await fetch(`${JIMAKU}/user`, {
+      headers: { Authorization: key, accept: "application/json" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status === 401) return false;       // definitively invalid
+    if (!res.ok) log.warn("jimaku key check inconclusive", res.status); // accept anyway
+    return true;
+  } catch (e) { log.warn("jimaku key check failed (accepting)", String(e)); return true; }
 }
 
 function fmtOf(name: string): SubtitleTrack["format"] {
