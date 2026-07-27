@@ -106,6 +106,9 @@ a { color: var(--accent-2); }
 }
 .search-box input::-webkit-search-cancel-button { -webkit-appearance: none; }
 .kbd { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; background: var(--s2); }
+/* Masked text input (used in place of type=password for API tokens etc. so the
+   browser's password manager stops treating every field on the page as a login). */
+.masked { -webkit-text-security: disc; text-security: disc; }
 .search select {
   background: var(--s1); border: 1px solid var(--line); color: var(--fg);
   height: 34px; padding: 0 11px; border-radius: 999px; outline: none; transition: border-color .15s, box-shadow .15s;

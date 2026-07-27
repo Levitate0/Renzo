@@ -111,6 +111,28 @@ document.addEventListener("keydown", (e) => {
 });
 setupNav();
 
+// Stop the browser's password manager from treating every text box (search,
+// folder names, etc.) as a login username. It classifies fields that way when the
+// page contains type=password inputs — so once signed in, convert all NON-login
+// password fields to masked text and opt every non-auth field out of autofill.
+// The auth gates (login/setup/reset) keep real password fields; logout reloads.
+function suppressAutofill() {
+  // Only ever called once authenticated (auth gates are hidden and logout reloads
+  // the page), so it's safe to neutralize every password field — leaving none for
+  // the browser to anchor a login form to.
+  document.querySelectorAll('input[type="password"]').forEach((n) => {
+    n.type = "text";
+    n.classList.add("masked");
+    n.setAttribute("autocomplete", "off");
+  });
+  document.querySelectorAll("input, textarea, select").forEach((n) => {
+    n.setAttribute("autocomplete", "off");
+    n.setAttribute("data-1p-ignore", "");
+    n.setAttribute("data-lpignore", "true");
+    n.setAttribute("data-form-type", "other");
+  });
+}
+
 async function loadHistory() {
   try {
     const items = await api("/history");
@@ -2189,6 +2211,7 @@ function startApp(user) {
   $("#acctMenuRole").textContent = roleLabel(user.role);
   loadStatus();
   renderContentChips();
+  suppressAutofill(); // stop the browser password manager hijacking every input
   maybeSetupNativeBackground();
   loadBrowse();
   loadJobs();
