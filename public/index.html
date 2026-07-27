@@ -298,8 +298,27 @@
                 <input id="rdToken" class="in" type="password" placeholder="Paste your Real-Debrid API token" autocomplete="off" />
                 <button id="rdSave" class="primary">Save</button>
               </div>
-              <span class="hint"><b>Required</b> — all torrent traffic routes through Real-Debrid, never your home IP.
+              <span class="hint">All torrent traffic routes through a debrid service, never your home IP.
                 <a class="muted-link" href="https://real-debrid.com/apitoken" target="_blank" rel="noreferrer">Get your token →</a></span>
+            </div>
+
+            <div class="field">
+              <label for="adKey">AllDebrid API key <span id="adState" class="pill-state"></span></label>
+              <div class="inline">
+                <input id="adKey" class="in" type="password" placeholder="Paste your AllDebrid API key" autocomplete="off" />
+                <button id="adSave" class="primary">Save</button>
+              </div>
+              <span class="hint">Alternative to Real-Debrid — connect either (or both).
+                <a class="muted-link" href="https://alldebrid.com/apikeys/" target="_blank" rel="noreferrer">Get your key →</a></span>
+            </div>
+
+            <div class="field" id="debridPrefRow" style="display:none">
+              <label for="debridPref">Preferred debrid service</label>
+              <select id="debridPref" class="in">
+                <option value="realdebrid">Real-Debrid</option>
+                <option value="alldebrid">AllDebrid</option>
+              </select>
+              <span class="hint">Used for streaming + downloads when both are connected.</span>
             </div>
 
             <div class="field">

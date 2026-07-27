@@ -1695,7 +1695,7 @@ async function submitInvite() {
     history.replaceState(null, "", "/");
     document.getElementById("inviteGate").classList.add("hidden");
     startApp(data.user);
-    if (!data.user.realDebridConnected) openSettings("credentials");
+    if (!data.user.realDebridConnected && !data.user.allDebridConnected) openSettings("credentials");
   } catch (e) { $("#inviteError").textContent = e.message; $("#inviteSubmit").disabled = false; }
 }
 $("#inviteSubmit").addEventListener("click", submitInvite);
@@ -1729,7 +1729,7 @@ async function submitReset() {
     history.replaceState(null, "", "/");
     $("#resetGate").classList.add("hidden");
     startApp(data.user);
-    if (!data.user.realDebridConnected) openSettings("credentials");
+    if (!data.user.realDebridConnected && !data.user.allDebridConnected) openSettings("credentials");
   } catch (e) { $("#resetError").textContent = e.message; $("#resetSubmit").disabled = false; }
 }
 $("#resetSubmit").addEventListener("click", submitReset);
@@ -1896,8 +1896,8 @@ function startApp(user) {
   route(); // honor a bookmarked #/watch or #/title URL first (shows the overlay)
   // Only nudge to connect Real-Debrid when NOT deep-linking into an overlay —
   // otherwise showDetailView/showWatchView would instantly hide the prompt.
-  if (!parseWatchHash() && !parseTitleHash() && !user.realDebridConnected) {
-    toast("Connect Real-Debrid in Settings to start streaming");
+  if (!parseWatchHash() && !parseTitleHash() && !user.realDebridConnected && !user.allDebridConnected) {
+    toast("Connect Real-Debrid or AllDebrid in Settings to start streaming");
     openSettings("credentials");
   }
 }
@@ -1954,6 +1954,14 @@ function applyHealth(h) {
   const [rs, rl] = RD_MAP[h.realdebrid] || ["err", "Not connected"];
   setPill($("#accRd"), rs, rl);
   setPill($("#rdState"), rs, rl);
+  const [as, al] = RD_MAP[h.alldebrid] || ["err", "Not connected"];
+  if ($("#adState")) setPill($("#adState"), as, al);
+  // Preferred-provider selector only matters when both are connected.
+  const bothDebrid = h.realdebrid !== "not-connected" && h.alldebrid !== "not-connected";
+  if ($("#debridPrefRow")) {
+    $("#debridPrefRow").style.display = bothDebrid ? "" : "none";
+    if (h.debrid) $("#debridPref").value = h.debrid;
+  }
   const ani = !!h.trackers?.anilist, mal = !!h.trackers?.mal;
   setPill($("#accAni"), ani ? "ok" : "warn", ani ? "Connected" : "Not connected");
   setPill($("#accMal"), mal ? "ok" : "warn", mal ? "Connected" : "Not connected");
@@ -1971,7 +1979,7 @@ function applyHealth(h) {
       b.style.display = "none";
     }
   });
-  if (me) { me.realDebridConnected = h.realdebrid !== "not-connected"; }
+  if (me) { me.realDebridConnected = h.realdebrid !== "not-connected"; me.allDebridConnected = h.alldebrid !== "not-connected"; }
 }
 
 async function openSettings(pane) {
@@ -2075,7 +2083,27 @@ $("#rdSave").addEventListener("click", async () => {
     if (me) me.realDebridConnected = r.realDebridConnected;
     toast(r.realDebridConnected ? (r.premium ? "Real-Debrid connected" : "Connected — but account is NOT premium; downloads need premium") : "Real-Debrid disconnected");
     loadStatus();
+    fetchHealth().then(applyHealth);
   } catch (e) { toast(e.message); }
+});
+
+$("#adSave")?.addEventListener("click", async () => {
+  const key = $("#adKey").value.trim();
+  try {
+    const r = await api("/account/alldebrid", { method: "POST", body: JSON.stringify({ key }) });
+    $("#adKey").value = "";
+    if (me) me.allDebridConnected = r.allDebridConnected;
+    setPill($("#adState"), r.allDebridConnected ? (r.premium ? "ok" : "warn") : "err",
+      r.allDebridConnected ? (r.premium ? "Premium" : "Connected · not premium") : "Not connected");
+    toast(r.allDebridConnected ? "AllDebrid connected" : "AllDebrid disconnected");
+    fetchHealth().then(applyHealth);
+  } catch (e) { toast(e.message); }
+});
+
+$("#debridPref")?.addEventListener("change", async () => {
+  try { await api("/account/debrid", { method: "POST", body: JSON.stringify({ provider: $("#debridPref").value }) });
+    toast(`Using ${$("#debridPref").value === "alldebrid" ? "AllDebrid" : "Real-Debrid"}`); }
+  catch (e) { toast(e.message); }
 });
 
 $("#jimakuSave").addEventListener("click", async () => {

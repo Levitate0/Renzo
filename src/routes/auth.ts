@@ -6,6 +6,7 @@ import { db } from "../db.js";
 import * as auth from "../services/auth.js";
 import * as apikeys from "../services/apikeys.js";
 import * as rd from "../services/realdebrid.js";
+import * as ad from "../services/alldebrid.js";
 import * as mailer from "../services/mailer.js";
 import { isTrackStatus } from "../services/tracker.js";
 import { jimakuKeyValid } from "../services/captions.js";
@@ -34,6 +35,7 @@ function clientIp(req: Request): string {
 function publicUser(u: {
   id: string; username: string; role: string; email?: string;
   realDebridToken?: string; anilistToken?: string; malToken?: string; theme?: ThemeSettings;
+  allDebridKey?: string; debrid?: "realdebrid" | "alldebrid";
   downloadsDenied?: boolean; addDefaults?: AddDefaults; autoStatus?: boolean; ccLang?: string; jimakuKey?: string;
 }) {
   return {
@@ -42,6 +44,8 @@ function publicUser(u: {
     role: u.role,
     email: u.email ?? null,
     realDebridConnected: Boolean(u.realDebridToken),
+    allDebridConnected: Boolean(u.allDebridKey),
+    debrid: u.debrid ?? null,
     jimakuConnected: Boolean(u.jimakuKey),
     anilistConnected: Boolean(u.anilistToken),
     malConnected: Boolean(u.malToken),
@@ -339,6 +343,27 @@ accountRoutes.post("/realdebrid", wrap(async (req: AuthedRequest, res) => {
   user.realDebridToken = token;
   await db.save();
   res.json({ ...publicUser(user), premium: rd.isPremium(acct), username_rd: acct.username });
+}));
+
+// Connect / update the per-user AllDebrid API key (alternative debrid provider).
+accountRoutes.post("/alldebrid", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const key = String(req.body?.key ?? "").trim();
+  if (!key) { user.allDebridKey = undefined; await db.save(); return res.json(publicUser(user)); }
+  const acct = await ad.accountInfo(key);
+  if (!acct) return res.status(400).json({ error: "Invalid AllDebrid API key" });
+  user.allDebridKey = key;
+  await db.save();
+  res.json({ ...publicUser(user), premium: ad.isPremium(acct), username_ad: acct.username });
+}));
+
+// Preferred debrid provider when both are connected.
+accountRoutes.post("/debrid", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const p = String(req.body?.provider ?? "");
+  user.debrid = p === "alldebrid" ? "alldebrid" : p === "realdebrid" ? "realdebrid" : undefined;
+  await db.save();
+  res.json(publicUser(user));
 }));
 
 // Connect / update the per-user Jimaku API key (anime subtitles). Validated.

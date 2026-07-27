@@ -6,6 +6,8 @@ import * as authsite from "../services/authsite.js";
 import type { AniListMedia } from "../services/anilist.js";
 import * as anilist from "../services/anilist.js";
 import * as rd from "../services/realdebrid.js";
+import * as ad from "../services/alldebrid.js";
+import * as debrid from "../services/debrid.js";
 import * as jellyfin from "../services/jellyfin.js";
 import * as tracker from "../services/tracker.js";
 import * as captions from "../services/captions.js";
@@ -317,8 +319,10 @@ function detailFromTitle(t: Title, user?: UserRecord) {
 // --- Health / status -------------------------------------------------------
 api.get("/health", wrap(async (req, res) => {
   const token = req.user?.realDebridToken;
-  const [acct, jf, anilistOn, malOn] = await Promise.all([
+  const adKey = req.user?.allDebridKey;
+  const [acct, adAcct, jf, anilistOn, malOn] = await Promise.all([
     token ? rd.accountInfo(token) : Promise.resolve(null),
+    adKey ? ad.accountInfo(adKey) : Promise.resolve(null),
     jellyfin.jellyfinConfigured() ? jellyfin.ping() : Promise.resolve("not-configured" as const),
     tracker.anilistConnected(req.user),
     tracker.malConnected(req.user),
@@ -326,6 +330,8 @@ api.get("/health", wrap(async (req, res) => {
   res.json({
     ok: true,
     realdebrid: !token ? "not-connected" : !acct ? "invalid" : rd.isPremium(acct) ? "premium" : "not-premium",
+    alldebrid: !adKey ? "not-connected" : !adAcct ? "invalid" : ad.isPremium(adAcct) ? "premium" : "not-premium",
+    debrid: debrid.resolveDebrid(req.user)?.name ?? null, // active provider
     jellyfin: jf,
     trackers: { anilist: anilistOn, mal: malOn },
     // Where the BROWSER links AniList/MAL accounts (public host for the popup +

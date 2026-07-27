@@ -7,6 +7,8 @@ import type { Title, EpisodeRecord, DownloadJob, TorrentResult, UserRecord } fro
 import * as anilist from "./anilist.js";
 import * as torrents from "./torrents.js";
 import * as rd from "./realdebrid.js";
+import * as debrid from "./debrid.js";
+import type { DebridApi } from "./debrid.js";
 import * as library from "./library.js";
 import * as captions from "./captions.js";
 import * as jellyfin from "./jellyfin.js";
@@ -110,11 +112,15 @@ export function availableEpisodes(t: Title): number {
   return t.episodeCount ?? 0;
 }
 
-/** Real-Debrid is mandatory (ISP-ban-risk prevention): no token -> hard stop. */
+/** A debrid provider (Real-Debrid or AllDebrid) is mandatory: none -> hard stop. */
+export function requireDebrid(user: UserRecord | undefined): debrid.Resolved {
+  const d = debrid.resolveDebrid(user);
+  if (!d) throw new Error("realdebrid_required"); // frontend maps this to "connect a debrid service"
+  return d;
+}
+/** Back-compat presence check — any debrid provider connected. */
 export function requireToken(user: UserRecord | undefined): string {
-  const token = user?.realDebridToken;
-  if (!token) throw new Error("realdebrid_required");
-  return token;
+  return requireDebrid(user).token;
 }
 
 async function candidatesFor(t: Title, episode: number, preferredGroup?: string): Promise<TorrentResult[]> {
@@ -128,7 +134,7 @@ async function candidatesFor(t: Title, episode: number, preferredGroup?: string)
 // Resolve a playable source: local file if we have it, else Real-Debrid link
 // ---------------------------------------------------------------------------
 export interface ResolvedStream {
-  source: "local" | "realdebrid";
+  source: "local" | "realdebrid" | "alldebrid";
   url: string;
   filename: string;
   subtitles: { id: string; label: string; lang: string }[];
@@ -185,14 +191,14 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
     });
   }
 
-  // 2) Otherwise resolve an instant Real-Debrid stream — mandatory: all torrent
-  // traffic goes through the user's RD account, never their own IP. Skips the
+  // 2) Otherwise resolve an instant debrid stream — mandatory: all torrent traffic
+  // goes through the user's debrid account, never their own IP. Skips the
   // per-title lock so playback stays responsive during a season grab.
-  const token = requireToken(user);
-  const link = await resolveRdLinkInner(token, t, ep, 45_000, undefined, user);
+  const dbr = requireDebrid(user);
+  const link = await resolveDebridLinkInner(dbr.api, dbr.token, t, ep, 45_000, undefined, user);
   await db.save();
   return cacheStream(cacheKey, {
-    source: "realdebrid",
+    source: dbr.name,
     url: link.download,
     filename: link.filename,
     subtitles: await subtitleList(anilistId, episode, user.jimakuKey), // use the user's key while streaming too
@@ -216,8 +222,9 @@ async function withTitleLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Prepare (or reuse) an RD torrent and return the direct link for the episode. */
-function resolveRdLink(
+/** Prepare (or reuse) a debrid torrent and return the direct link for the episode. */
+function resolveDebridLink(
+  api: DebridApi,
   token: string,
   t: Title,
   ep: EpisodeRecord,
@@ -226,10 +233,11 @@ function resolveRdLink(
   user: UserRecord,
 ): Promise<rd.RdLink> {
   // Lock per (user,title): one user's season grab shouldn't block another's playback.
-  return withTitleLock(`${user.id}:${t.id}`, () => resolveRdLinkInner(token, t, ep, timeoutMs, wantedEpisodes, user));
+  return withTitleLock(`${user.id}:${t.id}`, () => resolveDebridLinkInner(api, token, t, ep, timeoutMs, wantedEpisodes, user));
 }
 
-async function resolveRdLinkInner(
+async function resolveDebridLinkInner(
+  api: DebridApi,
   token: string,
   t: Title,
   ep: EpisodeRecord,
@@ -237,13 +245,14 @@ async function resolveRdLinkInner(
   wantedEpisodes: number[] | undefined,
   user: UserRecord,
 ): Promise<rd.RdLink> {
-  if (!token) throw new Error("Real-Debrid is not connected — add your token in Settings");
-  // Reuse a previously prepared RD torrent when possible.
+  if (!token) throw new Error("No debrid service connected — add Real-Debrid or AllDebrid in Settings");
+  // Reuse a previously prepared debrid torrent when possible (id is provider-specific;
+  // a stale id from a switched provider just fails getInfo and we re-resolve).
   if (ep.rdTorrentId) {
     try {
-      const info = await rd.getInfo(token, ep.rdTorrentId);
+      const info = await api.getInfo(token, ep.rdTorrentId);
       if (info.status === "downloaded") {
-        return await rd.resolveEpisodeLink(token, info, t.type === "movie" ? undefined : ep.number);
+        return await api.resolveEpisodeLink(token, info, t.type === "movie" ? undefined : ep.number);
       }
     } catch {
       ep.rdTorrentId = undefined;
@@ -263,21 +272,21 @@ async function resolveRdLinkInner(
   // are skipped for the next available one.
   for (const cand of list.slice(0, 10)) {
     try {
-      const info = await rd.addAndPrepare(token, cand.magnet, {
+      const info = await api.addAndPrepare(token, cand.magnet, {
         episode: t.type === "movie" ? undefined : ep.number,
         // Download jobs select every still-wanted episode a batch contains, so
-        // one RD torrent serves the whole season grab (sibling sharing below).
+        // one debrid torrent serves the whole season grab (sibling sharing below).
         episodes: t.type === "movie" ? undefined : wantedEpisodes,
         timeoutMs,
       });
       if (info.status !== "downloaded") {
-        await rd.deleteTorrent(token, info.id);
-        continue; // not cached / still downloading on RD — try the next candidate
+        await api.deleteTorrent(token, info.id);
+        continue; // not cached / still downloading — try the next candidate
       }
       ep.rdTorrentId = info.id;
       ep.magnet = cand.magnet;
       ep.updatedAt = new Date().toISOString();
-      log.info(`✓ Real-Debrid ready: [${cand.releaseGroup ?? cand.source}] ${cand.resolution || "?"}p — ${cand.title.slice(0, 54)}`);
+      log.info(`✓ debrid ready: [${cand.releaseGroup ?? cand.source}] ${cand.resolution || "?"}p — ${cand.title.slice(0, 54)}`);
 
       // Sibling sharing: if this torrent is a batch, point every other episode
       // in THIS user's library at the same RD torrent so their jobs skip search.
@@ -295,14 +304,14 @@ async function resolveRdLinkInner(
           }
         }
       }
-      return await rd.resolveEpisodeLink(token, info, t.type === "movie" ? undefined : ep.number);
+      return await api.resolveEpisodeLink(token, info, t.type === "movie" ? undefined : ep.number);
     } catch (e) {
       lastErr = e;
       log.warn("candidate failed", cand.title, String(e));
     }
   }
   throw new Error(
-    `Could not get an instant stream (nothing cached on Real-Debrid yet). ${lastErr ? String(lastErr) : ""}`.trim(),
+    `Could not get an instant stream (nothing cached on your debrid service yet). ${lastErr ? String(lastErr) : ""}`.trim(),
   );
 }
 
@@ -421,8 +430,8 @@ class DownloadQueue {
     if (!t) return void (await this.fail(job, "title missing"));
     const user = db.getUser(job.userId);
     if (!user) return void (await this.fail(job, "account removed"));
-    const token = user.realDebridToken;
-    if (!token) return void (await this.fail(job, "Real-Debrid not connected for this account"));
+    const dbr = debrid.resolveDebrid(user);
+    if (!dbr) return void (await this.fail(job, "No debrid service connected for this account"));
     const ep = getUserEp(user, job.titleId, job.episode);
 
     try {
@@ -436,7 +445,7 @@ class DownloadQueue {
       }
       if (!wanted.includes(job.episode)) wanted.push(job.episode);
 
-      const link = await resolveRdLink(token, t, ep, 8 * 60_000, wanted, user); // allow RD time to cache
+      const link = await resolveDebridLink(dbr.api, dbr.token, t, ep, 8 * 60_000, wanted, user); // allow the debrid time to cache
       await db.save();
 
       const folder = folderOf(user, t.id);

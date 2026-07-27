@@ -99,6 +99,8 @@ export interface UserRecord {
   watchIds?: Record<string, string>;   // titleId -> stable per-user watch token (for saved titles)
   updatesSeen?: Record<string, number>; // titleId -> aired-count last acknowledged in Updates
   realDebridToken?: string;        // per-user RD creds — required to stream/download
+  allDebridKey?: string;           // per-user AllDebrid API key (alternative debrid)
+  debrid?: "realdebrid" | "alldebrid"; // preferred provider when both are connected
   jimakuKey?: string;              // per-user Jimaku API key (anime subtitles)
   apiKey?: string;                 // per-user API key (Jellyfin plugin / external clients)
   downloadsDenied?: boolean;       // staff can block this user from ALL downloads (streaming still allowed)
