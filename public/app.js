@@ -79,36 +79,50 @@ async function loadHistory() {
 const Offline = {
   CACHE: "renzo-offline-v1",
   KEY: "renzo:offline",
-  supported() { return "serviceWorker" in navigator && "caches" in window; },
+  bridge: (typeof window !== "undefined" && window.RenzoNative) || null, // native shell disk store
+  supported() { return !!this.bridge || ("serviceWorker" in navigator && "caches" in window); },
+  native() { return !!this.bridge; },
   man() { try { return JSON.parse(localStorage.getItem(this.KEY) || "{}"); } catch { return {}; } },
   saveMan(m) { try { localStorage.setItem(this.KEY, JSON.stringify(m)); } catch { /* quota */ } },
   k(id, ep) { return `${id}:${ep}`; },
   has(id, ep) { return !!this.man()[this.k(id, ep)]; },
   get(id, ep) { return this.man()[this.k(id, ep)] || null; },
   count() { return Object.keys(this.man()).length; },
-  subUrls(e) { return (e.subtitles || []).map((s) => `/api/captions/${s.id}.vtt`); },
-  // Cache the local video + its subtitle tracks, then record the manifest entry.
+  // Save the video + subtitle tracks. Native shells write to the chosen folder on
+  // disk (RenzoNative); browsers/PWA cache via the service worker. Manifest entry
+  // records a playback `url` + `subtitles: [{label,lang,src}]` resolved per shell.
   async save(id, ep, r, label) {
-    if (!this.supported()) throw new Error("Offline isn't supported in this browser");
     if (r.source !== "local") throw new Error("Download this episode to your library first");
-    const c = await caches.open(this.CACHE);
-    for (const u of [r.url, ...this.subUrls(r)]) {
-      try { await c.add(new Request(u, { credentials: "include" })); } catch { /* subtitle may 404 */ }
+    const subs = (r.subtitles || []).map((s) => ({ label: s.label || s.lang || "Sub", lang: s.lang || "en", src: `/api/captions/${s.id}.vtt` }));
+    let entry;
+    if (this.native()) {
+      // { url, subs:[{label,lang,src}] } with on-disk playable sources.
+      const res = await this.bridge.save({ key: this.k(id, ep), video: r.url, subs });
+      entry = { id, ep, url: res.url, subtitles: res.subs || [], label: label || "", at: Date.now() };
+    } else {
+      if (!this.supported()) throw new Error("Offline isn't supported in this browser");
+      const c = await caches.open(this.CACHE);
+      for (const u of [r.url, ...subs.map((s) => s.src)]) {
+        try { await c.add(new Request(u, { credentials: "include" })); } catch { /* subtitle may 404 */ }
+      }
+      entry = { id, ep, url: r.url, subtitles: subs, label: label || "", at: Date.now() };
     }
-    const m = this.man();
-    m[this.k(id, ep)] = { id, ep, url: r.url, subtitles: r.subtitles || [], label: label || "", at: Date.now() };
-    this.saveMan(m);
+    const m = this.man(); m[this.k(id, ep)] = entry; this.saveMan(m);
   },
   async remove(id, ep) {
     const e = this.get(id, ep);
-    if (e && this.supported()) {
-      const c = await caches.open(this.CACHE);
-      for (const u of [e.url, ...this.subUrls(e)]) await c.delete(u, { ignoreSearch: true }).catch(() => {});
+    if (e) {
+      if (this.native()) { await this.bridge.remove(this.k(id, ep)).catch(() => {}); }
+      else if (this.supported()) {
+        const c = await caches.open(this.CACHE);
+        for (const u of [e.url, ...(e.subtitles || []).map((s) => s.src)]) await c.delete(u, { ignoreSearch: true }).catch(() => {});
+      }
     }
     const m = this.man(); delete m[this.k(id, ep)]; this.saveMan(m);
   },
   async purgeAll() {
-    if (this.supported()) { try { await caches.delete(this.CACHE); } catch { /* ignore */ } }
+    if (this.native()) { await this.bridge.purge().catch(() => {}); }
+    else if (this.supported()) { try { await caches.delete(this.CACHE); } catch { /* ignore */ } }
     this.saveMan({});
   },
 };
@@ -822,6 +836,14 @@ async function toggleOffline(id, ep, label, saved) {
   try {
     if (saved) { await Offline.remove(id, ep); toast("Removed offline copy"); }
     else {
+      // Native shells download to a user-chosen folder — pick one on first save.
+      if (Offline.native() && Offline.bridge.getFolder && Offline.bridge.chooseFolder) {
+        const folder = await Offline.bridge.getFolder();
+        if (!folder) {
+          const picked = await Offline.bridge.chooseFolder();
+          if (!picked) return void toast("Pick a download folder to save offline");
+        }
+      }
       toast("Saving for offline…");
       const r = await api(`/titles/${id}/play/${ep}`);
       await Offline.save(id, ep, r, label);
@@ -1027,7 +1049,7 @@ async function goToEp(ep) {
     (r.subtitles || []).forEach((s) => {
       const track = el("track");
       track.kind = "subtitles"; track.label = s.label || s.lang; track.srclang = s.lang || "en";
-      track.src = `/api/captions/${s.id}.vtt`;
+      track.src = s.src || `/api/captions/${s.id}.vtt`; // s.src set for offline (disk/cache)
       video.append(track);
     });
     video.load();
