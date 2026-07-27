@@ -76,11 +76,30 @@ async function loadHistory() {
 (function setupCapacitorBridge() {
   const Cap = window.Capacitor;
   if (!Cap || !Cap.isNativePlatform || !Cap.isNativePlatform() || window.RenzoNative) return;
+  const abs = (u) => (u.startsWith("http") ? u : location.origin + u);
+
+  // Preferred: the RenzoSaf plugin — user picks any folder (SD card, etc.), files
+  // stream into it, and playback copies to cache on demand (prepare()).
+  const Saf = Cap.Plugins && Cap.Plugins.RenzoSaf;
+  if (Saf) {
+    window.RenzoNative = {
+      platform: "capacitor-saf",
+      getFolder: async () => { try { return (await Saf.getFolder()).path || null; } catch { return null; } },
+      chooseFolder: async () => { try { return (await Saf.pickFolder()).path || null; } catch { return null; } },
+      save: ({ key, video, subs }) => Saf.save({ key, video: abs(video), subs: (subs || []).map((s) => ({ label: s.label, lang: s.lang, src: abs(s.src) })) }),
+      prepare: (key) => Saf.prepare({ key }),      // -> { url: file://, subs:[{label,lang,src:file://}] }
+      remove: (key) => Saf.remove({ key }),
+      purge: () => Saf.purge(),
+      list: async () => { try { return (await Saf.list()).keys || []; } catch { return []; } },
+    };
+    return;
+  }
+
+  // Fallback: @capacitor/filesystem into app Documents (no folder picker).
   const FS = Cap.Plugins && Cap.Plugins.Filesystem;
   if (!FS) return;
   const DIR = "DOCUMENTS";
   const dirFor = (key) => `Renzo/${String(key).replace(/[^\w.-]/g, "_")}`;
-  const abs = (u) => (u.startsWith("http") ? u : location.origin + u);
   const src = async (path) => Cap.convertFileSrc((await FS.getUri({ path, directory: DIR })).uri);
   window.RenzoNative = {
     platform: "capacitor",
@@ -127,6 +146,16 @@ const Offline = {
   has(id, ep) { return !!this.man()[this.k(id, ep)]; },
   get(id, ep) { return this.man()[this.k(id, ep)] || null; },
   count() { return Object.keys(this.man()).length; },
+  // Resolve a saved entry to a playable source. SAF entries (a "saf:" marker) are
+  // copied to cache on demand via the native bridge; others store a ready URL.
+  async playbackFor(e) {
+    if (this.native() && this.bridge.prepare && String(e.url).startsWith("saf:")) {
+      const p = await this.bridge.prepare(this.k(e.id, e.ep));
+      const conv = (u) => (window.Capacitor && window.Capacitor.convertFileSrc ? window.Capacitor.convertFileSrc(u) : u);
+      return { url: conv(p.url), subtitles: (p.subs || []).map((s) => ({ label: s.label, lang: s.lang, src: conv(s.src) })) };
+    }
+    return { url: e.url, subtitles: e.subtitles || [] };
+  },
   // Save the video + subtitle tracks. Native shells write to the chosen folder on
   // disk (RenzoNative); browsers/PWA cache via the service worker. Manifest entry
   // records a playback `url` + `subtitles: [{label,lang,src}]` resolved per shell.
@@ -1115,7 +1144,8 @@ async function goToEp(ep) {
         $("#watchNote").textContent = "Not saved for offline — download it while you have a connection.";
         return;
       }
-      r = { source: "local", url: off.url, subtitles: off.subtitles || [], offline: true };
+      const pb = await Offline.playbackFor(off);
+      r = { source: "local", url: pb.url, subtitles: pb.subtitles, offline: true };
     } else {
       r = (watch.prefetch && watch.prefetch.ep === ep && await watch.prefetch.p)
         || await api(`/titles/${watch.titleId}/play/${ep}`);
