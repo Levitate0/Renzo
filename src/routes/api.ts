@@ -147,7 +147,7 @@ function applyAddDefaults(user: UserRecord, t: Title, opts?: { track?: boolean }
 // the write handlers fan out to them, and reconcileSeries heals any pre-existing
 // state that predates this behaviour when a title is loaded.
 async function seasonChainIds(id: number): Promise<number[]> {
-  try { return await anilist.seasonSiblings(id); }
+  try { return (await anilist.seasonSiblings(id)).ids; }
   catch { return [id]; }
 }
 
@@ -244,6 +244,47 @@ function cardFromTitle(t: Title, user?: UserRecord) {
     downloaded: user ? userDownloadedCount(user, t.id) : 0,
     upNext: user ? upNextFor(user, t) : null,
   };
+}
+
+// Strip a trailing season/part suffix so a grouped library card shows the base
+// series name (e.g. "… Slime Season 2 Part 2" -> "… Slime").
+function baseSeriesName(name: string): string {
+  const stripped = name.replace(/\s+(?:season\s+\d+(?:\s+part\s+\d+)?|\d+(?:st|nd|rd|th)\s+season|part\s+\d+)\s*$/i, "").trim();
+  return stripped || name;
+}
+
+// Collapse a library/list into ONE card per series: group titles by their season
+// chain, and represent each series with its LATEST season (newest cover), under
+// the base series name. Season lookups are cached, and siblings discovered from
+// one title are reused so we don't re-walk the chain for every season.
+async function groupLibraryBySeries(titles: Title[], user?: UserRecord): Promise<unknown[]> {
+  const canonicalOf = new Map<number, number>(); // title id -> canonical series key
+  let dirty = false;
+  for (const t of titles) {
+    if (canonicalOf.has(t.id)) continue;
+    if (t.seriesKey) { canonicalOf.set(t.id, t.seriesKey); continue; } // persisted → no AniList call
+    let ids = [t.id], complete = false;
+    try { const r = await anilist.seasonSiblings(t.id); ids = r.ids; complete = r.complete; } catch { /* keep [t.id] */ }
+    const key = Math.min(t.id, ...ids); // stable id shared by every season
+    for (const sid of ids) {
+      if (!canonicalOf.has(sid)) canonicalOf.set(sid, key);
+      // Persist the key on every sibling ONLY when the chain resolved fully, so a
+      // transient rate-limit doesn't lock in a wrong (ungrouped) key.
+      if (complete) { const st = db.getTitle(sid); if (st && st.seriesKey !== key) { st.seriesKey = key; dirty = true; } }
+    }
+    canonicalOf.set(t.id, key);
+  }
+  if (dirty) await db.save();
+  const groups = new Map<number, Title[]>();
+  for (const t of titles) {
+    const key = canonicalOf.get(t.id) ?? t.id;
+    const g = groups.get(key) ?? groups.set(key, []).get(key)!;
+    g.push(t);
+  }
+  return [...groups.values()].map((grp) => {
+    const rep = grp.slice().sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || b.id - a.id)[0]; // latest season
+    return { ...cardFromTitle(rep, user), title: baseSeriesName(rep.english ?? rep.romaji), seasonCount: grp.length };
+  });
 }
 function detailFromTitle(t: Title, user?: UserRecord) {
   const known = t.episodeCount ?? (t.nextAiringEpisode ? t.nextAiringEpisode - 1 : undefined);
@@ -350,7 +391,7 @@ api.get("/library", wrap(async (req, res) => {
   const ids = new Set(list ? (Object.prototype.hasOwnProperty.call(lists, list) ? lists[list] : []) : user?.library ?? []);
   let titles = db.titles().filter((t) => ids.has(t.id));
   if (folder && user) titles = titles.filter((t) => folderOf(user, t.id) === folder);
-  res.json(titles.map((t) => cardFromTitle(t, user)));
+  res.json(await groupLibraryBySeries(titles, user)); // one card per series (latest-season cover)
 }));
 
 // --- Folders (per-user, physical collections) ------------------------------
@@ -478,7 +519,7 @@ api.delete("/library/:id", wrap(async (req, res) => {
 
 api.get("/titles/:id", wrap(async (req, res) => {
   const t = await getOrCreateTitle(Number(req.params.id));
-  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1, seasonPart: null }));
+  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1, seasonPart: null, duration: null }));
   // Heal legacy per-season state: if any sibling season is in the library / auto /
   // a list, bring the whole series into lockstep before we read state below.
   if (req.user) {
@@ -497,6 +538,7 @@ api.get("/titles/:id", wrap(async (req, res) => {
     seasons: extra.seasons,
     seasonNum: extra.seasonNum, // this title's true season number in the chain
     seasonPart: extra.seasonPart, // split-cour part, if any (e.g. Season 2 Part 2)
+    duration: extra.duration, // avg episode runtime (minutes), for the episode grid
     watchedThrough: req.user ? watchedEp(req.user, t.id) : 0, // last episode marked watched
     lists: userLists(req.user, t.id),
     inLibrary: inLibrary(req.user, t.id),

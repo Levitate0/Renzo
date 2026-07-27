@@ -193,7 +193,7 @@ function makeCard(item) {
     <img class="poster" loading="lazy" src="${esc(item.poster || "")}" alt="" onerror="this.style.opacity=.15" />
     <div class="cap">
       <div class="t">${esc(item.title)}</div>
-      <div class="m">${[item.year, (item.genres || [])[0]].filter(Boolean).map(esc).join(" · ")}</div>
+      <div class="m">${[item.year, (item.genres || [])[0], item.seasonCount > 1 ? `${item.seasonCount} seasons` : ""].filter(Boolean).map(esc).join(" · ")}</div>
       ${upnext}
     </div>`;
   c.addEventListener("click", async () => {
@@ -439,6 +439,21 @@ $("#detailMore").addEventListener("click", () => {
   $("#detailMore").textContent = clamped ? "More details" : "Less";
 });
 
+// --- Cover lightbox: click the current season's poster to expand it ---------
+function openLightbox(src) {
+  if (!src) return;
+  $("#imgLightboxImg").src = src;
+  $("#imgLightbox").classList.remove("hidden");
+}
+function closeLightbox() {
+  $("#imgLightbox").classList.add("hidden");
+  $("#imgLightboxImg").removeAttribute("src");
+}
+function lightboxOpen() { return !$("#imgLightbox").classList.contains("hidden"); }
+$("#detailPoster").addEventListener("click", () => openLightbox(current?.poster || $("#detailPoster").src));
+$("#imgLightbox").addEventListener("click", (e) => { if (e.target.id !== "imgLightboxImg") closeLightbox(); });
+$("#imgLightboxClose").addEventListener("click", closeLightbox);
+
 // Set the exact watched-through episode (mark / un-watch / mark season).
 async function setProgress(id, ep) {
   try {
@@ -615,43 +630,75 @@ function renderEpisodes(d) {
   header.append(markAll);
   area.append(header);
 
-  const list = el("div", "ep-list");
+  // Responsive card grid (columns auto-fit the window width, wrap to new rows).
+  const grid = el("div", "ep-grid");
   const fallback = d.banner || d.poster || "";
+  const series = d.english || d.romaji;
+  const denied = !!(me && me.downloadsDenied);
   d.episodeList.forEach((ep) => {
     const unaired = ep.aired === false;
-    const row = el("div", `ep-row${unaired ? " unaired" : ""}`);
     const busy = ["downloading", "queued", "searching"].includes(ep.status);
     const pct = Math.round((ep.progress || 0) * 100);
     const watched = !unaired && ep.number <= (d.watchedThrough || 0);
-    let status = "";
-    if (ep.hasFile) status = `<span class="ep-st local">✓ Saved</span>`;
-    else if (busy) status = `<span class="ep-st busy">${ep.status}${pct ? " " + pct + "%" : ""}</span>`;
-    else if (unaired) status = `<span class="ep-st">Soon</span>`;
-    row.innerHTML = `
+    // Bottom-right badge: watched → Watched, else download state, else runtime.
+    let badge = "";
+    if (unaired) badge = "Soon";
+    else if (watched) badge = "Watched";
+    else if (ep.hasFile) badge = "✓ Saved";
+    else if (busy) badge = `${ep.status}${pct ? " " + pct + "%" : ""}`;
+    else if (d.duration) badge = `${d.duration}m`;
+    const ov = watched ? "↻" : "▶"; // replay for watched, play otherwise
+    const card = el("div", `ep-card${unaired ? " unaired" : ""}${watched ? " watched" : ""}`);
+    card.innerHTML = `
       <div class="ep-thumb-wrap">
         <img class="ep-thumb" loading="lazy" src="${esc(ep.thumbnail || fallback)}" alt="" onerror="this.src='${esc(fallback)}'" />
-        <span class="num-badge">${ep.number}</span>
-        ${!unaired ? '<div class="play-ov">▶</div>' : ""}
-        ${watched ? '<span class="ep-watched">Watched</span>' : ""}
+        ${!unaired ? `<div class="ep-ov">${ov}</div>` : ""}
+        ${badge ? `<span class="ep-badge${watched ? " done" : ep.hasFile ? " saved" : ""}">${esc(badge)}</span>` : ""}
         ${pct > 0 && pct < 100 ? `<div class="ep-prog" style="width:${pct}%"></div>` : ""}
       </div>
-      <div class="ep-main">
-        <div class="ep-no">S${sn} E${ep.number}${ep.epTitle ? ` · ${esc(ep.epTitle)}` : ""}</div>
-        <div class="ep-t">${esc(ep.epTitle ? "" : `Episode ${ep.number}`)}</div>
-      </div>
-      ${status}`;
-    row.title = unaired ? `Episode ${ep.number} — not aired yet` : `Play episode ${ep.number}`;
-    if (unaired) row.addEventListener("click", () => toast(`Episode ${ep.number} hasn't aired yet`));
-    else row.addEventListener("click", () => play(d.id, ep.number, `${d.english || d.romaji} · E${ep.number}`));
-    if (!unaired) { // watched toggle (doesn't trigger play)
-      const wbtn = el("button", "ep-watch" + (watched ? " on" : ""), watched ? "✓" : "＋");
-      wbtn.title = watched ? "Mark as unwatched" : "Mark watched up to here";
-      wbtn.addEventListener("click", (e) => { e.stopPropagation(); setProgress(d.id, watched ? ep.number - 1 : ep.number); });
-      row.append(wbtn);
+      <div class="ep-series">${esc(series)}</div>
+      <div class="ep-title">E${ep.number}${ep.epTitle ? ` – ${esc(ep.epTitle)}` : " – " + `Episode ${ep.number}`}</div>
+      <div class="ep-foot"><span class="ep-sub">Subtitled</span></div>`;
+    // Play on click (thumbnail / title); unaired just informs.
+    const openEp = () => unaired
+      ? toast(`Episode ${ep.number} hasn't aired yet`)
+      : play(d.id, ep.number, `${series} · E${ep.number}`);
+    card.querySelector(".ep-thumb-wrap").addEventListener("click", openEp);
+    card.querySelector(".ep-title").addEventListener("click", openEp);
+
+    // Kebab menu (mark watched/unwatched + download).
+    if (!unaired) {
+      const kebab = el("button", "ep-kebab", "⋮");
+      kebab.title = "Episode options";
+      kebab.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const open = card.querySelector(".ep-menu");
+        closeEpMenus();
+        if (open) return; // toggle off
+        const menu = el("div", "ep-menu");
+        const w = el("button", "", watched ? "Mark unwatched" : "Mark watched");
+        w.addEventListener("click", (ev) => { ev.stopPropagation(); closeEpMenus(); setProgress(d.id, watched ? ep.number - 1 : ep.number); });
+        menu.append(w);
+        if (!ep.hasFile && !denied) {
+          const dl = el("button", "", "Download");
+          dl.addEventListener("click", (ev) => { ev.stopPropagation(); closeEpMenus(); downloadEp(d.id, ep.number); });
+          menu.append(dl);
+        }
+        card.querySelector(".ep-foot").append(menu);
+      });
+      card.querySelector(".ep-foot").append(kebab);
     }
-    list.append(row);
+    grid.append(card);
   });
-  area.append(list);
+  area.append(grid);
+}
+
+function closeEpMenus() { document.querySelectorAll(".ep-menu").forEach((m) => m.remove()); }
+document.addEventListener("click", (e) => { if (!e.target.closest(".ep-foot")) closeEpMenus(); });
+
+async function downloadEp(id, ep) {
+  try { await api(`/titles/${id}/download/${ep}`, { method: "POST" }); toast(`Downloading E${ep}…`); }
+  catch (e) { toast(e.message); }
 }
 
 async function toggleList(listName) {
@@ -1183,6 +1230,7 @@ document.querySelectorAll(".modal").forEach((m) =>
   m.addEventListener("click", (e) => { if (e.target === m) closeModal(m); }));
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if (lightboxOpen()) { closeLightbox(); return; } // close the cover viewer first
   const open = document.querySelectorAll(".modal:not(.hidden)");
   if (open.length) { open.forEach(closeModal); return; }
   if (!$("#detail").classList.contains("hidden")) $("#detailBack").click(); // Esc backs out of the series page

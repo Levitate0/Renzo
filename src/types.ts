@@ -43,6 +43,7 @@ export interface Title {
   autoDownload?: boolean;     // auto-grab new episodes on the schedule
   autoFromTracker?: boolean;  // autoDownload=true came from tracker sync (so sync may also clear it)
   lists?: string[];           // DEPRECATED: lists moved to UserRecord.lists (per-user)
+  seriesKey?: number;         // canonical id shared by every season of a series (library grouping)
   addedAt: string;
   episodes: EpisodeRecord[];
 }

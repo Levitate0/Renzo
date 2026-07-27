@@ -193,7 +193,7 @@ export interface SeasonRef {
   num: number;          // season number within the full chain (from title, else position)
   part: number | null;  // split-cour part ("Season 2 Part 2" -> 2), else null
 }
-interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[]; seasonNum: number; seasonPart: number | null }
+interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[]; seasonNum: number; seasonPart: number | null; duration: number | null }
 
 const extraCache = new Map<number, { at: number; data: DetailExtra }>();
 const EXTRA_TTL = 60 * 60_000;
@@ -201,7 +201,7 @@ const EXTRA_TTL = 60 * 60_000;
 // One node's own summary + episode thumbnails + its prequel/sequel TV neighbours.
 interface SeasonNode {
   id: number; title: string; year: number | null; format: string | null;
-  episodes: number | null; poster: string | null; status: string | null;
+  episodes: number | null; poster: string | null; status: string | null; duration: number | null;
 }
 interface RelInfo { node: SeasonNode; thumbs: EpisodeThumb[]; neighbours: { relation: string; node: SeasonNode }[] }
 
@@ -236,7 +236,7 @@ async function relationsOf(id: number): Promise<RelInfo> {
   const query = `
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
-        id seasonYear format status episodes
+        id seasonYear format status episodes duration
         title { romaji english }
         coverImage { large }
         streamingEpisodes { title thumbnail }
@@ -254,7 +254,7 @@ async function relationsOf(id: number): Promise<RelInfo> {
     }`;
   const data = await gql<{
     Media: {
-      id: number; seasonYear: number | null; format: string | null; status: string | null; episodes: number | null;
+      id: number; seasonYear: number | null; format: string | null; status: string | null; episodes: number | null; duration: number | null;
       title: { romaji: string | null; english: string | null };
       coverImage: { large: string | null } | null;
       streamingEpisodes: { title: string | null; thumbnail: string | null }[] | null;
@@ -275,6 +275,7 @@ async function relationsOf(id: number): Promise<RelInfo> {
     episodes: m.episodes,
     poster: m.coverImage?.large ?? null,
     status: m.status,
+    duration: m.duration ?? null,
   };
   // AniList lists streamingEpisodes in episode order (index 0 = episode 1);
   // titles are prefixed "Episode N - Title". Just strip the prefix for a clean
@@ -297,6 +298,7 @@ async function relationsOf(id: number): Promise<RelInfo> {
         episodes: e.node.episodes,
         poster: e.node.coverImage?.large ?? null,
         status: e.node.status,
+        duration: null, // not needed for neighbours (only the viewed title shows runtime)
       } as SeasonNode,
     }));
   const info: RelInfo = { node, thumbs, neighbours };
@@ -373,7 +375,7 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
         part: partById.get(n.id) ?? null,
         relation: numById.get(n.id)! > seasonNum ? "SEQUEL" : "PREQUEL",
       }));
-    const result: DetailExtra = { episodes: self.thumbs, seasons, seasonNum, seasonPart };
+    const result: DetailExtra = { episodes: self.thumbs, seasons, seasonNum, seasonPart, duration: self.node.duration };
     // Only cache a chain we walked in full — never poison the cache with a
     // partial chain (a rate-limited hop), which would mislabel seasons for an
     // hour. An incomplete result is returned best-effort but re-fetched next time.
@@ -381,19 +383,19 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
     return result;
   } catch (e) {
     log.warn("detailExtra failed", id, String(e));
-    return { episodes: [], seasons: [], seasonNum: 1, seasonPart: null };
+    return { episodes: [], seasons: [], seasonNum: 1, seasonPart: null, duration: null };
   }
 }
 
 /** Every season id in this title's series chain, INCLUDING the given id. Used to
  *  keep per-user state (library/auto/folder/lists) in lockstep across seasons.
  *  Best-effort: returns at least [id] if the chain can't be fully walked. */
-export async function seasonSiblings(id: number): Promise<number[]> {
-  const { nodes } = await buildSeasonChain(id);
+export async function seasonSiblings(id: number): Promise<{ ids: number[]; complete: boolean }> {
+  const { nodes, complete } = await buildSeasonChain(id);
   const ids = [...nodes.values()]
     .filter((n) => n.id === id || SEASON_FORMATS.includes(n.format ?? "")) // exclude OVA/Special bridges
     .map((n) => n.id);
-  return ids.length ? ids : [id];
+  return { ids: ids.length ? ids : [id], complete };
 }
 
 /** Convert an AniList record into a library Title skeleton (no episodes yet). */
