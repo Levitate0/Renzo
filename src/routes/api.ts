@@ -860,7 +860,7 @@ api.post("/titles/:id/retry/:ep", wrap(async (req, res) => {
 
 // --- Captions proxy: remote sub -> WebVTT ----------------------------------
 api.get("/captions/:id.vtt", wrap(async (req: AuthedRequest, res) => {
-  const vtt = await captions.fetchAsVtt(req.params.id, req.user?.jimakuKey);
+  const vtt = await captions.fetchAsVtt(req.params.id, req.user?.jimakuKey, (rel) => req.user ? captions.readUserVtt(req.user.id, rel) : Promise.resolve(null));
   res.type("text/vtt").send(vtt);
 }));
 

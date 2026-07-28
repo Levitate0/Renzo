@@ -31,7 +31,9 @@ export const config = {
   // Subtitles
   jimakuApiKey: process.env.JIMAKU_API_KEY ?? "",
   openSubtitlesApiKey: process.env.OPENSUBTITLES_API_KEY ?? "",
-  subtitleLangs: (process.env.SUBTITLE_LANGS ?? "en").split(",").map((s) => s.trim()).filter(Boolean),
+  // Empty by default = keep all languages (English extracted from the release +
+  // Japanese from Jimaku). Set SUBTITLE_LANGS=en to keep only English, etc.
+  subtitleLangs: (process.env.SUBTITLE_LANGS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
 
   // Jellyfin integration (optional)
   jellyfinUrl: (process.env.JELLYFIN_URL ?? "").replace(/\/$/, ""),

@@ -1,5 +1,8 @@
+import { spawn } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
+import * as library from "./library.js";
 import { parseEpisode } from "./torrents.js";
 
 const log = logger("captions");
@@ -58,12 +61,86 @@ function fmtOf(name: string): SubtitleTrack["format"] {
   return "srt";
 }
 
+function normLang(x: string): string {
+  const n = (x || "").toLowerCase();
+  if (["en", "eng", "english"].includes(n)) return "en";
+  if (["ja", "jp", "jpn", "japanese"].includes(n)) return "ja";
+  if (["es", "spa", "spanish"].includes(n)) return "es";
+  return n || "und";
+}
 function langOf(name: string): string {
   const n = name.toLowerCase();
   if (/(\.|_|\b)(en|eng|english)(\.|_|\b)/.test(n)) return "en";
   if (/(\.|_|\b)(ja|jp|jpn|japanese)(\.|_|\b)/.test(n)) return "ja";
   if (/(\.|_|\b)(es|spa|spanish)(\.|_|\b)/.test(n)) return "es";
-  return "en"; // anime subs are overwhelmingly English by default
+  return "ja"; // Jimaku is a JAPANESE subtitle archive — unlabelled files are Japanese
+}
+
+// ---------------------------------------------------------------------------
+// Embedded subtitles — extract the release's own tracks (usually English) from
+// a downloaded file with ffmpeg. This is the best English source: it's the exact
+// release, already perfectly synced. Bitmap subs (PGS/VobSub) are skipped (can't
+// become WebVTT). Writes VTT sidecars next to the video and returns their info.
+// ---------------------------------------------------------------------------
+function run(cmd: string, args: string[], maxBytes = 16 * 1024 * 1024): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    p.stdout.on("data", (c: Buffer) => { size += c.length; if (size <= maxBytes) chunks.push(c); });
+    p.on("error", reject);
+    p.on("close", (code) => (code === 0 ? resolve(Buffer.concat(chunks).toString("utf8")) : reject(new Error(`${cmd} exited ${code}`))));
+  });
+}
+
+const TEXT_SUB_CODECS = new Set(["subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"]);
+
+export interface EmbeddedSub { suffix: string; lang: string; label: string }
+
+/** Extract text subtitle streams from a video into VTT sidecars next to it. */
+export async function extractEmbedded(videoAbs: string): Promise<EmbeddedSub[]> {
+  let probe: string;
+  try {
+    probe = await run("ffprobe", [
+      "-v", "error", "-select_streams", "s",
+      "-show_entries", "stream=codec_name:stream_tags=language,title",
+      "-of", "json", videoAbs,
+    ]);
+  } catch (e) { log.warn("ffprobe", String(e)); return []; }
+  let streams: { codec_name?: string; tags?: { language?: string; title?: string } }[];
+  try { streams = JSON.parse(probe).streams ?? []; } catch { return []; }
+
+  // Only extract the language(s) we care about (default: English) — releases often
+  // bundle 8+ languages, and extracting each means an ffmpeg run + a sidecar file.
+  const want = config.subtitleLangs.length ? new Set(config.subtitleLangs) : new Set(["en"]);
+  const base = videoAbs.replace(/\.[^.]+$/, "");
+  const out: EmbeddedSub[] = [];
+  const usedLang = new Set<string>();
+  // The i-th subtitle stream (in probe order) maps to ffmpeg's `0:s:i`.
+  for (let i = 0; i < streams.length; i++) {
+    if (!TEXT_SUB_CODECS.has((streams[i].codec_name || "").toLowerCase())) continue;
+    const lang = normLang(streams[i].tags?.language || "");
+    if (!want.has(lang)) continue;      // skip languages we don't want
+    if (usedLang.has(lang)) continue;   // one track per language (the first = usually full dialogue)
+    const suffix = `.${lang}.embedded.vtt`;
+    try {
+      const vtt = await run("ffmpeg", ["-v", "error", "-i", videoAbs, "-map", `0:s:${i}`, "-f", "webvtt", "-"]);
+      if (!/-->/.test(vtt)) continue; // no cues
+      await writeFile(`${base}${suffix}`, vtt.startsWith("WEBVTT") ? vtt : `WEBVTT\n\n${vtt}`);
+      const title = streams[i].tags?.title;
+      out.push({ suffix, lang, label: title || (lang === "en" ? "English (release)" : lang === "ja" ? "Japanese (release)" : `${lang} (release)`) });
+      usedLang.add(lang);
+    } catch (e) { log.warn("extract sub", String(e)); }
+  }
+  return out;
+}
+
+/** Read a user's extracted VTT sidecar, path-scoped to their library (SSRF/traversal-safe). */
+export async function readUserVtt(userId: string, rel: string): Promise<string | null> {
+  if (!rel || rel.includes("..") || !/\.vtt$/i.test(rel)) return null; // traversal + type guard
+  const abs = library.userAbs(userId, rel);
+  if (!abs.startsWith(library.userRoot(userId))) return null;          // containment guard
+  try { return await readFile(abs, "utf8"); } catch { return null; }
 }
 
 /** Find subtitle tracks for a given AniList id + optional episode. `key` is the
@@ -143,7 +220,18 @@ async function fetchAllowlisted(startUrl: string, key?: string): Promise<Respons
   throw new Error("too many redirects");
 }
 
-export async function fetchAsVtt(id: string, key?: string): Promise<string> {
+export async function fetchAsVtt(
+  id: string,
+  key?: string,
+  readLocal?: (rel: string) => Promise<string | null>,
+): Promise<string> {
+  // Extracted-from-download tracks are stored locally as VTT (id = "local::<relpath>").
+  const decoded = Buffer.from(id, "base64url").toString("utf8");
+  if (decoded.startsWith("local::")) {
+    const vtt = readLocal ? await readLocal(decoded.slice("local::".length)) : null;
+    if (vtt == null) throw new Error("local subtitle unavailable");
+    return vtt.startsWith("WEBVTT") ? vtt : `WEBVTT\n\n${vtt}`;
+  }
   const { url, format } = decodeTrackId(id);
   const res = await fetchAllowlisted(url, key);
   if (!res.ok) throw new Error(`subtitle fetch ${res.status}`);

@@ -58,6 +58,7 @@ export interface EpisodeRecord {
   progress?: number;      // 0..1 while downloading
   rdTorrentId?: string;
   magnet?: string;
+  subs?: { file: string; lang: string; label: string }[]; // extracted embedded subtitle sidecars (rel paths)
   updatedAt: string;
 }
 

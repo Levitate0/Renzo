@@ -101,7 +101,7 @@ async function main() {
   // Caption download for native offline savers — accepts a ?dtoken= (downloads
   // only) so Capacitor's downloader can fetch subtitles without the session cookie.
   app.get("/dl/captions/:id.vtt", downloadAuth, (req: AuthedRequest, res) => {
-    captions.fetchAsVtt(req.params.id, req.user?.jimakuKey)
+    captions.fetchAsVtt(req.params.id, req.user?.jimakuKey, (rel) => req.user ? captions.readUserVtt(req.user.id, rel) : Promise.resolve(null))
       .then((vtt) => res.type("text/vtt").send(vtt))
       .catch(() => res.status(502).type("text/vtt").send(""));
   });
