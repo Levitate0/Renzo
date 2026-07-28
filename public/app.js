@@ -1539,7 +1539,13 @@ let ccTracks = [], ccActive = -1, ccCueHandler = null, hideTimer = null;
 const CC_NAMES = { en: "English", ja: "Japanese", es: "Spanish", "es-la": "Spanish (LA)", pt: "Portuguese",
   "pt-br": "Portuguese (BR)", fr: "French", de: "German", it: "Italian", ru: "Russian", ar: "Arabic",
   zh: "Chinese", ko: "Korean", id: "Indonesian", ms: "Malay", vi: "Vietnamese", th: "Thai", tr: "Turkish", hi: "Hindi", pl: "Polish" };
-function ccName(lang) { const l = (lang || "").toLowerCase(); return CC_NAMES[l] || (l ? l.toUpperCase() : "Unknown"); }
+// Map 3-letter / regional codes to the 2-letter form so tracks tagged "eng"/"jpn"
+// display cleanly and match the preferred-language setting.
+const CC_ALIAS = { eng: "en", en: "en", jpn: "ja", jp: "ja", ja: "ja", spa: "es", es: "es",
+  fre: "fr", fra: "fr", fr: "fr", ger: "de", deu: "de", de: "de", por: "pt", pt: "pt",
+  rus: "ru", ru: "ru", ara: "ar", ar: "ar", ita: "it", it: "it", kor: "ko", ko: "ko", chi: "zh", zho: "zh", zh: "zh" };
+function normCc(lang) { const l = (lang || "").toLowerCase(); return CC_ALIAS[l] || l; }
+function ccName(lang) { const l = (lang || "").toLowerCase(); return CC_NAMES[l] || CC_NAMES[normCc(l)] || (l ? l.toUpperCase() : "Unknown"); }
 function fmtTime(s) { s = Math.max(0, s | 0); const h = (s / 3600) | 0, m = ((s % 3600) / 60) | 0, ss = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`; }
 
 function showControls() {
@@ -1586,12 +1592,21 @@ function setupCaptions(video) {
   if (ccActive >= 0 && ccTracks[ccActive]) ccTracks[ccActive].track.removeEventListener("cuechange", ccCueHandler);
   ccTracks = []; ccActive = -1;
   const tt = video.textTracks;
-  for (let i = 0; i < tt.length; i++) { tt[i].mode = "hidden"; ccTracks.push({ lang: (tt[i].language || "en").toLowerCase(), track: tt[i] }); }
-  const pref = (me && me.ccLang) || "en";
+  for (let i = 0; i < tt.length; i++) {
+    tt[i].mode = "hidden";
+    const lang = (tt[i].language || "en").toLowerCase();
+    // One entry per language — drop duplicates (e.g. a signs track that slipped
+    // through, or the same language from two sources) so the menu stays clean.
+    if (ccTracks.some((c) => normCc(c.lang) === normCc(lang))) continue;
+    ccTracks.push({ lang, track: tt[i] });
+  }
+  const prefRaw = (me && me.ccLang) || "en";
+  const pref = normCc(prefRaw);
   let idx = -1;
-  if (pref !== "off" && ccTracks.length) {
-    idx = ccTracks.findIndex((t) => t.lang === pref || t.lang.startsWith(pref) || pref.startsWith(t.lang));
-    if (idx < 0) idx = 0;                 // no match for the preferred language → first available
+  if (prefRaw !== "off" && ccTracks.length) {
+    idx = ccTracks.findIndex((t) => normCc(t.lang) === pref);       // exact preferred language
+    if (idx < 0) idx = ccTracks.findIndex((t) => normCc(t.lang) === "en"); // else English
+    if (idx < 0) idx = 0;                                            // else first available
   }
   applyCaption(idx);
   buildCcMenu();

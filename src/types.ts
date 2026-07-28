@@ -59,6 +59,7 @@ export interface EpisodeRecord {
   rdTorrentId?: string;
   magnet?: string;
   subs?: { file: string; lang: string; label: string }[]; // extracted embedded subtitle sidecars (rel paths)
+  subsV?: number;         // extraction-logic version the subs were produced with (see captions.SUBS_VERSION)
   updatedAt: string;
 }
 

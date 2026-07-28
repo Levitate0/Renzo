@@ -184,12 +184,13 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
   if (ep.status === "downloaded" && ep.filePath && (await library.exists(library.userAbs(user.id, ep.filePath)))) {
     // The release's own (usually English) subtitles: extract them lazily on first
     // play so episodes downloaded before this feature also get them; cached on ep.
-    if (ep.subs === undefined) {
+    if (ep.subs === undefined || ep.subsV !== captions.SUBS_VERSION) {
       try {
         const emb = await captions.extractEmbedded(library.userAbs(user.id, ep.filePath));
         const relBase = ep.filePath.replace(/\.[^.]+$/, "");
         ep.subs = emb.map((e) => ({ file: relBase + e.suffix, lang: e.lang, label: e.label }));
       } catch (e) { ep.subs = []; log.warn("extract embedded", String(e)); }
+      ep.subsV = captions.SUBS_VERSION;
       await db.save();
     }
     const localSubs = (ep.subs ?? []).map((s) => ({
@@ -495,6 +496,7 @@ class DownloadQueue {
         const emb = await captions.extractEmbedded(abs);
         const relBase = rel.replace(/\.[^.]+$/, "");
         ep.subs = emb.map((e) => ({ file: relBase + e.suffix, lang: e.lang, label: e.label }));
+        ep.subsV = captions.SUBS_VERSION;
         await db.save();
       } catch (e) { log.warn("extract embedded", String(e)); }
       await jellyfin.triggerScan().catch(() => {});

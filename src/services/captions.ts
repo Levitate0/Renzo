@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, readdir, unlink } from "node:fs/promises";
+import { dirname, basename, join } from "node:path";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import * as library from "./library.js";
@@ -61,12 +62,24 @@ function fmtOf(name: string): SubtitleTrack["format"] {
   return "srt";
 }
 
+// Normalize ISO-639-2 (3-letter) + full names to a stable 2-letter code so a
+// track tagged "eng"/"jpn"/"fre" is stored, labelled and matched consistently.
+const LANG_ALIAS: Record<string, string> = {
+  en: "en", eng: "en", english: "en",
+  ja: "ja", jp: "ja", jpn: "ja", japanese: "ja",
+  es: "es", spa: "es", spanish: "es",
+  pt: "pt", por: "pt", portuguese: "pt",
+  fr: "fr", fre: "fr", fra: "fr", french: "fr",
+  de: "de", ger: "de", deu: "de", german: "de",
+  it: "it", ita: "it", italian: "it",
+  ru: "ru", rus: "ru", russian: "ru",
+  ar: "ar", ara: "ar", arabic: "ar",
+  zh: "zh", chi: "zh", zho: "zh", chinese: "zh",
+  ko: "ko", kor: "ko", korean: "ko",
+};
 function normLang(x: string): string {
-  const n = (x || "").toLowerCase();
-  if (["en", "eng", "english"].includes(n)) return "en";
-  if (["ja", "jp", "jpn", "japanese"].includes(n)) return "ja";
-  if (["es", "spa", "spanish"].includes(n)) return "es";
-  return n || "und";
+  const n = (x || "").toLowerCase().split(/[-_]/)[0];
+  return LANG_ALIAS[n] || (n || "und");
 }
 function langOf(name: string): string {
   const n = name.toLowerCase();
@@ -95,9 +108,27 @@ function run(cmd: string, args: string[], maxBytes = 16 * 1024 * 1024): Promise<
 
 const TEXT_SUB_CODECS = new Set(["subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"]);
 
+// Bump when the extraction logic changes so cached ep.subs from an older version
+// are re-extracted (see downloader.resolveStream). v2: exactly one best track per
+// language — drops the duplicate/non-functional "signs & songs" English track and
+// any languages the user didn't ask for.
+export const SUBS_VERSION = 2;
+
+const LANG_NAMES: Record<string, string> = {
+  en: "English", ja: "Japanese", es: "Spanish", pt: "Portuguese", fr: "French",
+  de: "German", it: "Italian", ru: "Russian", ar: "Arabic", zh: "Chinese", ko: "Korean",
+};
+function langName(lang: string): string {
+  return LANG_NAMES[lang] || (lang ? lang.toUpperCase() : "Subtitles");
+}
+
 export interface EmbeddedSub { suffix: string; lang: string; label: string }
 
-/** Extract text subtitle streams from a video into VTT sidecars next to it. */
+/** Extract embedded text subtitles into VTT sidecars — ALL languages the release
+ *  carries, but exactly ONE track per language: the stream with the most cues (the
+ *  real dialogue track, not a sparse "signs & songs" overlay), and none for a
+ *  language whose only track is empty. Stale sidecars from older/broken extractions
+ *  are deleted. `config.subtitleLangs`, if set, restricts to those languages. */
 export async function extractEmbedded(videoAbs: string): Promise<EmbeddedSub[]> {
   let probe: string;
   try {
@@ -110,28 +141,53 @@ export async function extractEmbedded(videoAbs: string): Promise<EmbeddedSub[]> 
   let streams: { codec_name?: string; tags?: { language?: string; title?: string } }[];
   try { streams = JSON.parse(probe).streams ?? []; } catch { return []; }
 
-  // Only extract the language(s) we care about (default: English) — releases often
-  // bundle 8+ languages, and extracting each means an ffmpeg run + a sidecar file.
-  const want = config.subtitleLangs.length ? new Set(config.subtitleLangs) : new Set(["en"]);
+  // Keep every language by default; config.subtitleLangs restricts it if set.
+  const want = config.subtitleLangs.length ? new Set(config.subtitleLangs.map(normLang)) : null;
   const base = videoAbs.replace(/\.[^.]+$/, "");
-  const out: EmbeddedSub[] = [];
-  const usedLang = new Set<string>();
-  // The i-th subtitle stream (in probe order) maps to ffmpeg's `0:s:i`.
+
+  // Group the text-subtitle stream indices by language (the i-th subtitle stream
+  // in probe order maps to ffmpeg's `0:s:i`).
+  const byLang = new Map<string, number[]>();
   for (let i = 0; i < streams.length; i++) {
     if (!TEXT_SUB_CODECS.has((streams[i].codec_name || "").toLowerCase())) continue;
     const lang = normLang(streams[i].tags?.language || "");
-    if (!want.has(lang)) continue;      // skip languages we don't want
-    if (usedLang.has(lang)) continue;   // one track per language (the first = usually full dialogue)
-    const suffix = `.${lang}.embedded.vtt`;
-    try {
-      const vtt = await run("ffmpeg", ["-v", "error", "-i", videoAbs, "-map", `0:s:${i}`, "-f", "webvtt", "-"]);
-      if (!/-->/.test(vtt)) continue; // no cues
-      await writeFile(`${base}${suffix}`, vtt.startsWith("WEBVTT") ? vtt : `WEBVTT\n\n${vtt}`);
-      const title = streams[i].tags?.title;
-      out.push({ suffix, lang, label: title || (lang === "en" ? "English (release)" : lang === "ja" ? "Japanese (release)" : `${lang} (release)`) });
-      usedLang.add(lang);
-    } catch (e) { log.warn("extract sub", String(e)); }
+    if (want && !want.has(lang)) continue;
+    const arr = byLang.get(lang); if (arr) arr.push(i); else byLang.set(lang, [i]);
   }
+
+  const out: EmbeddedSub[] = [];
+  for (const [lang, idxs] of byLang) {
+    // A release can ship two same-language tracks (full dialogue + a signs/songs
+    // overlay). Extract each candidate and keep the one with the MOST cues — the
+    // dialogue track. A track with no cues is broken and gets dropped entirely.
+    let best: string | null = null;
+    let bestCues = 0;
+    for (const i of idxs) {
+      try {
+        const vtt = await run("ffmpeg", ["-v", "error", "-i", videoAbs, "-map", `0:s:${i}`, "-f", "webvtt", "-"]);
+        const cues = (vtt.match(/-->/g) || []).length;
+        if (cues > bestCues) { best = vtt; bestCues = cues; }
+      } catch (e) { log.warn("extract sub", String(e)); }
+    }
+    if (!best) continue; // no cues in any candidate for this language
+    const suffix = `.${lang}.embedded.vtt`;
+    await writeFile(`${base}${suffix}`, best.startsWith("WEBVTT") ? best : `WEBVTT\n\n${best}`);
+    out.push({ suffix, lang, label: langName(lang) });
+  }
+
+  // Clean out stale sidecars from older/broken extractions (the duplicate ".en.1."
+  // tracks, languages dropped this run, etc.) so only the current set stays on disk.
+  try {
+    const dir = dirname(videoAbs);
+    const prefix = basename(base) + ".";
+    const keep = new Set(out.map((e) => basename(base) + e.suffix));
+    for (const f of await readdir(dir)) {
+      if (f.startsWith(prefix) && f.endsWith(".embedded.vtt") && !keep.has(f)) {
+        await unlink(join(dir, f)).catch(() => {});
+      }
+    }
+  } catch (e) { log.warn("clean embedded", String(e)); }
+
   return out;
 }
 
