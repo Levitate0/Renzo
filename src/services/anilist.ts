@@ -67,6 +67,27 @@ async function gql<T>(query: string, variables: Record<string, unknown>, attempt
   return json.data as T;
 }
 
+// AniList's SEARCH_MATCH ranks titles that START with the query, so a term that
+// appears mid-title ("Teacher" in "Why the hell are you here, Teacher!?") lands
+// around rank 30-40 and used to fall outside the page entirely. Score every
+// candidate by how it contains the query so a plain word behaves like *query*.
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function matchScore(m: AniListMedia, q: string): number {
+  const fields = [m.title.english, m.title.romaji, m.title.native, ...(m.synonyms ?? [])]
+    .filter(Boolean).map((s) => (s as string).toLowerCase());
+  const word = new RegExp(`\\b${escapeRe(q)}`);
+  let best = 0;
+  for (const f of fields) {
+    if (f === q) return 5;                       // exact title
+    if (f.startsWith(q)) best = Math.max(best, 4);
+    else if (word.test(f)) best = Math.max(best, 3); // starts a word mid-title
+    else if (f.includes(q)) best = Math.max(best, 2); // anywhere at all
+  }
+  return best;
+}
+
 /** Text search. `type` narrows to movies or series (everything non-MOVIE). */
 export async function searchAnime(search: string, type?: MediaType): Promise<AniListMedia[]> {
   const formats =
@@ -75,9 +96,11 @@ export async function searchAnime(search: string, type?: MediaType): Promise<Ani
   // pass the argument when a format filter is actually set (type = All omits it).
   const fmtDecl = formats ? ", $formats: [MediaFormat]" : "";
   const fmtArg = formats ? ", format_in: $formats" : "";
+  // Pull a wide candidate pool (AniList caps perPage at 50) and re-rank locally —
+  // the match we want is often past the first two dozen results.
   const query = `
     query ($search: String${fmtDecl}) {
-      Page(perPage: 24) {
+      Page(perPage: 50) {
         media(search: $search, type: ANIME${fmtArg}, sort: SEARCH_MATCH) {
           ${MEDIA_FIELDS}
         }
@@ -86,7 +109,14 @@ export async function searchAnime(search: string, type?: MediaType): Promise<Ani
   const vars: Record<string, unknown> = { search };
   if (formats) vars.formats = formats;
   const data = await gql<{ Page: { media: AniListMedia[] } }>(query, vars);
-  return data.Page.media;
+  const q = search.trim().toLowerCase();
+  if (!q) return data.Page.media.slice(0, 30);
+  // Stable sort: substring hits first, AniList's own ordering breaks ties.
+  return data.Page.media
+    .map((m, i) => ({ m, i, s: matchScore(m, q) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.m)
+    .slice(0, 30);
 }
 
 /** Trending anime for the landing page. */
@@ -171,6 +201,10 @@ export async function getById(id: number): Promise<AniListMedia | null> {
     return data.Media;
   } catch (e) {
     log.warn("getById failed", id, String(e));
+    // A rate-limit/outage is NOT "this title doesn't exist" — rethrow so callers
+    // (and the UI) report a temporary failure instead of a bogus not-found, which
+    // made a season card look permanently unclickable.
+    if (/AniList (429|5\d\d)/.test(String(e))) throw new Error("anilist_unavailable");
     return null;
   }
 }
@@ -200,8 +234,10 @@ export interface SeasonRef {
   episodes: number | null; poster: string | null; relation: string; status: string | null;
   num: number;          // season number within the full chain (from title, else position)
   part: number | null;  // split-cour part ("Season 2 Part 2" -> 2), else null
+  kind: SeasonKind;     // "extra" = OVA/special attached to the series, not a numbered season
 }
-interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[]; seasonNum: number; seasonPart: number | null; duration: number | null }
+export type SeasonKind = "season" | "extra";
+interface DetailExtra { episodes: EpisodeThumb[]; seasons: SeasonRef[]; seasonNum: number; seasonPart: number | null; seasonKind: SeasonKind; seasonFormat: string | null; nextUp: SeasonRef | null; duration: number | null }
 
 const extraCache = new Map<number, { at: number; data: DetailExtra }>();
 const EXTRA_TTL = 60 * 60_000;
@@ -217,10 +253,40 @@ const relCache = new Map<number, { at: number; data: RelInfo }>();
 const REL_TTL = 60 * 60_000;
 // Formats shown as numbered seasons.
 const SEASON_FORMATS = ["TV", "TV_SHORT", "ONA"];
-// Formats we FOLLOW prequel/sequel edges through — includes OVA/Special so a
-// bridge entry (e.g. Slime's "Visions of Coleus" OVA between S1 and S2) keeps the
-// chain connected. Bridges are traversed but filtered out of the seasons list.
-const TRAVERSE_FORMATS = ["TV", "TV_SHORT", "ONA", "OVA", "SPECIAL"];
+// Movies/OVAs/specials belong to a series but never take a season number ("extras").
+const EXTRA_FORMATS = ["MOVIE", "OVA", "SPECIAL"];
+// Formats we FOLLOW relation edges through — includes the extras so a bridge entry
+// keeps the chain connected: Slime's "Visions of Coleus" OVA between S1 and S2, or
+// the Rascal franchise, whose 2018 and 2025 TV seasons are joined ONLY by a run of
+// movies (TV -> movie -> movie -> movie -> TV).
+const TRAVERSE_FORMATS = ["TV", "TV_SHORT", "ONA", "MOVIE", "OVA", "SPECIAL"];
+// Relations that can join one series chain. PREQUEL/SEQUEL are the season spine;
+// SIDE_STORY/PARENT attach specials & OVAs to their parent show (e.g. "Why the
+// hell are you here, Teacher!?: Thirteenth Period" is a SIDE_STORY, not a sequel,
+// so it used to float as its own separate series).
+const CHAIN_RELATIONS = ["PREQUEL", "SEQUEL", "SIDE_STORY", "PARENT"];
+
+/** True for formats that are numbered seasons (not a movie/OVA/special). */
+export function isSeasonFormat(fmt: string | null | undefined): boolean {
+  return SEASON_FORMATS.includes(fmt ?? "");
+}
+function isExtraFormat(fmt: string | null | undefined): boolean {
+  return EXTRA_FORMATS.includes(fmt ?? "");
+}
+
+/** Whether a relation edge joins the same series. Side-story/parent edges are
+ *  followed ONLY to attach an OVA/special to its parent — never between two full
+ *  shows, so a TV spin-off keeps its own identity instead of being swallowed. */
+function followsChain(from: SeasonNode, relation: string, to: SeasonNode): boolean {
+  if (relation === "PREQUEL" || relation === "SEQUEL") return true;
+  if (relation === "SIDE_STORY") return isExtraFormat(to.format);   // series -> its extra
+  if (relation === "PARENT") return isExtraFormat(from.format);      // extra -> its series
+  return false;
+}
+
+// Bump when the chain-walking rules change so persisted seriesKeys (which are
+// cached on Title) are recomputed instead of pinning the old grouping.
+export const SERIES_CHAIN_VERSION = 2;
 
 // Derive a season number + split-cour part from a title, e.g.
 // "… Season 2 Part 2" -> {num:2, part:2}, "… 3rd Season" -> {num:3}. Bare
@@ -294,7 +360,7 @@ async function relationsOf(id: number): Promise<RelInfo> {
     return { title: mm ? mm[1].trim() : raw, thumbnail: e.thumbnail ?? null };
   });
   const neighbours = (m.relations?.edges ?? [])
-    .filter((e) => ["PREQUEL", "SEQUEL"].includes(e.relationType) &&
+    .filter((e) => CHAIN_RELATIONS.includes(e.relationType) &&
       e.node.type === "ANIME" && TRAVERSE_FORMATS.includes(e.node.format ?? ""))
     .map((e) => ({
       relation: e.relationType,
@@ -332,6 +398,7 @@ async function buildSeasonChain(startId: number): Promise<{ nodes: Map<number, S
     catch (e) { log.warn("season chain hop failed", cur, String(e)); complete = false; continue; }
     found.set(cur, info.node); // authoritative self metadata
     for (const nb of info.neighbours) {
+      if (!followsChain(info.node, nb.relation, nb.node)) continue; // not the same series
       if (!found.has(nb.node.id)) found.set(nb.node.id, nb.node);
       if (!visited.has(nb.node.id)) queue.push(nb.node.id);
     }
@@ -351,24 +418,40 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
   try {
     const self = await relationsOf(id); // episode thumbnails for THIS title
     const { nodes, complete } = await buildSeasonChain(id);
-    // Drop OVA/Special bridges from the displayed seasons (but always keep the
-    // title being viewed), then order chronologically.
-    const displayed = [...nodes.values()].filter((n) => n.id === id || SEASON_FORMATS.includes(n.format ?? ""));
+    // Show the numbered seasons AND the series' OVAs/specials (they're part of the
+    // series, just not numbered), ordered chronologically.
+    const displayed = [...nodes.values()].filter(
+      (n) => n.id === id || SEASON_FORMATS.includes(n.format ?? "") || isExtraFormat(n.format),
+    );
     const chain = orderSeasons(displayed);
     // Season number: prefer the number in the title ("Season 4"), so split-cours
-    // and OVA bridges don't offset it; fall back to chronological position.
+    // don't offset it; fall back to position among the REAL seasons. Extras never
+    // consume a number — they inherit the season they follow purely for ordering.
     const numById = new Map<number, number>();
     const partById = new Map<number, number | null>();
-    chain.forEach((n, i) => {
+    const kindById = new Map<number, SeasonKind>();
+    let pos = 0;
+    for (const n of chain) {
+      if (isExtraFormat(n.format)) {
+        kindById.set(n.id, "extra");
+        numById.set(n.id, pos || 1); // sorts directly after the preceding season
+        partById.set(n.id, null);
+        continue;
+      }
+      kindById.set(n.id, "season");
       const { num, part } = seasonParts(n.title);
-      numById.set(n.id, num ?? i + 1);
+      pos = num ?? pos + 1;       // a title-derived number re-anchors the counter
+      numById.set(n.id, pos);
       partById.set(n.id, part);
-    });
+    }
     const seasonNum = numById.get(id) ?? 1;
     const seasonPart = partById.get(id) ?? null;
-    // Other seasons in the chain. relation is derived vs. the current season so
+    const seasonKind = kindById.get(id) ?? "season";
+    const seasonFormat = self.node.format;
+    // Other entries in the chain. relation is derived vs. the current season so
     // consumers (Updates feed) can still tell which are sequels — correct even
-    // across multiple hops / bridge entries.
+    // across multiple hops / bridge entries. Extras report SIDE_STORY so the
+    // Updates feed never announces a special as a brand-new season.
     const seasons: SeasonRef[] = chain
       .filter((n) => n.id !== id)
       .map((n) => ({
@@ -381,9 +464,18 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
         status: n.status,
         num: numById.get(n.id)!,
         part: partById.get(n.id) ?? null,
-        relation: numById.get(n.id)! > seasonNum ? "SEQUEL" : "PREQUEL",
+        kind: kindById.get(n.id) ?? "season",
+        relation: kindById.get(n.id) === "extra" ? "SIDE_STORY"
+          : numById.get(n.id)! > seasonNum ? "SEQUEL" : "PREQUEL",
       }));
-    const result: DetailExtra = { episodes: self.thumbs, seasons, seasonNum, seasonPart, duration: self.node.duration };
+    // "Up next": the next watchable entry in the chain after this one, whatever
+    // its format — S1 -> the movie that continues it -> S2. Unreleased entries are
+    // skipped so the card never points at something you can't watch yet.
+    const order = chain.map((n) => n.id);
+    const selfPos = order.indexOf(id);
+    const nextUp = selfPos < 0 ? null
+      : seasons.find((s) => order.indexOf(s.id) > selfPos && s.status !== "NOT_YET_RELEASED") ?? null;
+    const result: DetailExtra = { episodes: self.thumbs, seasons, seasonNum, seasonPart, seasonKind, seasonFormat, nextUp, duration: self.node.duration };
     // Only cache a chain we walked in full — never poison the cache with a
     // partial chain (a rate-limited hop), which would mislabel seasons for an
     // hour. An incomplete result is returned best-effort but re-fetched next time.
@@ -391,18 +483,19 @@ export async function detailExtra(id: number): Promise<DetailExtra> {
     return result;
   } catch (e) {
     log.warn("detailExtra failed", id, String(e));
-    return { episodes: [], seasons: [], seasonNum: 1, seasonPart: null, duration: null };
+    return { episodes: [], seasons: [], seasonNum: 1, seasonPart: null, seasonKind: "season", seasonFormat: null, nextUp: null, duration: null };
   }
 }
 
-/** Every season id in this title's series chain, INCLUDING the given id. Used to
- *  keep per-user state (library/auto/folder/lists) in lockstep across seasons.
+/** Every id in this title's series chain, INCLUDING the given id — seasons AND
+ *  the series' movies/OVAs/specials. Used to group the library into one card per
+ *  series and keep per-user state (library/auto/folder/lists) in lockstep. Extras
+ *  are included deliberately: a franchise movie or special is part of the series,
+ *  not a separate show, so it must not surface as its own card.
  *  Best-effort: returns at least [id] if the chain can't be fully walked. */
 export async function seasonSiblings(id: number): Promise<{ ids: number[]; complete: boolean }> {
   const { nodes, complete } = await buildSeasonChain(id);
-  const ids = [...nodes.values()]
-    .filter((n) => n.id === id || SEASON_FORMATS.includes(n.format ?? "")) // exclude OVA/Special bridges
-    .map((n) => n.id);
+  const ids = [...nodes.values()].map((n) => n.id);
   return { ids: ids.length ? ids : [id], complete };
 }
 
@@ -414,6 +507,7 @@ export function toTitle(m: AniListMedia): Title {
     id: m.id,
     malId: m.idMal ?? undefined,
     type,
+    format: m.format ?? undefined,
     romaji,
     english: m.title.english ?? undefined,
     synonyms: [...new Set([m.title.native, ...(m.synonyms ?? [])].filter(Boolean) as string[])],

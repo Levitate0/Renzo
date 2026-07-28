@@ -264,6 +264,11 @@ function cardFromTitle(t: Title, user?: UserRecord) {
 
 // Strip a trailing season/part suffix so a grouped library card shows the base
 // series name (e.g. "… Slime Season 2 Part 2" -> "… Slime").
+// Is this library entry a numbered season (vs. a franchise movie/OVA/special)?
+// Rows saved before `format` was stored fall back to the coarse movie/series type.
+function isSeasonTitle(t: Title): boolean {
+  return t.format ? anilist.isSeasonFormat(t.format) : t.type !== "movie";
+}
 function baseSeriesName(name: string): string {
   const stripped = name.replace(/\s+(?:season\s+\d+(?:\s+part\s+\d+)?|\d+(?:st|nd|rd|th)\s+season|part\s+\d+)\s*$/i, "").trim();
   return stripped || name;
@@ -282,7 +287,9 @@ async function resolveSeriesKeys(titles: Title[]): Promise<Map<number, number>> 
   let dirty = false;
   for (const t of titles) {
     if (canonicalOf.has(t.id)) continue;
-    if (t.seriesKey) { canonicalOf.set(t.id, t.seriesKey); continue; } // persisted → no AniList call
+    // Persisted key → no AniList call, but only if it came from the CURRENT chain
+    // rules (else an old grouping, e.g. one that split specials off, would stick).
+    if (t.seriesKey && t.seriesKeyV === anilist.SERIES_CHAIN_VERSION) { canonicalOf.set(t.id, t.seriesKey); continue; }
     let ids = [t.id], complete = false;
     try { const r = await anilist.seasonSiblings(t.id); ids = r.ids; complete = r.complete; } catch { /* keep [t.id] */ }
     const key = Math.min(t.id, ...ids); // stable id shared by every season
@@ -290,7 +297,12 @@ async function resolveSeriesKeys(titles: Title[]): Promise<Map<number, number>> 
       if (!canonicalOf.has(sid)) canonicalOf.set(sid, key);
       // Persist the key on every sibling ONLY when the chain resolved fully, so a
       // transient rate-limit doesn't lock in a wrong (ungrouped) key.
-      if (complete) { const st = db.getTitle(sid); if (st && st.seriesKey !== key) { st.seriesKey = key; dirty = true; } }
+      if (complete) {
+        const st = db.getTitle(sid);
+        if (st && (st.seriesKey !== key || st.seriesKeyV !== anilist.SERIES_CHAIN_VERSION)) {
+          st.seriesKey = key; st.seriesKeyV = anilist.SERIES_CHAIN_VERSION; dirty = true;
+        }
+      }
     }
     canonicalOf.set(t.id, key);
   }
@@ -307,8 +319,14 @@ async function groupLibraryBySeries(titles: Title[], user?: UserRecord): Promise
     g.push(t);
   }
   return [...groups.values()].map((grp) => {
-    const rep = grp.slice().sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || b.id - a.id)[0]; // latest season
-    return { ...cardFromTitle(rep, user), title: baseSeriesName(rep.english ?? rep.romaji), seasonCount: grp.length };
+    // Represent the series with its LATEST numbered season — never a movie/OVA,
+    // which would title the whole card after a side film — and count only real
+    // seasons so "N seasons" doesn't include the franchise's movies/specials.
+    const rep = grp.slice().sort((a, b) =>
+      (isSeasonTitle(a) ? 0 : 1) - (isSeasonTitle(b) ? 0 : 1)
+      || (b.year ?? 0) - (a.year ?? 0) || b.id - a.id)[0];
+    return { ...cardFromTitle(rep, user), title: baseSeriesName(rep.english ?? rep.romaji),
+      seasonCount: grp.filter(isSeasonTitle).length || 1 };
   });
 }
 function detailFromTitle(t: Title, user?: UserRecord) {
@@ -550,7 +568,7 @@ api.delete("/library/:id", wrap(async (req, res) => {
 
 api.get("/titles/:id", wrap(async (req, res) => {
   const t = await getOrCreateTitle(Number(req.params.id));
-  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1, seasonPart: null, duration: null }));
+  const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1, seasonPart: null, seasonKind: "season" as const, seasonFormat: null, nextUp: null, duration: null }));
   // Heal legacy per-season state: if any sibling season is in the library / auto /
   // a list, bring the whole series into lockstep before we read state below.
   // Persist the canonical series key (same logic as the library) so offline
@@ -572,6 +590,9 @@ api.get("/titles/:id", wrap(async (req, res) => {
     seasons: extra.seasons,
     seasonNum: extra.seasonNum, // this title's true season number in the chain
     seasonPart: extra.seasonPart, // split-cour part, if any (e.g. Season 2 Part 2)
+    seasonKind: extra.seasonKind, // "extra" = movie/OVA/special (labelled, not numbered)
+    seasonFormat: extra.seasonFormat, // AniList format, so the chip can say Movie / OVA / Special
+    nextUp: extra.nextUp, // next entry in the series chain (season OR movie) — "Up next" in the player
     duration: extra.duration, // avg episode runtime (minutes), for the episode grid
     watchedThrough: req.user ? watchedEp(req.user, t.id) : 0, // last episode marked watched
     lists: userLists(req.user, t.id),

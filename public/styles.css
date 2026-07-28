@@ -653,6 +653,10 @@ body.watching main, body.detailing main { display: none; }
 .wep-no { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wep.unaired { opacity: .55; cursor: default; }
 .wep.unaired:hover { background: none; }
+/* "Up next" across the series chain (next season / continuation movie). */
+.wep.upnext { border-color: var(--accent); background: rgba(255,92,138,.06); }
+.wep.upnext .wep-no { color: var(--accent); }
+.wep-next-title { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 @media (max-width: 720px) {
   .watch-stage { max-height: 60vh; }

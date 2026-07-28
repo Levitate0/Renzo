@@ -29,6 +29,7 @@ export interface Title {
   id: number;             // AniList id
   malId?: number;         // MyAnimeList id (for MAL scrobbling)
   type: MediaType;
+  format?: string;        // AniList format (TV, TV_SHORT, ONA, MOVIE, OVA, SPECIAL)
   romaji: string;
   english?: string;
   synonyms: string[];
@@ -45,6 +46,7 @@ export interface Title {
   autoFromTracker?: boolean;  // autoDownload=true came from tracker sync (so sync may also clear it)
   lists?: string[];           // DEPRECATED: lists moved to UserRecord.lists (per-user)
   seriesKey?: number;         // canonical id shared by every season of a series (library grouping)
+  seriesKeyV?: number;        // chain-walk version the key came from (see anilist.SERIES_CHAIN_VERSION)
   addedAt: string;
   episodes: EpisodeRecord[];
 }

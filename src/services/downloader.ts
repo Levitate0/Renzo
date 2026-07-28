@@ -21,7 +21,10 @@ const log = logger("downloader");
 export async function getOrCreateTitle(anilistId: number): Promise<Title> {
   const existing = db.getTitle(anilistId);
   if (existing) return existing;
-  const media = await anilist.getById(anilistId);
+  const media = await anilist.getById(anilistId).catch((e) => {
+    if (String(e).includes("anilist_unavailable")) throw new Error("AniList is rate-limiting right now — try again in a moment");
+    throw e;
+  });
   if (!media) throw new Error(`AniList id ${anilistId} not found`);
   return db.upsertTitle(anilist.toTitle(media));
 }

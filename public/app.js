@@ -313,7 +313,7 @@ const Offline = {
       id: d.id, type: d.type, english: d.english, romaji: d.romaji,
       description: d.description || "", genres: d.genres || [], content: d.content || [],
       banner: d.banner || "", poster: d.poster || "", year: d.year ?? null,
-      seasonNum: d.seasonNum ?? 1, seasonPart: d.seasonPart ?? null, seriesKey: d.seriesKey ?? null,
+      seasonNum: d.seasonNum ?? 1, seasonPart: d.seasonPart ?? null, seasonKind: d.seasonKind ?? "season", seasonFormat: d.seasonFormat ?? null, seriesKey: d.seriesKey ?? null,
       duration: d.duration ?? null, episodesTotal: d.episodesTotal ?? (d.episodeList || []).length,
       watchedThrough: Math.max(prev.watchedThrough || 0, d.watchedThrough || 0),
       episodeList: (d.episodeList || []).map((e) => ({
@@ -922,11 +922,11 @@ function renderSeasons(d) {
   const row = $("#seasonsRow");
   row.innerHTML = "";
   const seasons = [
-    { id: d.id, title: d.english || d.romaji, year: d.year, poster: d.poster, num: d.seasonNum, part: d.seasonPart, current: true },
-    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, poster: s.poster, num: s.num, part: s.part })),
+    { id: d.id, title: d.english || d.romaji, year: d.year, poster: d.poster, num: d.seasonNum, part: d.seasonPart, kind: d.seasonKind, format: d.seasonFormat, current: true },
+    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, poster: s.poster, num: s.num, part: s.part, kind: s.kind, format: s.format })),
   ];
   if (seasons.length < 2) { row.classList.add("hidden"); return; }
-  seasons.sort((a, b) => (a.num || 0) - (b.num || 0) || (a.part || 0) - (b.part || 0) || (a.year || 0) - (b.year || 0));
+  seasons.sort(seasonOrder);
   row.classList.remove("hidden");
   seasons.forEach((s, i) => {
     const card = el("div", "season-card" + (s.current ? " current" : ""));
@@ -1337,9 +1337,9 @@ function airedCount(d) {
   return (d.episodeList || []).filter((e) => e.aired !== false).length || 1;
 }
 function orderedSeasons(d) {
-  return [{ id: d.id, title: d.english || d.romaji, year: d.year, num: d.seasonNum, part: d.seasonPart, current: true },
-    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, num: s.num, part: s.part }))]
-    .sort((a, b) => (a.num || 0) - (b.num || 0) || (a.part || 0) - (b.part || 0) || (a.year || 0) - (b.year || 0));
+  return [{ id: d.id, title: d.english || d.romaji, year: d.year, num: d.seasonNum, part: d.seasonPart, kind: d.seasonKind, format: d.seasonFormat, current: true },
+    ...(d.seasons || []).map((s) => ({ id: s.id, title: s.title, year: s.year, num: s.num, part: s.part, kind: s.kind, format: s.format }))]
+    .sort(seasonOrder);
 }
 function seasonNumber(d) {
   if (d.seasonNum) return d.seasonNum; // authoritative number from the backend chain
@@ -1347,10 +1347,25 @@ function seasonNumber(d) {
   return i < 0 ? 1 : i + 1;
 }
 // Compact chip label: "S2" or, for split-cours, "S2 Pt2". `word=true` spells it out.
+const EXTRA_LABELS = { MOVIE: "Movie", OVA: "OVA", SPECIAL: "Special" };
 function seasonChip(s, i, word) {
+  // Movies/OVAs/specials are part of the series but carry no season number.
+  if (s.kind === "extra") return EXTRA_LABELS[s.format] || "Special";
   const n = s.num || i + 1;
   const base = word ? `Season ${n}` : `S${n}`;
   return s.part ? `${base}${word ? " Part " : " Pt"}${s.part}` : base;
+}
+// Seasons first, then the specials/movies that follow them; ties broken by
+// part/year and finally by id. The id tiebreak is what keeps the row IDENTICAL
+// no matter which entry you're viewing: the current title is prepended to the
+// list, so without it a stable sort floats it above same-year siblings and two
+// entries appear to swap places between pages.
+function seasonOrder(a, b) {
+  return (a.num || 0) - (b.num || 0)
+    || (a.kind === "extra" ? 1 : 0) - (b.kind === "extra" ? 1 : 0)
+    || (a.part || 0) - (b.part || 0)
+    || (a.year || 0) - (b.year || 0)
+    || (a.id || 0) - (b.id || 0);
 }
 
 function renderWatchShell(d) {
@@ -1371,6 +1386,21 @@ function renderWatchShell(d) {
   const list = $("#watchEpList");
   list.innerHTML = "";
   const fallback = d.banner || d.poster || "";
+  // "Up next" across the series chain — S1 -> the movie that continues it -> S2,
+  // in either direction. Pinned above the episodes so it's the first thing you see.
+  const nx = d.nextUp;
+  if (nx) {
+    const row = el("div", "wep upnext");
+    row.innerHTML = `
+      <img class="wep-thumb" loading="lazy" src="${esc(nx.poster || fallback)}" onerror="this.src='${esc(fallback)}'" alt="" />
+      <div class="wep-main">
+        <div class="wep-no">Up next · ${esc(seasonChip(nx, 0, true))}${nx.year ? ` · ${nx.year}` : ""}</div>
+        <div class="wep-next-title">${esc(nx.title)}</div>
+      </div>
+      <span class="ep-st">▶</span>`;
+    row.addEventListener("click", () => play(nx.id, 1));
+    list.append(row);
+  }
   (d.episodeList || []).forEach((ep) => {
     const unaired = ep.aired === false;
     const row = el("div", `wep${unaired ? " unaired" : ""}`);
@@ -1399,7 +1429,7 @@ async function goToEp(ep) {
   history.replaceState(null, "", `#/watch/${watch.watchId}/${ep}`); // no reload (no hashchange)
 
   $("#watchTitle").textContent = isMovie ? (d.english || d.romaji) : `E${ep}${meta.epTitle ? ` · ${meta.epTitle}` : ""}`;
-  $("#watchEpNo").textContent = isMovie ? "Movie" : seasonChip({ num: seasonNumber(d), part: d.seasonPart }, 0, true);
+  $("#watchEpNo").textContent = isMovie ? "Movie" : seasonChip({ num: seasonNumber(d), part: d.seasonPart, kind: d.seasonKind, format: d.seasonFormat }, 0, true);
   $("#watchDesc").textContent = d.description || "";
   highlightEp(ep);
   const isMv = isMovie;
@@ -1960,7 +1990,7 @@ function offlineDetail(id) {
       id, type: meta.type || "series", english: meta.english, romaji: meta.romaji,
       description: meta.description || "", genres: meta.genres || [], content: meta.content || [],
       banner: meta.banner || "", poster: meta.poster || "", year: meta.year ?? null,
-      seasonNum: meta.seasonNum ?? 1, seasonPart: meta.seasonPart ?? null, seasons: [],
+      seasonNum: meta.seasonNum ?? 1, seasonPart: meta.seasonPart ?? null, seasonKind: meta.seasonKind ?? "season", seasonFormat: meta.seasonFormat ?? null, seasons: [],
       duration: meta.duration ?? null, episodesTotal: meta.episodesTotal ?? list.length,
       watchedThrough: meta.watchedThrough || 0,
       episodeList: list.map((e) => ({ ...e, hasFile: has(e.number) })),
