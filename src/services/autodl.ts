@@ -3,6 +3,7 @@ import { logger } from "../logger.js";
 import { db } from "../db.js";
 import * as tracker from "./tracker.js";
 import { queue, refreshTitle, availableEpisodes, peekUserEp } from "./downloader.js";
+import * as debrid from "./debrid.js";
 
 const log = logger("autodl");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -69,7 +70,11 @@ export async function tick(): Promise<{ queued: number }> {
     for (const u of db.users()) {
       if (u.id === "system") continue;
       if (u.downloadsDenied) continue;   // denied → skip entirely
-      if (!u.realDebridToken) continue;  // no RD → can't fund their own downloads
+      // Any debrid provider works (Real-Debrid OR AllDebrid) — this used to test
+      // realDebridToken only, so AllDebrid-only accounts were skipped entirely and
+      // NOTHING ever auto-downloaded for them (incl. the back catalogue of older
+      // seasons, which is the tail this pass is meant to fill in).
+      if (!debrid.resolveDebrid(u)) continue; // no debrid → can't fund their own downloads
       const targets = new Set<number>([...(u.autoTitles ?? []), ...(watchingByUser.get(u.id) ?? [])]);
       if (!targets.size) continue;
 
