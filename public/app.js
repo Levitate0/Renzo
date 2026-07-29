@@ -1762,13 +1762,24 @@ function watchJob(jobId) {
 async function loadAutodl() {
   try {
     const s = await api("/autodl/status");
+    const you = s.scope === "you";
     const bits = s.enabled
-      ? [`<span class="on-dot">●</span> Auto-downloader on — every ${s.intervalMin}m, ${s.trackedTitles} tracked`,
-         s.lastRun ? `last run ${new Date(s.lastRun).toLocaleTimeString()} (queued ${s.lastQueued})` : "first run pending",
+      ? [`<span class="on-dot">●</span> Auto-downloader on — every ${s.intervalMin}m, ${s.trackedTitles} ${you ? "tracked for you" : "tracked"}`,
+         s.lastRun ? `last run ${new Date(s.lastRun).toLocaleTimeString()} (queued ${s.lastQueued}${you ? " for you" : ""})` : "first run pending",
          s.lastError ? `⚠ ${esc(s.lastError)}` : ""]
       : ["○ Auto-downloader off — set AUTO_DOWNLOAD=true in .env"];
     $("#autodlText").innerHTML = bits.filter(Boolean).join(" · ");
     $("#autodlRun").disabled = s.running;
+    // "Run now" is owner-only server-side — don't offer a button that 403s.
+    if (s.canRun !== undefined) $("#autodlRun").classList.toggle("hidden", !s.canRun);
+    // Self-check warnings: the whole point is that a silent skip says so here.
+    const checks = s.checks || [];
+    const box = $("#autodlChecks");
+    box.classList.toggle("hidden", !checks.length);
+    box.innerHTML = checks.map((c) => `<div class="autodl-check">⚠ ${esc(c.message)}</div>`).join("");
+    box.querySelectorAll(".autodl-check").forEach((el, i) => {
+      if (checks[i].action === "settings:credentials") { el.classList.add("clickable"); el.onclick = () => openSettings(); }
+    });
   } catch { /* ignore */ }
 }
 

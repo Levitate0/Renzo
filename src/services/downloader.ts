@@ -453,7 +453,7 @@ class DownloadQueue {
     const ep = getUserEp(user, job.titleId, job.episode);
 
     try {
-      await this.update(job, { status: "searching", message: "Finding & preparing on Real-Debrid…" });
+      await this.update(job, { status: "searching", message: `Finding & preparing on ${dbr.name === "alldebrid" ? "AllDebrid" : "Real-Debrid"}…` });
       // Every still-wanted episode in THIS user's library: if we prepare a batch,
       // select them all so this user's sibling jobs reuse the same RD torrent.
       const avail = availableEpisodes(t);

@@ -322,7 +322,12 @@ export async function importAll(user?: UserRecord): Promise<{ anilist: number; m
   return { anilist: a, mal: m };
 }
 
-/** Every user with an AniList connection (for the auto-downloader's sync). */
-export function usersWithAniList(): UserRecord[] {
-  return db.users().filter((u) => Boolean(u.anilistToken));
+/** Every user with an AniList connection (for the auto-downloader's sync).
+ *  Must mirror anilistTokenFor()'s resolution order — a user linked through the
+ *  auth site (or a server-wide env token) has NO u.anilistToken, and gating on
+ *  that raw field silently excluded them from the sync, so their Watching list
+ *  never auto-downloaded. */
+export async function usersWithAniList(): Promise<UserRecord[]> {
+  const shared = Boolean(config.anilistToken) || Boolean(await authsite.getToken("anilist"));
+  return db.users().filter((u) => u.id !== "system" && (Boolean(u.anilistToken) || shared));
 }

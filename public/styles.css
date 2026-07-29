@@ -986,3 +986,11 @@ html { overflow-x: clip; }                 /* no horizontal page scroll (sticky-
   opacity: 0; pointer-events: none; transition: opacity .12s;
 }
 .pc-vol:hover .pc-vol-slider, .pc-vol-slider:focus { opacity: 1; pointer-events: auto; }
+
+/* Self-check warnings under the auto-downloader bar (silent skips speak up). */
+.autodl { flex-wrap: wrap; }
+.autodl-checks { flex-basis: 100%; margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.autodl-check { font-size: 12.5px; color: #ffb86b; background: rgba(255,184,107,.08);
+  border: 1px solid rgba(255,184,107,.25); border-radius: 8px; padding: 6px 9px; }
+.autodl-check.clickable { cursor: pointer; }
+.autodl-check.clickable:hover { background: rgba(255,184,107,.14); }

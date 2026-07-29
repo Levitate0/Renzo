@@ -128,7 +128,10 @@ jellyfinPluginRoutes.get("/api/stream", async (req, res) => {
   const ep = Math.max(1, Number(req.query.ep) || 1);
   const user = (req as KeyedRequest).renzoUser!;
   const key = (req as KeyedRequest).renzoKey!;
-  if (!user.realDebridToken) { res.status(400).json({ error: "connect Real-Debrid in Renzo to stream" }); return; }
+  // No debrid pre-check here: resolveStream() serves an already-downloaded local
+  // file without any debrid at all, and only then falls back to requireDebrid(),
+  // which accepts Real-Debrid OR AllDebrid. Gating on realDebridToken blocked
+  // AllDebrid accounts outright — and even their own local files.
   try {
     const r = await resolveStream(id, ep, user);
     if (r.source === "local") {
@@ -139,7 +142,15 @@ jellyfinPluginRoutes.get("/api/stream", async (req, res) => {
     } else {
       res.redirect(302, r.url); // direct Real-Debrid https link
     }
-  } catch (e) { log.warn("stream", String(e)); res.status(502).json({ error: String(e) }); }
+  } catch (e) {
+    // Map the "no debrid connected" sentinel to a provider-neutral 402, matching
+    // the browser API, instead of a raw 502 that says nothing actionable.
+    if (String(e).includes("realdebrid_required")) {
+      res.status(402).json({ error: "connect a debrid service (Real-Debrid or AllDebrid) in Renzo to stream" });
+      return;
+    }
+    log.warn("stream", String(e)); res.status(502).json({ error: String(e) });
+  }
 });
 
 // Ranged file streaming of a local library file (this user's), for Jellyfin playback.

@@ -694,8 +694,8 @@ api.post("/titles/:id/auto", wrap(async (req: AuthedRequest, res) => {
 }));
 
 // --- Auto-downloader (spends the OWNER's Real-Debrid account -> ADMIN only) ---
-api.get("/autodl/status", wrap(async (_req, res) => {
-  res.json(autodl.getStatus());
+api.get("/autodl/status", wrap(async (req, res) => {
+  res.json(autodl.getStatus(req.user));
 }));
 
 api.post("/autodl/run", requireAdmin, wrap(async (_req, res) => {
