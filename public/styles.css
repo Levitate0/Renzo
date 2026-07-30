@@ -994,3 +994,15 @@ html { overflow-x: clip; }                 /* no horizontal page scroll (sticky-
   border: 1px solid rgba(255,184,107,.25); border-radius: 8px; padding: 6px 9px; }
 .autodl-check.clickable { cursor: pointer; }
 .autodl-check.clickable:hover { background: rgba(255,184,107,.14); }
+
+/* --- Android TV overscan (TV-OV). TVs may crop ~5% of each edge and
+   env(safe-area-inset-*) is always 0 in a TV WebView, so reserve it ourselves.
+   Scoped to body.tv-nav so phones/desktop are untouched. --- */
+body.tv-nav .wrap,
+body.tv-nav .topbar,
+body.tv-nav #detail,
+body.tv-nav .rows { padding-left: max(48px, 4vw); padding-right: max(48px, 4vw); }
+body.tv-nav .topbar { padding-top: 27px; }
+body.tv-nav main { padding-bottom: 27px; }
+body.tv-nav.watching .wrap,
+body.tv-nav.watching .topbar { padding-left: 0; padding-right: 0; } /* player is full-bleed */

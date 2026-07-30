@@ -106,12 +106,31 @@
     }
   }
 
+  // Returns true if this press was consumed (i.e. we navigated somewhere back),
+  // false when we're already at the root — the native handler then exits the app,
+  // which is what makes Back breadcrumb correctly on TV instead of quitting from
+  // mid-playback.
   function back() {
-    if (document.body.classList.contains("watching")) { document.getElementById("watchBack")?.click(); return; }
+    if (document.body.classList.contains("watching")) { document.getElementById("watchBack")?.click(); return true; }
     const gate = document.getElementById("offlineGate");
-    if (gate && !gate.classList.contains("hidden")) { document.getElementById("offlineClose")?.click(); return; }
-    // Fall through to the app's Escape cascade (lightbox → modal → detail).
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    if (gate && !gate.classList.contains("hidden")) { document.getElementById("offlineClose")?.click(); return true; }
+    const openModal = document.querySelector(".modal:not(.hidden)");
+    const onDetail = document.body.classList.contains("detailing");
+    if (openModal || onDetail) {
+      // The app's Escape cascade closes lightbox → modal → detail.
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return true;
+    }
+    return false; // at the root: let Android leave the app
+  }
+
+  // Play/pause from the remote's centre button or a media key, but only while the
+  // player is up — elsewhere centre must still activate the focused item.
+  function playPause() {
+    const v = document.getElementById("watchVideo");
+    if (!document.body.classList.contains("watching") || !v) return false;
+    if (v.paused) v.play().catch(() => {}); else v.pause();
+    return true;
   }
 
   // --- Keyboard (arrows / Enter) — capture phase so we can preempt the player's
@@ -132,8 +151,15 @@
       e.preventDefault();
       e.stopPropagation(); // don't also trigger the app's player seek
       move(DIRS[e.key]);
+    } else if (e.key === "MediaPlayPause" || e.key === "MediaPlay" || e.key === "MediaPause") {
+      if (playPause()) e.preventDefault();
     } else if (e.key === "Enter") {
       if (!tvMode || typing || inSelect) return;
+      // In the player the centre button is play/pause, not "click again".
+      if (document.body.classList.contains("watching")
+          && document.activeElement === document.getElementById("watchVideo")) {
+        e.preventDefault(); playPause(); return;
+      }
       if (current() && current().tagName === "BUTTON") return; // native Enter clicks buttons
       e.preventDefault();
       activate();
@@ -175,8 +201,13 @@
     if (!padLoop) padLoop = requestAnimationFrame(pollPads);
   });
 
-  // Auto-enable on TVs / consoles (no controller-connect event needed there).
-  if (/Android TV|AFT[A-Z]|BRAVIA|GoogleTV|Google TV|Web0S|WebOS|Tizen|SMART-TV|SmartTV|HbbTV|CrKey|Xbox|PlayStation|Nintendo/i
+  // Auto-enable on TVs / consoles. The UA test alone is NOT enough: an Android
+  // WebView reports the device model, not "Android TV", so most Google TV /
+  // operator boxes never matched and the remote could not focus anything. The
+  // native shell therefore sets window.__RENZO_TV (and calls RenzoTV.enable())
+  // off PackageManager.FEATURE_LEANBACK, which is authoritative.
+  if (window.__RENZO_TV
+      || /Android TV|AFT[A-Z]|BRAVIA|GoogleTV|Google TV|Web0S|WebOS|Tizen|SMART-TV|SmartTV|HbbTV|CrKey|Xbox|PlayStation|Nintendo/i
       .test(navigator.userAgent)) {
     // Defer so the app has rendered its first view.
     window.addEventListener("load", () => setTimeout(enableTvMode, 400));
@@ -184,5 +215,5 @@
   }
 
   // Expose a manual toggle for testing / a future settings switch.
-  window.RenzoTV = { enable: enableTvMode, isOn: () => tvMode };
+  window.RenzoTV = { enable: enableTvMode, isOn: () => tvMode, back, playPause };
 })();
