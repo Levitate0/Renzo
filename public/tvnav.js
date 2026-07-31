@@ -198,15 +198,22 @@
       else if (now >= s.next) { s.next = now + REPEAT_MS; onDown(); }
     } else { s.down = false; }
   }
+  const DEAD = 0.65;        // wide: TV "pads" report noisy/offset resting values
+  const rest = Object.create(null); // pad index -> resting [x, y], captured once
   function pollPads() {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     for (const p of pads) {
       if (!p) continue;
-      const b = p.buttons, ax = p.axes || [];
-      const up = (b[12] && b[12].pressed) || ax[1] < -0.5;
-      const down = (b[13] && b[13].pressed) || ax[1] > 0.5;
-      const left = (b[14] && b[14].pressed) || ax[0] < -0.5;
-      const right = (b[15] && b[15].pressed) || ax[0] > 0.5;
+      const b = p.buttons || [], ax = p.axes || [];
+      const x0 = typeof ax[0] === "number" ? ax[0] : 0, y0 = typeof ax[1] === "number" ? ax[1] : 0;
+      // Treat wherever the sticks sit when first seen as centre, so a stuck or
+      // drifting axis can't read as a direction that is permanently held.
+      if (!rest[p.index]) rest[p.index] = [x0, y0];
+      const dx = x0 - rest[p.index][0], dy = y0 - rest[p.index][1];
+      const up = (b[12] && b[12].pressed) || dy < -DEAD;
+      const down = (b[13] && b[13].pressed) || dy > DEAD;
+      const left = (b[14] && b[14].pressed) || dx < -DEAD;
+      const right = (b[15] && b[15].pressed) || dx > DEAD;
       edge("up", up, () => move("up"));
       edge("down", down, () => move("down"));
       edge("left", left, () => move("left"));
@@ -229,9 +236,9 @@
   if (window.__RENZO_TV
       || /Android TV|AFT[A-Z]|BRAVIA|GoogleTV|Google TV|Web0S|WebOS|Tizen|SMART-TV|SmartTV|HbbTV|CrKey|Xbox|PlayStation|Nintendo/i
       .test(navigator.userAgent)) {
-    // Defer so the app has rendered its first view.
+    // Defer so the app has rendered its first view. Gamepad polling deliberately
+    // does NOT start here — only on a real gamepadconnected event (see above).
     window.addEventListener("load", () => setTimeout(enableTvMode, 400));
-    if (navigator.getGamepads && !padLoop) padLoop = requestAnimationFrame(pollPads);
   }
 
   // Expose a manual toggle for testing / a future settings switch.

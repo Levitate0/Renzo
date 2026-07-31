@@ -2154,8 +2154,13 @@ async function submitAuth() {
     $("#authError").textContent = e.message === "failed" ? "Invalid credentials" : e.message;
   }
 }
-$("#authSubmit").addEventListener("click", submitAuth);
-$("#authPass").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+// Submitting via the form covers all three paths: the Sign in button, a hardware
+// Enter, and the Android TV keyboard's Go action (which fires an editor action
+// rather than a reliable DOM keydown).
+$("#authForm").addEventListener("submit", (e) => { e.preventDefault(); submitAuth(); });
+$("#authPass").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submitAuth(); } });
+// Go/Next from the username field moves on instead of dead-ending in the keyboard.
+$("#authUser").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#authPass").focus(); } });
 
 // Forgot password: requires the username, and the response is always generic
 // (it never reveals whether the account or an email exists).
