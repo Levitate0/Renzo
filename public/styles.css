@@ -74,7 +74,7 @@ a { color: var(--accent-2); }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 800; letter-spacing: -.02em; font-size: 16px; white-space: nowrap; }
 .brand-mark { width: 26px; height: 26px; border-radius: 6px; display: block; }
 .brand-name { background: linear-gradient(120deg, var(--fg), var(--accent) 140%); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.auth-banner { width: 100%; max-width: 300px; height: auto; display: block; margin: 0 auto 6px; }
+.auth-banner { width: 100%; max-width: 300px; max-height: 22vh; height: auto; object-fit: contain; display: block; margin: 0 auto 6px; }
 /* Pill-style tabs with icons (matches Renzo Shiori) */
 .tabs { display: flex; align-items: center; gap: 4px; }
 .tabs button {
@@ -528,6 +528,7 @@ main { padding: 26px 22px 60px; max-width: 1440px; margin: 0 auto; }
 .auth-gate {
   position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
   background: radial-gradient(1000px 520px at 50% -10%, #1c2133, var(--bg) 62%); padding: 20px;
+  overflow: auto; /* short screens (TV) scroll instead of clipping the card */
 }
 .auth-card {
   width: min(380px, 94vw); background: var(--s2); border: 1px solid var(--line);
@@ -1006,3 +1007,44 @@ body.tv-nav .topbar { padding-top: 27px; }
 body.tv-nav main { padding-bottom: 27px; }
 body.tv-nav.watching .wrap,
 body.tv-nav.watching .topbar { padding-left: 0; padding-right: 0; } /* player is full-bleed */
+
+/* --- Android TV sign-in. A TV WebView's CSS viewport is small (≈960x540 for a
+   1080p panel), so the phone-sized card ended up filling the screen with hugely
+   oversized fields. Make it compact and guarantee it fits the height. --- */
+body.tv-nav .auth-gate { padding: 24px 48px; align-items: center; }
+body.tv-nav .auth-card { width: min(440px, 56vw); padding: 18px 20px; gap: 8px; }
+body.tv-nav .auth-banner { max-width: min(200px, 26vw); max-height: 14vh; margin-bottom: 2px; }
+body.tv-nav .auth-card input { padding: 8px 12px; font-size: 14px; }
+body.tv-nav .auth-card .primary.wide { padding: 9px 16px; font-size: 15px; }
+body.tv-nav .muted-note { font-size: 12px; margin-bottom: 2px; }
+body.tv-nav .remember-row { font-size: 12px; }
+body.tv-nav .auth-error { min-height: 0; font-size: 12px; }
+body.tv-nav .setup-card { width: min(520px, 64vw); }
+/* The remote has no pointer, so the focused field must be unmistakable. */
+body.tv-nav .auth-card input:focus,
+body.tv-nav .auth-card button:focus { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* --- Android TV topbar. At a TV's ~960px CSS viewport the row (menu + brand +
+   5 tabs + search + mode pill + status + avatar) overflowed and pushed the
+   ACCOUNT AVATAR off the right edge, so it was neither visible nor reachable
+   with a remote. Shrink the optional bits and pin the avatar. --- */
+body.tv-nav .topbar { gap: 10px; padding-left: max(24px, 2.5vw); padding-right: max(24px, 2.5vw); flex-wrap: nowrap; }
+body.tv-nav .search { flex: 0 1 auto; min-width: 0; }
+body.tv-nav .search-box { max-width: 210px; }
+body.tv-nav .search-box input { min-width: 0; }
+body.tv-nav .search-box .kbd { display: none; }   /* no keyboard shortcut on a remote */
+body.tv-nav .status { display: none; }            /* long status text; the mode pill already says online/offline */
+body.tv-nav .brand { flex: none; }
+body.tv-nav .tabs { flex: 0 1 auto; min-width: 0; }
+body.tv-nav .acct { flex: none; margin-left: 4px; } /* always last, never squeezed out */
+body.tv-nav .avatar-btn { width: 38px; height: 38px; font-size: 15px; }
+
+/* No scrollbars on TV: there is no pointer to drag one, so navigation is purely
+   D-pad. Content still scrolls — tvnav centres the focused element. */
+html.tv-nav, html.tv-nav *, body.tv-nav, body.tv-nav * {
+  scrollbar-width: none !important; -ms-overflow-style: none !important;
+}
+html.tv-nav::-webkit-scrollbar, html.tv-nav *::-webkit-scrollbar,
+body.tv-nav::-webkit-scrollbar, body.tv-nav *::-webkit-scrollbar {
+  width: 0 !important; height: 0 !important; display: none !important;
+}

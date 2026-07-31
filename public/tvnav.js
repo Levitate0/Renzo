@@ -23,6 +23,9 @@
     if (tvMode) return;
     tvMode = true;
     document.body.classList.add("tv-nav");
+    // Also on <html>: the document scrollbar belongs to the root element, so a
+    // `body.tv-nav ...` rule can never hide it.
+    document.documentElement.classList.add("tv-nav");
     sweep();
     if (!current()) { const f = focusables(); if (f.length) f[0].focus(); }
   }
@@ -37,17 +40,25 @@
   const mo = new MutationObserver(() => { if (tvMode) sweep(); });
   try { mo.observe(document.body, { childList: true, subtree: true }); } catch (e) {}
 
-  // The surface the user is looking at — scope navigation to it (mirrors the
-  // app's Escape cascade: lightbox → modal → downloads gate → player → detail → tab).
-  function surface() {
+  // Where navigation may land. A BLOCKING overlay (lightbox / auth gate / modal /
+  // offline gate / the player) owns the screen, so scope to it alone. Otherwise the
+  // roots are the app chrome PLUS the current page: scoping to the page alone left
+  // the topbar and tab bar unreachable — you could move around inside a tab but
+  // never get back out to switch tabs or search — and any empty or still-loading
+  // tab was a total dead end with nowhere for focus to go. Content behind #detail
+  // is `display:none` (body.detailing main), so visible() filters it out for us.
+  function roots() {
     const vis = (id) => { const n = document.getElementById(id); return n && !n.classList.contains("hidden") ? n : null; };
-    return vis("imgLightbox")
+    const blocking = vis("imgLightbox")
+      || document.querySelector(".auth-gate:not(.hidden)")   // login / first-run setup / password reset
       || document.querySelector(".modal:not(.hidden)")
       || vis("offlineGate")
-      || (document.body.classList.contains("watching") ? vis("view-watch") : null)
-      || vis("detail")
-      || document.querySelector(".view.active")
-      || document.body;
+      || (document.body.classList.contains("watching") ? vis("view-watch") : null);
+    if (blocking) return [blocking];
+    const page = vis("detail") || document.querySelector(".view.active");
+    const chrome = [document.querySelector(".topbar"), document.querySelector(".tabs")].filter(Boolean);
+    const list = page ? chrome.concat([page]) : chrome;
+    return list.length ? list : [document.body];
   }
 
   function visible(el) {
@@ -58,7 +69,14 @@
     return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
   }
   function focusables() {
-    return Array.prototype.filter.call(surface().querySelectorAll(FOCUSABLE), visible);
+    const out = [], seen = new Set();
+    for (const r of roots()) {
+      for (const el of r.querySelectorAll(FOCUSABLE)) {
+        if (seen.has(el) || !visible(el)) continue;
+        seen.add(el); out.push(el);
+      }
+    }
+    return out;
   }
   function current() {
     const a = document.activeElement;
@@ -68,9 +86,9 @@
   // Move focus to the best candidate in a direction, by screen geometry.
   function move(dir) {
     const items = focusables();
-    if (!items.length) return;
+    if (!items.length) return false;
     const cur = current();
-    if (!cur || items.indexOf(cur) < 0) { items[0].focus(); center(items[0]); return; }
+    if (!cur || items.indexOf(cur) < 0) { items[0].focus(); center(items[0]); return true; }
     const cr = cur.getBoundingClientRect();
     const cx = cr.left + cr.width / 2, cy = cr.top + cr.height / 2;
     const horiz = dir === "left" || dir === "right";
@@ -89,7 +107,8 @@
       const score = primary + cross * 2.5; // prefer the same row/column
       if (score < bestScore) { bestScore = score; best = el; }
     }
-    if (best) { best.focus(); center(best); }
+    if (best) { best.focus(); center(best); return true; }
+    return false;
   }
   function center(el) { try { el.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (e) {} }
 
@@ -148,9 +167,10 @@
       if (document.body.classList.contains("watching")
           && document.activeElement === document.getElementById("watchVideo")
           && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return;
-      e.preventDefault();
-      e.stopPropagation(); // don't also trigger the app's player seek
-      move(DIRS[e.key]);
+      // Only swallow the key if we actually moved — otherwise let the WebView's
+      // native focus traversal handle it, so a screen we don't model is never a
+      // dead end.
+      if (move(DIRS[e.key])) { e.preventDefault(); e.stopPropagation(); }
     } else if (e.key === "MediaPlayPause" || e.key === "MediaPlay" || e.key === "MediaPause") {
       if (playPause()) e.preventDefault();
     } else if (e.key === "Enter") {
