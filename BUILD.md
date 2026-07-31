@@ -7,7 +7,8 @@ How to build, sign, deploy, and release every Renzo artifact: the **server / web
 > (`src/` + `public/`). The native client *source* is intentionally **not** committed —
 > it lives on the build host under `/opt/zurg-stack/renzo-clients/` (`capacitor/` for
 > Android, `desktop/` for Electron) alongside the signing material in `signing/`. Both
-> clients are thin shells that load the **remote web app** (`server.url`), so **web-only
+> clients are thin shells that load the **user's own server** (no address is compiled in —
+> the app asks on first run), so **web-only
 > changes never need a client rebuild** — deploy the server and reload the app.
 >
 > Paths below are this build host's layout; adapt them if you build elsewhere. **Never
@@ -58,7 +59,10 @@ curl -s http://localhost:8787/api/health        # 401 unless authed — that's e
 
 ## 2. Android app (Capacitor)  — `renzo-clients/capacitor`
 
-A Capacitor 8 shell that loads `server.url` (the remote web app) and adds native plugins:
+A Capacitor 8 shell that loads **the server the user configures** and adds native plugins:
+`RenzoServer` (first-run server picker — no URL is baked in; the address is verified against
+`/version`, stored in SharedPreferences, and applied via `CapConfig.Builder.setServerUrl()` in
+`MainActivity.load()`; "Change server" in the account menu calls `RenzoServer.clear()`),
 `RenzoSaf` (SAF folder picker + offline playback), `RenzoDownloader` (foreground-service
 background downloader), and status-bar inset handling in `MainActivity`.
 

@@ -2275,6 +2275,20 @@ $("#setupRdSave").addEventListener("click", () => finishSetup($("#setupRd").valu
 $("#setupRdSkip").addEventListener("click", () => finishSetup(""));
 $("#setupRd").addEventListener("keydown", (e) => { if (e.key === "Enter") finishSetup($("#setupRd").value.trim()); });
 
+// The native clients have no server address compiled in — the user points them at
+// their own. Offer a way back to that picker, but only in a shell that supports it,
+// so the browser never shows a control it can't honour.
+(function () {
+  const btn = $("#serverBtn");
+  const plug = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.RenzoServer;
+  if (!btn || !plug) return;
+  btn.classList.remove("hidden");
+  btn.addEventListener("click", async () => {
+    if (!confirm("Disconnect from this server? You'll be asked for a server address next time.")) return;
+    try { await plug.clear(); } catch (e) { toast("Couldn't switch server: " + (e.message || e)); }
+  });
+})();
+
 $("#logoutBtn").addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
   me = null;
