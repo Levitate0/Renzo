@@ -237,7 +237,7 @@ const Offline = {
   CACHE: "renzo-offline-v1",
   KEY: "renzo:offline",
   bridge: (typeof window !== "undefined" && window.RenzoNative) || null, // native shell disk store
-  supported() { return !!this.bridge || ("serviceWorker" in navigator && "caches" in window); },
+  supported() { if (isTv()) return false; return !!this.bridge || ("serviceWorker" in navigator && "caches" in window); },
   native() { return !!this.bridge; },
   man() { try { return JSON.parse(localStorage.getItem(this.KEY) || "{}"); } catch { return {}; } },
   saveMan(m) { try { localStorage.setItem(this.KEY, JSON.stringify(m)); } catch { /* quota */ } },
@@ -349,6 +349,15 @@ const Offline = {
 // you've gone offline and come back). The flag records "we were offline since the
 // last purge"; it survives an app restart so a reconnect-while-closed still purges.
 const OFFLINE_FLAG = "renzo:offlineUsed";
+// Android TV is mains-powered and network-dependent: there is no SD card to save
+// to, no SAF picker, and the box is useless without wifi anyway. So the whole
+// save-for-offline feature is switched off there (user request) — the server-side
+// Downloads queue is unaffected.
+function isTv() {
+  return !!window.__RENZO_TV
+    || document.documentElement.classList.contains("tv-nav")
+    || document.body.classList.contains("tv-nav");
+}
 function markOffline() { try { localStorage.setItem(OFFLINE_FLAG, "1"); } catch { /* ignore */ } }
 function wasOffline() { try { return localStorage.getItem(OFFLINE_FLAG) === "1"; } catch { return false; } }
 function clearOfflineFlag() { try { localStorage.removeItem(OFFLINE_FLAG); } catch { /* ignore */ } }
@@ -401,7 +410,7 @@ function updateOfflineUi() {
   const pill = $("#modePill");
   if (pill) { pill.textContent = off ? "● Offline" : "● Online"; pill.classList.toggle("offline", off); }
 }
-$("#modePill") && $("#modePill").addEventListener("click", () => openDownloads());
+$("#modePill") && $("#modePill").addEventListener("click", () => { if (!isTv()) openDownloads(); });
 window.addEventListener("online", () => { schedulePurge(); updateOfflineUi(); Offline.flushWatched(); });
 window.addEventListener("offline", () => { markOffline(); updateOfflineUi(); });
 if (!navigator.onLine) markOffline();
@@ -1943,6 +1952,11 @@ async function boot() {
 let offlineMode = false;
 function startOfflineMode() {
   offlineMode = true;
+  if (isTv()) {                      // nothing is ever saved locally on a TV
+    document.getElementById("authGate").classList.add("hidden");
+    $("#offlineBar") && $("#offlineBar").classList.remove("hidden");
+    return;
+  }
   markOffline(); // we launched with no server → we've been offline
   $("#offlineClose").classList.add("hidden");    // cold launch: nothing to close back to
   $("#offlineRetry").classList.remove("hidden");

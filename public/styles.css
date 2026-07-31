@@ -1052,3 +1052,11 @@ body.tv-nav::-webkit-scrollbar, body.tv-nav *::-webkit-scrollbar {
 /* The auth <form> exists only so the TV keyboard's Go action can submit; it must
    not become a flex item or it would break the card's column layout. */
 .auth-form { display: contents; }
+
+/* Android TV has no offline mode (no local storage target, and the box needs the
+   network regardless), so hide every save-for-offline affordance. */
+body.tv-nav #offlineGate,
+body.tv-nav #offlineBar,
+body.tv-nav #offlinePurgePrompt,
+body.tv-nav .ep-off { display: none !important; }
+body.tv-nav .mode-pill { cursor: default; }
