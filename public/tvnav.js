@@ -247,12 +247,23 @@
   // operator boxes never matched and the remote could not focus anything. The
   // native shell therefore sets window.__RENZO_TV (and calls RenzoTV.enable())
   // off PackageManager.FEATURE_LEANBACK, which is authoritative.
+  // "AndroidTV" (no space) is OUR native shell's marker — MainActivity appends
+  // "AndroidTV Renzo" to the UA. It MUST be in this pattern: the __RENZO_TV
+  // global dies with any page reload, and the native poke loop only runs for
+  // ~20s after activity creation — so when Android kills the WebView renderer
+  // in the background and the page reloads on re-entry, this UA test is the
+  // only thing left that can turn TV mode back on (reported: D-pad dead after
+  // exiting and re-entering the app).
   if (window.__RENZO_TV
-      || /Android TV|AFT[A-Z]|BRAVIA|GoogleTV|Google TV|Web0S|WebOS|Tizen|SMART-TV|SmartTV|HbbTV|CrKey|Xbox|PlayStation|Nintendo/i
+      || /Android TV|AndroidTV|AFT[A-Z]|BRAVIA|GoogleTV|Google TV|Web0S|WebOS|Tizen|SMART-TV|SmartTV|HbbTV|CrKey|Xbox|PlayStation|Nintendo/i
       .test(navigator.userAgent)) {
     // Defer so the app has rendered its first view. Gamepad polling deliberately
     // does NOT start here — only on a real gamepadconnected event (see above).
-    window.addEventListener("load", () => setTimeout(enableTvMode, 400));
+    // Guard against the load event having already fired (late script injection
+    // or a bfcache-style restore) — the listener alone would never run.
+    const arm = () => setTimeout(enableTvMode, 400);
+    if (document.readyState === "complete") arm();
+    else window.addEventListener("load", arm);
   }
 
   // Expose a manual toggle for testing / a future settings switch.

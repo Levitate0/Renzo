@@ -4202,7 +4202,11 @@ body.tv-nav::-webkit-scrollbar, body.tv-nav *::-webkit-scrollbar {
    card would fill the screen. The focused field must be unmistakable. */
 body.tv-nav .auth-gate { padding: 24px 48px; align-items: center; }
 body.tv-nav .auth-card { max-width: min(440px, 56vw); padding: 18px 20px; gap: 8px; }
-body.tv-nav .auth-banner { max-width: min(200px, 26vw); max-height: 14vh; margin-bottom: 2px; }
+/* width/height auto override the utility's fixed width — with only max-*
+   constraints the browser keeps the image's aspect ratio; a fixed width plus
+   max-height stretched the wordmark on TVs whose viewport made 14vh the
+   binding constraint (object-fit defaults to fill). */
+body.tv-nav .auth-banner { width: auto; height: auto; max-width: min(200px, 26vw); max-height: 14vh; margin-bottom: 2px; }
 body.tv-nav .auth-card input:focus,
 body.tv-nav .auth-card button:focus {
   outline: 3px solid hsl(var(--primary));
