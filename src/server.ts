@@ -131,13 +131,12 @@ async function main() {
   const BUILD = Date.now().toString(36);
   app.get("/version", (_req, res) => res.set("Cache-Control", "no-store").json({ build: BUILD }));
 
-  // --- Web UI: Next.js static export (frontend/out) behind USE_NEXT_UI, else the
-  // legacy vanilla SPA in public/. The flag keeps cutover reversible: same image
-  // carries both UIs until the new one has proven parity.
+  // --- Web UI: the Next.js static export (frontend/out) is the UI (permanent
+  // cutover, user-approved 2026-08-01). The legacy SPA stays in the image purely
+  // as an emergency escape hatch: set LEGACY_UI=1 to serve it instead.
   const nextOut = resolve("frontend/out");
-  const useNextUi =
-    ["1", "true", "yes", "on"].includes((process.env.USE_NEXT_UI ?? "").toLowerCase()) &&
-    existsSync(join(nextOut, "index.html"));
+  const legacyForced = ["1", "true", "yes", "on"].includes((process.env.LEGACY_UI ?? "").toLowerCase());
+  const useNextUi = !legacyForced && existsSync(join(nextOut, "index.html"));
   if (useNextUi) {
     // Next bootstraps with inline <script>s; collect their sha256 hashes at boot so
     // CSP stays hash-based (no 'unsafe-inline'). The export is immutable per build,

@@ -75,7 +75,7 @@ export function GridSkeleton({ count = 12, className }: { count?: number; classN
 function MoreTile({ onMore }: { onMore: () => void }) {
   return (
     <div
-      className="more-tile cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-border bg-card/50 text-muted-foreground transition-colors hover:border-primary hover:text-foreground md:hidden"
+      className="more-tile flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-border bg-card/50 text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
       role="button"
       aria-label="More"
       onClick={onMore}
@@ -95,10 +95,10 @@ interface BrowseRowProps {
 }
 
 /**
- * A Discover row (Trending / Recommended / New & this season). Desktop: a
- * wrapping grid showing everything. Phones (<768px): horizontal snap-scroll
- * with a fixed "See all ›" in the heading and a trailing More tile — the
- * `.browse-scroll` child-sizing rules live at the end of globals.css.
+ * A Discover row (Trending / Recommended / New & this season): horizontal
+ * snap-scroll with "See all ›" in the heading and a trailing More tile — the
+ * same layout at every width (user request: desktop matches mobile). Child
+ * sizing lives in the `.browse-scroll` rules at the end of globals.css.
  */
 export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps) {
   const [level] = useContentLevel();
@@ -109,7 +109,7 @@ export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps)
         <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
         <button
           type="button"
-          className="row-more whitespace-nowrap text-[13px] font-semibold text-primary hover:underline md:hidden"
+          className="row-more whitespace-nowrap text-[13px] font-semibold text-primary hover:underline"
           onClick={onMore}
         >
           See all ›
@@ -120,9 +120,10 @@ export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps)
       ) : !vis.length ? (
         <EmptyState>Nothing here yet.</EmptyState>
       ) : (
-        /* under 768px: display:flex + child sizing from the appended
-           `.browse-scroll` rules in globals.css; above: a wrapping grid */
-        <div className="browse-scroll gap-3 md:grid md:grid-cols-[repeat(auto-fill,minmax(158px,1fr))] md:gap-[18px]">
+        /* Horizontal snap-scroll row at EVERY width (user request: desktop
+           matches the mobile layout) — child sizing lives in the appended
+           `.browse-scroll` rules in globals.css. */
+        <div className="browse-scroll gap-3 md:gap-[18px]">
           {vis.map((it, i) => (
             <PosterCard key={`${it.id ?? it.malId ?? it.title}-${i}`} item={it} />
           ))}

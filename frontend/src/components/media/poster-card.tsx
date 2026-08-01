@@ -56,26 +56,28 @@ const BLANK_POSTER =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 function Ribbon({ item }: { item: CardItem }) {
+  // Updates ribbons: dark pill with the ep/season text in the THEME ACCENT
+  // (follows the user's preset/custom accent via --primary) — user request.
   const base =
-    "upd-ribbon absolute left-2 top-2 z-10 rounded-full px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.4px] text-white";
+    "upd-ribbon absolute left-2 top-2 z-10 rounded-full border border-white/10 bg-black/70 px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.4px] text-primary backdrop-blur-sm";
   if (item.updKind === "episode") {
     const sTag = item.season ? `S${item.season} ` : "";
     return (
-      <span className={cn(base, "bg-gradient-to-br from-primary to-primary/70")}>
+      <span className={base}>
         New · {sTag}E{item.ep}
       </span>
     );
   }
   if (item.updKind === "season") {
     return (
-      <span className={cn(base, "season bg-gradient-to-br from-indigo-500 to-indigo-400")}>
+      <span className={cn(base, "season")}>
         {item.upcoming ? "Soon" : "New season"}
         {item.season ? ` · S${item.season}` : ""}
       </span>
     );
   }
   if (item.updKind === "movie") {
-    return <span className={cn(base, "bg-gradient-to-br from-primary to-primary/70")}>Available</span>;
+    return <span className={base}>Available</span>;
   }
   return (
     <span className="pill absolute left-2 top-2 z-10 rounded-full border border-white/10 bg-black/70 px-2 py-[3px] text-[10px] font-semibold uppercase tracking-[0.4px] text-foreground backdrop-blur-sm">

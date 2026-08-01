@@ -28,17 +28,23 @@ const RD_SHORT: Record<DebridHealth, string> = {
   invalid: "RD ✗",
 };
 
-/** Service status line (old #status / loadStatus). Hidden on TV via CSS. */
+/** Service status line (old #status / loadStatus). Hidden on TV via CSS.
+ *  Shows the ACTIVE debrid provider — the old app read only realdebrid, so an
+ *  AllDebrid-only account permanently displayed "RD ✗" next to working playback
+ *  (confirmed audit finding); /health names the resolved provider in .debrid. */
 function StatusLine() {
   const { data: h, isError } = useHealthQuery();
   let text = "…";
   if (isError) text = "offline";
   else if (h) {
-    const rd = RD_SHORT[h.realdebrid] ?? "RD ✗";
+    const debrid =
+      h.debrid === "alldebrid"
+        ? (h.alldebrid === "invalid" || h.alldebrid === "not-connected" ? "AD ✗" : "AD ✓")
+        : RD_SHORT[h.realdebrid] ?? "RD ✗";
     const tr = [h.trackers.anilist && "AniList", h.trackers.mal && "MAL"]
       .filter(Boolean)
       .join("+");
-    text = [rd, tr && `⇄ ${tr}`].filter(Boolean).join("  ·  ");
+    text = [debrid, tr && `⇄ ${tr}`].filter(Boolean).join("  ·  ");
   }
   return (
     <div

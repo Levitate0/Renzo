@@ -4226,28 +4226,31 @@ body.tv-nav .mode-pill { cursor: default; pointer-events: none; }
 /* ═══ appended by browse agent — Discover browse rows (old styles.css ≤720px
    block): on phones each row becomes a horizontal snap-scroll strip with
    fixed-width cards and a trailing dashed "More" tile; ≥768px the same
-   element is a normal wrapping grid via Tailwind (md:grid on .browse-scroll)
-   and the More tile is hidden (md:hidden). Child sizing needs descendant
-   selectors, hence CSS instead of utilities. ─────────────────────────────── */
-@media (max-width: 767.98px) {
-  .browse-scroll {
-    display: flex;
-    overflow-x: auto;
-    padding-bottom: 6px;
-    scroll-snap-type: x proximity;
-    scrollbar-width: none;
-  }
-  .browse-scroll::-webkit-scrollbar {
-    display: none;
-  }
+   Child sizing needs descendant selectors, hence CSS instead of utilities. ─────────────────────────────── */
+/* Applies at EVERY width — desktop Discover uses the same horizontal rows as
+   mobile (user request 2026-08-01); cards grow a little on wide screens. */
+.browse-scroll {
+  display: flex;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+.browse-scroll::-webkit-scrollbar {
+  display: none;
+}
+.browse-scroll > .card {
+  flex: 0 0 150px;
+  scroll-snap-align: start;
+}
+.browse-scroll > .more-tile {
+  display: flex;
+  flex: 0 0 96px;
+  scroll-snap-align: start;
+}
+@media (min-width: 768px) {
   .browse-scroll > .card {
-    flex: 0 0 150px;
-    scroll-snap-align: start;
-  }
-  .browse-scroll > .more-tile {
-    display: flex;
-    flex: 0 0 96px;
-    scroll-snap-align: start;
+    flex-basis: 172px;
   }
 }
 
