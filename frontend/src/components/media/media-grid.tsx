@@ -13,6 +13,7 @@
 // tvnav: MoreTile carries the literal `more-tile` class (focusable).
 // ---------------------------------------------------------------------------
 
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import React from "react";
 
 import { isHidden, useContentLevel } from "@/components/media/content-filter";
@@ -103,6 +104,32 @@ interface BrowseRowProps {
 export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps) {
   const [level] = useContentLevel();
   const vis = (items || []).filter((it) => !isHidden(it, level));
+  const scrollerRef = React.useRef<HTMLDivElement>(null);
+  const [canLeft, setCanLeft] = React.useState(false);
+  const [canRight, setCanRight] = React.useState(false);
+
+  // Paging arrows (user request): desktop pointers have no natural horizontal
+  // scroll on these rows. Hidden at either end; not rendered on TV (D-pad
+  // centres the focused card) or on touch widths (native scrolling).
+  const syncArrows = React.useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    setCanLeft(el.scrollLeft > 4);
+    setCanRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+  }, []);
+  React.useEffect(() => {
+    syncArrows();
+    window.addEventListener("resize", syncArrows);
+    return () => window.removeEventListener("resize", syncArrows);
+  }, [syncArrows, vis.length]);
+  const page = (dir: 1 | -1) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.round(el.clientWidth * 0.9), behavior: "smooth" });
+  };
+  const arrowCls =
+    "row-arrow absolute top-1/2 z-10 hidden h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-black/70 text-foreground backdrop-blur-sm transition-colors hover:border-primary hover:text-primary md:flex";
+
   return (
     <div className="browse-row mb-6 md:mb-8">
       <div className="row-head mb-3 flex items-baseline justify-between gap-2.5">
@@ -123,11 +150,23 @@ export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps)
         /* Horizontal snap-scroll row at EVERY width (user request: desktop
            matches the mobile layout) — child sizing lives in the appended
            `.browse-scroll` rules in globals.css. */
-        <div className="browse-scroll gap-3 md:gap-[18px]">
-          {vis.map((it, i) => (
-            <PosterCard key={`${it.id ?? it.malId ?? it.title}-${i}`} item={it} />
-          ))}
-          <MoreTile onMore={onMore} />
+        <div className="relative">
+          {canLeft && (
+            <button type="button" aria-label="Scroll left" className={cn(arrowCls, "-left-3")} onClick={() => page(-1)}>
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+          )}
+          <div ref={scrollerRef} onScroll={syncArrows} className="browse-scroll gap-3 md:gap-[18px]">
+            {vis.map((it, i) => (
+              <PosterCard key={`${it.id ?? it.malId ?? it.title}-${i}`} item={it} />
+            ))}
+            <MoreTile onMore={onMore} />
+          </div>
+          {canRight && (
+            <button type="button" aria-label="Scroll right" className={cn(arrowCls, "-right-3")} onClick={() => page(1)}>
+              <ChevronRight className="h-5 w-5" />
+            </button>
+          )}
         </div>
       )}
     </div>

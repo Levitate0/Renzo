@@ -4643,3 +4643,7 @@ html.tv-nav::-webkit-scrollbar, html.tv-nav *::-webkit-scrollbar,
 body.tv-nav::-webkit-scrollbar, body.tv-nav *::-webkit-scrollbar {
   width: 0 !important; height: 0 !important; display: none !important;
 }
+
+/* Discover row paging arrows are pointer-only — never on TV (D-pad centres the
+   focused card, and an extra focus stop per row edge would pollute navigation). */
+html.tv-nav .row-arrow, body.tv-nav .row-arrow { display: none !important; }
