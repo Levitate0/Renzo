@@ -23,7 +23,7 @@ import { useMaskedInput } from "@/lib/autofill";
 import type { DebridSaveResponse, Health, PublicUser } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { ConnRow, debridPill, errMsg, Field, PaneSection, Pill } from "../shared";
+import { ConnRow, debridPill, errMsg, Field, PaneSection, Pill } from "@/components/settings/shared";
 
 // Auth-site path segment per provider (old AUTHSITE_PROVIDER).
 const AUTHSITE_PROVIDER = { anilist: "anilist", mal: "myanimelist" } as const;

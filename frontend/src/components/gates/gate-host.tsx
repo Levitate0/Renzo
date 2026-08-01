@@ -5,7 +5,8 @@
 // / password reset / invite accept / offline), exactly like the old app's
 // fixed-position gates: pages always render underneath, gates sit on top.
 // Also owns two app-wide event bridges:
-//   * OPEN_SETTINGS_EVENT  -> routes to /settings/?pane=<pane>  (402 handler)
+//   * OPEN_SETTINGS_EVENT  -> routes to the settings-family page in detail.href
+//                             (402 handler → /account/?section=credentials)
 //   * OPEN_DOWNLOADS_EVENT -> opens the offline Downloads gate (mode pill;
 //                             ignored on TV per contract)
 
@@ -18,7 +19,7 @@ import { OfflineGate } from "@/components/gates/offline-gate";
 import { ResetGate } from "@/components/gates/reset-gate";
 import { SetupGate } from "@/components/gates/setup-gate";
 import { useAuth } from "@/contexts/auth-context";
-import { OPEN_DOWNLOADS_EVENT, OPEN_SETTINGS_EVENT } from "@/lib/api";
+import { OPEN_DOWNLOADS_EVENT, OPEN_SETTINGS_EVENT, settingsHref } from "@/lib/api";
 import { isTv } from "@/lib/tv";
 
 export function GateHost() {
@@ -39,8 +40,8 @@ export function GateHost() {
 
   useEffect(() => {
     const onSettings = (e: Event) => {
-      const pane = (e as CustomEvent<{ pane?: string }>).detail?.pane || "credentials";
-      router.push(`/settings/?pane=${pane}`);
+      const href = (e as CustomEvent<{ href?: string }>).detail?.href;
+      router.push(href || settingsHref());
     };
     const onDownloads = () => {
       if (!isTv()) setDownloadsOpen(true);

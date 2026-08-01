@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { createHash } from "node:crypto";
 import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -37,6 +38,7 @@ function publicUser(u: {
   realDebridToken?: string; anilistToken?: string; malToken?: string; theme?: ThemeSettings;
   allDebridKey?: string; debrid?: "realdebrid" | "alldebrid";
   downloadsDenied?: boolean; addDefaults?: AddDefaults; autoStatus?: boolean; ccLang?: string; jimakuKey?: string;
+  avatarBase64?: string; avatarContentType?: string;
 }) {
   return {
     id: u.id,
@@ -54,6 +56,8 @@ function publicUser(u: {
     addDefaults: u.addDefaults ?? null,
     autoStatus: u.autoStatus !== false, // default on
     ccLang: u.ccLang ?? "en",           // preferred caption language (default English)
+    avatarBase64: u.avatarBase64 ?? null,
+    avatarContentType: u.avatarContentType ?? null,
   };
 }
 
@@ -235,6 +239,56 @@ accountRoutes.post("/password", wrap(async (req: AuthedRequest, res) => {
 }));
 
 // Save my appearance/theme (validated; applied client-side).
+// --- Profile avatar (Shiori model: small base64 image on the user record) ---
+const AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const AVATAR_MAX_BYTES = 256 * 1024; // client resizes to ~128px, so this is generous
+function avatarBytesValid(buf: Buffer, contentType: string): boolean {
+  if (buf.length < 12) return false;
+  if (contentType === "image/png") return buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (contentType === "image/jpeg") return buf[0] === 0xff && buf[1] === 0xd8;
+  if (contentType === "image/webp") return buf.subarray(0, 4).toString("ascii") === "RIFF" && buf.subarray(8, 12).toString("ascii") === "WEBP";
+  return false;
+}
+
+accountRoutes.post("/avatar", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const { avatarBase64, contentType } = (req.body ?? {}) as { avatarBase64?: string | null; contentType?: string };
+  if (avatarBase64 == null || avatarBase64 === "") {         // clear -> back to the initial
+    user.avatarBase64 = undefined;
+    user.avatarContentType = undefined;
+    await db.save();
+    return res.json({ ok: true, avatarBase64: null, avatarContentType: null });
+  }
+  const ct = String(contentType ?? "image/png").toLowerCase();
+  if (!AVATAR_TYPES.has(ct)) return res.status(400).json({ error: "avatar must be png, jpeg or webp" });
+  let buf: Buffer;
+  try { buf = Buffer.from(avatarBase64, "base64"); } catch { return res.status(400).json({ error: "invalid image data" }); }
+  if (!buf.length || buf.length > AVATAR_MAX_BYTES) return res.status(400).json({ error: "image too large (max 256KB — it should be resized client-side)" });
+  if (!avatarBytesValid(buf, ct)) return res.status(400).json({ error: "image data does not match its type" });
+  user.avatarBase64 = buf.toString("base64"); // re-encode: normalizes padding/whitespace
+  user.avatarContentType = ct;
+  await db.save();
+  res.json({ ok: true, avatarBase64: user.avatarBase64, avatarContentType: ct });
+}));
+
+// Fetch a Gravatar for an email and return it as base64 (NOT stored until the
+// user saves). Server-side because the web app's CSP (connect-src 'self')
+// rightly blocks the browser from calling gravatar.com directly.
+accountRoutes.post("/avatar/gravatar", wrap(async (req: AuthedRequest, res) => {
+  const email = String((req.body as { email?: string })?.email ?? "").trim().toLowerCase();
+  if (!email || !email.includes("@")) return res.status(400).json({ error: "enter an email address" });
+  const hash = createHash("md5").update(email).digest("hex");
+  // d=404: no silhouette fallback — a missing gravatar is reported, not stored.
+  const r = await fetch(`https://www.gravatar.com/avatar/${hash}?s=128&d=404`, { signal: AbortSignal.timeout(8000) });
+  if (r.status === 404) return res.status(404).json({ error: "no Gravatar found for that email" });
+  if (!r.ok) return res.status(502).json({ error: `Gravatar returned ${r.status}` });
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (!buf.length || buf.length > AVATAR_MAX_BYTES) return res.status(502).json({ error: "Gravatar image unusable" });
+  const ct = (r.headers.get("content-type") ?? "image/png").split(";")[0]!.trim().toLowerCase();
+  if (!AVATAR_TYPES.has(ct)) return res.status(502).json({ error: "Gravatar returned an unsupported format" });
+  res.json({ avatarBase64: buf.toString("base64"), avatarContentType: ct });
+}));
+
 accountRoutes.post("/theme", wrap(async (req: AuthedRequest, res) => {
   const user = req.user!;
   if (user.id === "system") return res.status(400).json({ error: "auth is disabled" });

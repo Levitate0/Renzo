@@ -45,6 +45,9 @@ export interface PublicUser {
   addDefaults: AddDefaults | null;
   autoStatus: boolean;
   ccLang: string;
+  /** Shiori-style profile avatar — small base64 image stored on the user. */
+  avatarBase64: string | null;
+  avatarContentType: string | null;
 }
 
 /** GET /api/auth/me — 200 with user, `{ setupRequired: true }`, or 401. */
@@ -88,6 +91,22 @@ export interface ApiKeyInfo {
   apiKey: string;
   renzoUrl: string;
   manifestUrl: string;
+}
+
+/** POST /api/account/avatar — save `{avatarBase64, contentType}` (png/jpeg/
+ *  webp, ≤256KB decoded) or clear with `{avatarBase64: null}`. The returned
+ *  base64 is the server's re-encoded copy — patch the auth user with it. */
+export interface AvatarSaveResponse {
+  ok: boolean;
+  avatarBase64: string | null;
+  avatarContentType: string | null;
+}
+
+/** POST /api/account/avatar/gravatar `{email}` — a PREVIEW payload (404 when
+ *  no Gravatar exists); nothing is stored until saved via /account/avatar. */
+export interface GravatarPreview {
+  avatarBase64: string;
+  avatarContentType: string;
 }
 
 // --- Health -----------------------------------------------------------------

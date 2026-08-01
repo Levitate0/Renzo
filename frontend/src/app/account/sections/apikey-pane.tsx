@@ -17,7 +17,7 @@ import { MASKED_CLASS } from "@/lib/autofill";
 import type { ApiKeyInfo } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { copyText, errMsg, Field, PaneSection } from "../shared";
+import { copyText, errMsg, Field, PaneSection } from "@/components/settings/shared";
 
 export function ApiKeyPane() {
   const qc = useQueryClient();

@@ -18,7 +18,7 @@ import { api } from "@/lib/api";
 import { chooseDownloadFolder, getDownloadFolder, nativeStore } from "@/lib/offline";
 import type { FolderInfo, PublicUser } from "@/lib/types";
 
-import { errMsg, Field, PaneSection } from "../shared";
+import { errMsg, Field, PaneSection } from "@/components/settings/shared";
 
 const NONE = "__none__"; // Radix Select forbids empty item values
 

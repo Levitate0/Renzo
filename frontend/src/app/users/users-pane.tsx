@@ -7,10 +7,11 @@
 //   owner: anyone but self/owner · manager: only plain users.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, X } from "lucide-react";
+import { Copy, Trash2 } from "lucide-react";
 import React, { useState } from "react";
 import { toast } from "sonner";
 
+import { UserAvatar } from "@/components/shell/user-avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TvSelect } from "@/components/ui/tv-select";
@@ -20,7 +21,7 @@ import { useAutofillGuard, useMaskedInput } from "@/lib/autofill";
 import type { InviteCreated, InvitePublic, PublicUser } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { copyText, errMsg, Field, initial, PaneSection, RoleBadge } from "../shared";
+import { copyText, errMsg, Field, PaneSection, RoleBadge } from "@/components/settings/shared";
 
 const rank: Record<string, number> = { owner: 0, manager: 1, user: 2 };
 
@@ -179,9 +180,9 @@ export function UsersPane() {
                 key={u.id}
                 className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background/40 px-3 py-2.5"
               >
-                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary/15 text-sm font-semibold text-primary">
-                  {initial(u.username)}
-                </div>
+                {/* base64 avatar when set (GET /api/users includes it), else
+                    the same initials circle treatment as the topbar */}
+                <UserAvatar user={u} className="h-9 w-9 text-sm" />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="truncate text-sm font-medium">{u.username}</span>
@@ -236,7 +237,8 @@ export function UsersPane() {
                     title={`Remove ${u.username}`}
                     onClick={() => void removeUser(u)}
                   >
-                    <X className="h-4 w-4" />
+                    {/* Trash2 = Shiori's delete action icon (user-manager.tsx). */}
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 )}
               </div>

@@ -70,10 +70,10 @@ export function Topbar() {
     <>
       <OfflineBar />
       <header
-        className="topbar sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-xl"
+        className="topbar sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-xl backdrop-saturate-150"
         style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
       >
-        <div className="mx-auto flex h-14 w-full max-w-[1440px] items-center gap-3 px-3 lg:px-5">
+        <div className="relative mx-auto flex h-14 w-full max-w-[1440px] items-center gap-3 px-3 lg:px-5">
           {/* Mobile hamburger -> drawer with the tab list */}
           <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
             <SheetTrigger asChild>
@@ -109,11 +109,20 @@ export function Topbar() {
             <img src="/renzo-banner.png" alt="Renzo" className="brand-logo h-7 w-auto" />
           </Link>
 
-          {/* Desktop pill tabs */}
-          <div className="hidden min-w-0 lg:block">
-            <NavTabs />
+          {/* Desktop pill tabs — absolutely centered in the bar like Shiori's
+              command-bar (command-bar.tsx:197): the wrapper is click-through
+              so the brand/right cluster stay hittable underneath, the pill
+              container restores pointer events, and the 60vw cap keeps a wide
+              tab set from overlapping either side. NavTabs itself carries the
+              literal `tabs` class (tvnav chrome root). */}
+          <div className="pointer-events-none absolute left-1/2 hidden max-w-[60vw] -translate-x-1/2 lg:flex">
+            <div className="pointer-events-auto min-w-0">
+              <NavTabs />
+            </div>
           </div>
 
+          {/* Spacer — the pills are absolutely centered above this row, so a
+              normal flex spacer pushes the right cluster to the edge. */}
           <div className="flex-1" />
 
           <SearchBox />

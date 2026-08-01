@@ -13,7 +13,9 @@ import { BookMarked, BookOpen, Link2 } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { AvatarEditor } from "@/components/shell/avatar-dialog";
 import { useHealthQuery } from "@/components/shell/queries";
+import { UserAvatar } from "@/components/shell/user-avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/contexts/auth-context";
@@ -22,7 +24,7 @@ import { useAutofillGuard, useMaskedInput } from "@/lib/autofill";
 import type { PublicUser } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { ConnRow, debridPill, errMsg, Field, initial, PaneSection, Pill, RoleBadge } from "../shared";
+import { ConnRow, debridPill, errMsg, Field, PaneSection, Pill, RoleBadge } from "@/components/settings/shared";
 
 export function AccountPane() {
   const { user, updateUser } = useAuth();
@@ -74,11 +76,9 @@ export function AccountPane() {
   return (
     <div className="grid grid-cols-1 gap-4">
       <PaneSection>
-        {/* profile header (old .profile) */}
+        {/* profile header (old .profile) — live avatar, updates on save */}
         <div className="flex items-center gap-3">
-          <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-primary/15 text-lg font-semibold text-primary">
-            {initial(user?.username)}
-          </div>
+          <UserAvatar user={user} className="h-12 w-12 text-lg" />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="truncate text-base font-semibold">{user?.username ?? "—"}</span>
@@ -87,6 +87,19 @@ export function AccountPane() {
             <div className="text-sm text-muted-foreground">Your account &amp; connections</div>
           </div>
         </div>
+
+        {/* Profile picture — the SAME controls as the account menu's "Edit
+            avatar…" dialog, but inline (no portal): Radix dialogs land outside
+            every tvnav root, so this is the only D-pad-reachable home for
+            avatar editing on TV — the same reason change-password lives on
+            this page (Security below) and not only in the menu dialog. */}
+        <div>
+          <h3 className="text-sm font-semibold">Profile picture</h3>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Shown on the account menu and the users list.
+          </p>
+        </div>
+        <AvatarEditor />
 
         <div className="grid grid-cols-1 gap-2">
           <ConnRow

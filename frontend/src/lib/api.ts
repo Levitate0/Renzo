@@ -3,7 +3,7 @@
 //   * same-origin credentials, JSON in/out, /api prefix
 //   * 401  -> broadcast the auth-gate event (AuthProvider shows the login gate;
 //             never a redirect loop)
-//   * 402 realdebrid_required -> open the settings credentials pane + toast
+//   * 402 realdebrid_required -> open /account/?section=credentials + toast
 // Auth-flow endpoints (login/setup/reset/invite) call fetch directly in the
 // gates, exactly like the old app, so a 401 there can't re-trigger the gate.
 // ---------------------------------------------------------------------------
@@ -11,7 +11,7 @@ import { toast } from "sonner";
 
 /** Fired on any 401 from the API — AuthProvider listens and shows the login gate. */
 export const AUTH_GATE_EVENT = "renzo:auth-gate";
-/** Fired to open a settings pane: detail = { pane: string }. GateHost routes it. */
+/** Fired to open a settings-family route: detail = { href: string }. GateHost routes it. */
 export const OPEN_SETTINGS_EVENT = "renzo:open-settings";
 /** Fired to open the offline Downloads gate (mode pill; phone/desktop only). */
 export const OPEN_DOWNLOADS_EVENT = "renzo:open-downloads";
@@ -21,9 +21,34 @@ export function emitAppEvent(name: string, detail?: unknown): void {
   window.dispatchEvent(new CustomEvent(name, { detail }));
 }
 
-/** Ask the shell to open a settings pane (routes to /settings/?pane=…). */
+/**
+ * Old settings pane name -> its post-IA-split route (Shiori's Account-vs-
+ * Settings semantics: per-user panes live under /account/, appearance and
+ * users are top-level routes, /settings/ keeps only owner SMTP/Email).
+ */
+export function settingsHref(pane = "credentials"): string {
+  switch (pane) {
+    case "credentials":
+    case "defaults":
+    case "apikey":
+      return `/account/?section=${pane}`;
+    case "jellyfin": // old hash alias
+      return "/account/?section=apikey";
+    case "appearance":
+      return "/appearance/";
+    case "users":
+      return "/users/";
+    case "smtp":
+    case "email":
+      return "/settings/";
+    default:
+      return "/account/";
+  }
+}
+
+/** Ask the shell to open a settings-family page (e.g. the 402 handler below). */
 export function openSettings(pane = "credentials"): void {
-  emitAppEvent(OPEN_SETTINGS_EVENT, { pane });
+  emitAppEvent(OPEN_SETTINGS_EVENT, { href: settingsHref(pane) });
 }
 
 export class ApiError extends Error {

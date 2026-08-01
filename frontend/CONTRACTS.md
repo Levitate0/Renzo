@@ -23,7 +23,7 @@ Dark-only. Theme = Shiori's scheme, already in `src/styles/globals.css` +
 | downloads | `/downloads/` |
 | `#/title/<id>` | `/title/?id=<anilistId>` |
 | `#/watch/<watchId>/<ep>` | `/watch/?id=<watchId>&ep=<n>` |
-| `#/settings` (+panes) | `/settings/?pane=<credentials\|defaults\|appearance\|users\|smtp\|apikey>` |
+| `#/settings` (+panes) | SPLIT (Shiori IA, 2026-08-01): `/account/?section=<account\|credentials\|defaults\|apikey>` (every user), `/appearance/` (every user), `/users/` (staff), `/settings/` (owner: SMTP/Email). Old `?pane=` URLs redirect via the shim in `src/app/settings/page.tsx`. Settings-family route roots carry `view active modal` (the `modal` marker is what makes TV Back close the page instead of exiting the app). |
 | login/setup/reset gates | full-screen overlays rendered by the auth guard (NOT routes), same as old |
 
 `useSearchParams` requires a `<Suspense>` boundary in static export — wrap pages that

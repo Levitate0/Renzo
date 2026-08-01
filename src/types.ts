@@ -118,6 +118,8 @@ export interface UserRecord {
   resetToken?: string;             // active password-reset token (emailed)
   resetExpires?: number;           // epoch ms
   theme?: ThemeSettings;           // per-user appearance
+  avatarBase64?: string;           // profile picture, small (<=256KB decoded) base64 image
+  avatarContentType?: string;      // image/png | image/jpeg | image/webp
 }
 
 export interface ThemeSettings {

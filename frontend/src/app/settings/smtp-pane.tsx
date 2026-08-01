@@ -17,7 +17,7 @@ import { useAutofillGuard, useMaskedInput } from "@/lib/autofill";
 import type { SmtpPublic } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { errMsg, Field, PaneSection } from "../shared";
+import { errMsg, Field, PaneSection } from "@/components/settings/shared";
 
 export function SmtpPane() {
   const { user } = useAuth();

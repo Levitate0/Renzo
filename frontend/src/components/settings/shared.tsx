@@ -4,6 +4,7 @@
 // small layout helpers that the old app drove with .pill-state / .role-badge /
 // .field classes (public/index.html settings modal + app.js setPill/roleLabel).
 
+import { Medal } from "lucide-react";
 import React from "react";
 import { toast } from "sonner";
 
@@ -68,6 +69,8 @@ export function RoleBadge({ role }: { role: Role | string }) {
             : "bg-muted text-muted-foreground",
       )}
     >
+      {/* Medal icon = Shiori's level pill (user-manager.tsx levelColors row). */}
+      <Medal className="mr-1 h-3 w-3" />
       {roleLabel(role)}
     </span>
   );

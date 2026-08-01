@@ -83,6 +83,10 @@ async function main() {
   app.set("trust proxy", true);
   app.use(securityHeaders);
   app.use("/api", csrfGuard);
+  // Avatar uploads are small base64 images (client resizes to ~128px) but can
+  // exceed the general 64kb cap; give that one route its own parser. Mounted
+  // FIRST — the global parser below skips bodies that are already consumed.
+  app.use("/api/account/avatar", express.json({ limit: "512kb" }));
   app.use(express.json({ limit: "64kb" }));
   // Return JSON (not HTML) for malformed bodies / payloads that are too large.
   app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, next: NextFunction) => {
