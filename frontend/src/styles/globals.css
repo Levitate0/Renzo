@@ -4217,6 +4217,16 @@ body.tv-nav .auth-card button:focus {
    pushed off the right edge (old TV topbar fix). */
 body.tv-nav .search-box .kbd { display: none; }
 body.tv-nav .status { display: none; }
+
+/* TV gets the DESKTOP chrome regardless of viewport width. The ~960px TV
+   viewport falls below the lg breakpoint, so the responsive layout served the
+   PHONE chrome: tabs hidden behind a hamburger whose drawer is a Radix portal
+   with a focus trap — invisible to tvnav's roots and a dead end for the D-pad
+   (focus could only cycle hamburger → drawer X → hamburger). Pill tabs are
+   plain in-page links tvnav walks natively; the wrapper's overflow-x-auto plus
+   tvnav's scrollIntoView keeps every tab reachable even if the row clips. */
+body.tv-nav .nav-tabs-wrap { display: flex; }
+body.tv-nav .nav-toggle { display: none !important; }
 body.tv-nav .search { flex: 0 1 auto; min-width: 0; }
 body.tv-nav .search-box input { min-width: 0; max-width: 210px; }
 

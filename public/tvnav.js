@@ -130,6 +130,12 @@
   // which is what makes Back breadcrumb correctly on TV instead of quitting from
   // mid-playback.
   function back() {
+    // An open Radix menu closes on Escape (its own handler) — remote Back
+    // must dismiss it rather than navigate the app underneath it.
+    if (radixOpen()) {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return true;
+    }
     if (document.body.classList.contains("watching")) { document.getElementById("watchBack")?.click(); return true; }
     const gate = document.getElementById("offlineGate");
     if (gate && !gate.classList.contains("hidden")) { document.getElementById("offlineClose")?.click(); return true; }
@@ -152,10 +158,22 @@
     return true;
   }
 
+  // Radix menus / selects (account dropdown, per-episode menus) render into
+  // body-level portals OUTSIDE our roots, but ship their own complete roving
+  // arrow-key navigation. While one is open, spatial nav must stand down —
+  // otherwise our capture-phase handler moves focus back into the page and the
+  // menu can never be walked with the D-pad.
+  function radixOpen() {
+    return document.querySelector(
+      '[data-radix-popper-content-wrapper] [role="menu"],' +
+      '[data-radix-popper-content-wrapper] [role="listbox"]');
+  }
+
   // --- Keyboard (arrows / Enter) — capture phase so we can preempt the player's
   //     left/right seek when we're not on the video itself ---------------------
   const DIRS = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
   document.addEventListener("keydown", (e) => {
+    if (tvMode && radixOpen()) return; // an open Radix menu owns the keys
     const t = e.target;
     const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && !t.readOnly;
     const inSelect = t && t.tagName === "SELECT";

@@ -117,7 +117,13 @@ export function Topbar() {
               centering keeps the balanced look and makes overlap geometrically
               impossible: flex shrinks/scrolls the tabs instead. */}
           <div className="flex-1" />
-          <div className="hidden min-w-0 shrink overflow-x-auto [scrollbar-width:none] lg:flex">
+          {/* nav-tabs-wrap: stable hook — on TV (body.tv-nav) CSS forces this
+              visible and hides the hamburger at ANY viewport width. A TV's
+              WebView viewport is ~960px (below lg), so it would otherwise get
+              the phone chrome: a drawer in a Radix portal with a focus trap,
+              which the D-pad cannot navigate (reported: focus locked to the
+              hamburger, only the drawer's X reachable). */}
+          <div className="nav-tabs-wrap hidden min-w-0 shrink overflow-x-auto [scrollbar-width:none] lg:flex">
             <NavTabs />
           </div>
           <div className="flex-1" />
