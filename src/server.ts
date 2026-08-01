@@ -133,7 +133,13 @@ async function main() {
   // Build id for clients (Electron desktop) to poll and auto-refresh on deploy.
   // Unauthenticated + no-store so the poll is cheap and always current.
   const BUILD = Date.now().toString(36);
-  app.get("/version", (_req, res) => res.set("Cache-Control", "no-store").json({ build: BUILD }));
+  // CORS on /version only: the native clients' first-run "connect to your server"
+  // page runs on a capacitor origin (https://localhost) and probes reachability by
+  // fetching <server>/version — without this header that fetch is blocked as
+  // cross-origin and every server reads as unreachable. Unauthenticated build id,
+  // safe to expose.
+  app.get("/version", (_req, res) =>
+    res.set("Cache-Control", "no-store").set("Access-Control-Allow-Origin", "*").json({ build: BUILD }));
 
   // --- Web UI: the Next.js static export (frontend/out) is the UI (permanent
   // cutover, user-approved 2026-08-01). The legacy SPA stays in the image purely

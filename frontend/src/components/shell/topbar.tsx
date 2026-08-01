@@ -49,7 +49,7 @@ function StatusLine() {
   return (
     <div
       id="status"
-      className="status hidden whitespace-nowrap text-xs text-muted-foreground lg:block"
+      className="status hidden whitespace-nowrap text-xs text-muted-foreground min-[1800px]:block"
       title="Service status"
     >
       {text}
@@ -109,20 +109,17 @@ export function Topbar() {
             <img src="/renzo-banner.png" alt="Renzo" className="brand-logo h-7 w-auto" />
           </Link>
 
-          {/* Desktop pill tabs — absolutely centered in the bar like Shiori's
-              command-bar (command-bar.tsx:197): the wrapper is click-through
-              so the brand/right cluster stay hittable underneath, the pill
-              container restores pointer events, and the 60vw cap keeps a wide
-              tab set from overlapping either side. NavTabs itself carries the
-              literal `tabs` class (tvnav chrome root). */}
-          <div className="pointer-events-none absolute left-1/2 hidden max-w-[60vw] -translate-x-1/2 lg:flex">
-            <div className="pointer-events-auto min-w-0">
-              <NavTabs />
-            </div>
+          {/* Desktop pill tabs, centered BETWEEN brand and the right cluster by
+              twin flex spacers. Shiori centers its pills absolutely in the bar,
+              but Renzo's right cluster measures ~900px (search + type + mode
+              pill + status + avatar) — absolute centering overlaps it at every
+              width below ~2300px (user-reported at 1500-1950px). In-flow
+              centering keeps the balanced look and makes overlap geometrically
+              impossible: flex shrinks/scrolls the tabs instead. */}
+          <div className="flex-1" />
+          <div className="hidden min-w-0 shrink overflow-x-auto [scrollbar-width:none] lg:flex">
+            <NavTabs />
           </div>
-
-          {/* Spacer — the pills are absolutely centered above this row, so a
-              normal flex spacer pushes the right cluster to the edge. */}
           <div className="flex-1" />
 
           <SearchBox />
