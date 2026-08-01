@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
 import { randomBytes } from "node:crypto";
 import { config } from "../config.js";
+import * as authsiteSvc from "../services/authsite.js";
 import { logger } from "../logger.js";
 import { db } from "../db.js";
 import * as auth from "../services/auth.js";
@@ -368,6 +369,44 @@ accountRoutes.post("/add-defaults", wrap(async (req: AuthedRequest, res) => {
   }
   await db.save();
   res.json(publicUser(user));
+}));
+
+// --- Per-user AniList/MAL OAuth via the auth site's machine API --------------
+// The auth site owns the provider app + callback; we mint the auth URL, the user
+// authorizes in a popup, and we poll the state until tokens arrive — stored on
+// THIS user (per-user connections; the auth site keeps nothing for machine flows).
+const OAUTH_PROVIDERS: Record<string, authsiteSvc.Provider> = { anilist: "anilist", mal: "myanimelist" };
+
+accountRoutes.post("/oauth/:provider/start", wrap(async (req: AuthedRequest, res) => {
+  const p = OAUTH_PROVIDERS[String(req.params.provider)];
+  if (!p) return res.status(400).json({ error: "unknown provider" });
+  try {
+    const r = await authsiteSvc.oauthStart(p);
+    res.json(r); // { authUrl, state }
+  } catch (e) {
+    res.status(502).json({ error: String(e instanceof Error ? e.message : e) });
+  }
+}));
+
+accountRoutes.post("/oauth/:provider/poll", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const p = OAUTH_PROVIDERS[String(req.params.provider)];
+  if (!p) return res.status(400).json({ error: "unknown provider" });
+  const state = String((req.body as { state?: string })?.state ?? "");
+  if (!state) return res.status(400).json({ error: "state required" });
+  const t = await authsiteSvc.oauthPoll(p, state);
+  if (!t) return res.json({ pending: true });
+  if (p === "anilist") {
+    user.anilistToken = t.accessToken;
+    user.anilistRefresh = t.refreshToken ?? undefined;
+    user.anilistExpiresAt = t.expiresAt ?? undefined;
+  } else {
+    user.malToken = t.accessToken;
+    user.malRefresh = t.refreshToken ?? undefined;
+    user.malExpiresAt = t.expiresAt ?? undefined;
+  }
+  await db.save();
+  res.json({ connected: true, user: publicUser(user) });
 }));
 
 accountRoutes.post("/trackers", wrap(async (req: AuthedRequest, res) => {

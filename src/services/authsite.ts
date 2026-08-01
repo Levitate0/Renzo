@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { db } from "../db.js";
 import { logger } from "../logger.js";
 
 const log = logger("authsite");
@@ -88,4 +89,65 @@ function cacheUntil(expiresAt: string | number | undefined): number {
     }
   }
   return now + FALLBACK_TTL_MS;
+}
+
+// ---------------------------------------------------------------------------
+// Per-USER OAuth via the auth site's machine API (/api/oauth/:provider/...).
+// This is the documented Renzo contract: WE mint and persist our own instance
+// key (not a shared secret), the auth site owns the provider app + callback,
+// and tokens come back to us via short polling — nothing is stored auth-site
+// side for machine flows. The dashboard /connect page is NOT this flow (it is
+// the owner's central connection, gated behind the dashboard password).
+// ---------------------------------------------------------------------------
+
+export interface OauthTokens { accessToken: string; refreshToken: string | null; expiresAt: string | null }
+
+/** This install's instance key — minted once, persisted in db.settings. */
+export function instanceKey(): string {
+  return db.oauthInstanceKey();
+}
+
+function oauthBase(provider: Provider): string {
+  return `${config.authsiteUrl}/api/oauth/${provider}`;
+}
+
+/** Step 1: mint an authorization URL + state for the user to open. */
+export async function oauthStart(provider: Provider): Promise<{ authUrl: string; state: string }> {
+  const key = instanceKey();
+  const r = await fetch(`${oauthBase(provider)}/url`, {
+    method: "POST",
+    headers: { "X-Instance-Key": key, "content-type": "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({} as { error?: string }));
+    throw new Error((body as { error?: string }).error || `auth site returned ${r.status}`);
+  }
+  return (await r.json()) as { authUrl: string; state: string };
+}
+
+/** Step 2: poll for tokens. null = callback hasn't completed yet (404). */
+export async function oauthPoll(provider: Provider, state: string): Promise<OauthTokens | null> {
+  const r = await fetch(`${oauthBase(provider)}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`auth site returned ${r.status}`);
+  return (await r.json()) as OauthTokens;
+}
+
+/** Refresh an expired per-user token. Throws on failure (caller degrades). */
+export async function oauthRefresh(provider: Provider, refreshToken: string): Promise<OauthTokens> {
+  const key = instanceKey();
+  const r = await fetch(`${oauthBase(provider)}/refresh`, {
+    method: "POST",
+    headers: { "X-Instance-Key": key, "content-type": "application/json" },
+    body: JSON.stringify({ refreshToken }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!r.ok) throw new Error(`refresh failed (${r.status})`);
+  return (await r.json()) as OauthTokens;
 }

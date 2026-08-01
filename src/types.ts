@@ -114,7 +114,11 @@ export interface UserRecord {
   autoTitles?: number[];           // titles this user auto-downloads to THEIR OWN Real-Debrid
   addDefaults?: AddDefaults;       // states applied when a title first enters this user's library
   anilistToken?: string;           // per-user tracker connections
+  anilistRefresh?: string;         // OAuth refresh token (auth-site machine flow)
+  anilistExpiresAt?: string;       // ISO — refresh via the auth site when past
   malToken?: string;
+  malRefresh?: string;
+  malExpiresAt?: string;
   resetToken?: string;             // active password-reset token (emailed)
   resetExpires?: number;           // epoch ms
   theme?: ThemeSettings;           // per-user appearance
@@ -183,6 +187,6 @@ export interface DbShape {
   users: UserRecord[];
   sessions: SessionRecord[];
   invites: InviteRecord[];
-  settings: { smtp?: SmtpSettings; dtokenSecret?: string };
+  settings: { smtp?: SmtpSettings; dtokenSecret?: string; oauthInstanceKey?: string };
   watch: Record<string, WatchToken>;   // watchId -> token
 }

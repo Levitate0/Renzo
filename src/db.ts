@@ -188,6 +188,17 @@ class Store {
     return this.data.settings.dtokenSecret;
   }
 
+  // This install's OAuth instance key for the auth site's machine API
+  // (generated once, like dtokenSecret).
+  oauthInstanceKey(): string {
+    this.assert();
+    if (!this.data.settings.oauthInstanceKey) {
+      this.data.settings.oauthInstanceKey = randomBytes(24).toString("hex");
+      void this.flush();
+    }
+    return this.data.settings.oauthInstanceKey;
+  }
+
   // --- watch tokens ----------------------------------------------------------
   watch(): Record<string, WatchToken> {
     this.assert();

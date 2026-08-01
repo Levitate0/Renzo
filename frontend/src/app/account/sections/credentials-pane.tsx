@@ -87,22 +87,55 @@ export function CredentialsPane() {
     [onTrackerConnected, refetch, stopPoll],
   );
 
+  // Per-user OAuth via OUR backend + the auth site's machine API. The old flow
+  // opened the auth site's /connect page, which is the OWNER's central dashboard
+  // connection and sits behind the dashboard password — users saw a password
+  // gate instead of AniList (reported as "wrong url for OAuth"). Now: the
+  // backend mints {authUrl, state}, the popup goes STRAIGHT to AniList/MAL, and
+  // we poll our own /oauth/:provider/poll until the tokens land on this user.
   const connectTracker = useCallback(
-    (provider: Tracker) => {
+    async (provider: Tracker) => {
       const site = healthRef.current?.authsite;
-      if (!site?.enabled || !site.url) {
+      if (!site?.enabled) {
         toast("Auth site not configured");
         return;
       }
-      const url = `${site.url.replace(/\/$/, "")}/connect/${AUTHSITE_PROVIDER[provider]}`;
-      const w = window.open(url, "fsa-oauth", "width=640,height=820,menubar=no,toolbar=no");
+      let startRes: { authUrl: string; state: string };
+      try {
+        startRes = await api<{ authUrl: string; state: string }>(`/account/oauth/${provider}/start`, { method: "POST" });
+      } catch (e) {
+        toast("Couldn't start the connection: " + (e instanceof Error ? e.message : e));
+        return;
+      }
+      const w = window.open(startRes.authUrl, "fsa-oauth", "width=640,height=820,menubar=no,toolbar=no");
       if (!w) {
         toast("Popup blocked — allow popups, then try again");
         return;
       }
-      watchTrackerConnect(provider); // fallback in case the postMessage is missed
+      // Poll our backend for up to 3 minutes; it stores the tokens on this user.
+      stopPoll(provider);
+      let ticks = 0;
+      pollers.current[provider] = setInterval(async () => {
+        ticks++;
+        try {
+          const r = await api<{ pending?: boolean; connected?: boolean }>(
+            `/account/oauth/${provider}/poll`,
+            { method: "POST", body: JSON.stringify({ state: startRes.state }) },
+          );
+          if (r.connected) {
+            stopPoll(provider);
+            onTrackerConnected(provider);
+          }
+        } catch {
+          /* transient — keep polling */
+        }
+        if (ticks > 60) {
+          stopPoll(provider);
+          toast("Connection timed out — try again");
+        }
+      }, 3000);
     },
-    [watchTrackerConnect],
+    [onTrackerConnected, stopPoll],
   );
 
   // Auth site postMessages renzo-oauth success/error back to this window.

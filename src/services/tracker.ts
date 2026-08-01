@@ -14,10 +14,43 @@ const MAL = "https://api.myanimelist.net/v2";
 //   2. an env override (ANILIST_TOKEN / MAL_TOKEN)
 //   3. the self-hosted auth site (fetched + auto-refreshed at call time)
 export async function anilistTokenFor(user?: UserRecord): Promise<string> {
-  return user?.anilistToken || config.anilistToken || (await authsite.getToken("anilist")) || "";
+  if (user?.anilistToken) return (await freshUserToken(user, "anilist")) ?? user.anilistToken;
+  return config.anilistToken || (await authsite.getToken("anilist")) || "";
 }
 export async function malTokenFor(user?: UserRecord): Promise<string> {
-  return user?.malToken || config.malToken || (await authsite.getToken("myanimelist")) || "";
+  if (user?.malToken) return (await freshUserToken(user, "myanimelist")) ?? user.malToken;
+  return config.malToken || (await authsite.getToken("myanimelist")) || "";
+}
+
+/** Per-user OAuth tokens carry an expiry + refresh token (auth-site machine
+ *  flow). Refresh through the auth site shortly before expiry; on any failure
+ *  fall back to the stored token (the API call itself will surface a real 401).
+ *  Manually-pasted tokens have no expiry recorded and pass straight through. */
+async function freshUserToken(user: UserRecord, provider: authsite.Provider): Promise<string | null> {
+  const [tok, refresh, expiresAt] = provider === "anilist"
+    ? [user.anilistToken, user.anilistRefresh, user.anilistExpiresAt]
+    : [user.malToken, user.malRefresh, user.malExpiresAt];
+  if (!tok || !refresh || !expiresAt) return tok ?? null;
+  const exp = Date.parse(expiresAt);
+  if (!Number.isFinite(exp) || Date.now() < exp - 5 * 60_000) return tok;
+  try {
+    const t = await authsite.oauthRefresh(provider, refresh);
+    if (provider === "anilist") {
+      user.anilistToken = t.accessToken;
+      user.anilistRefresh = t.refreshToken ?? refresh;
+      user.anilistExpiresAt = t.expiresAt ?? undefined;
+    } else {
+      user.malToken = t.accessToken;
+      user.malRefresh = t.refreshToken ?? refresh;
+      user.malExpiresAt = t.expiresAt ?? undefined;
+    }
+    await db.save();
+    log.info(`refreshed ${provider} token for ${user.username}`);
+    return t.accessToken;
+  } catch (e) {
+    log.warn(`token refresh failed for ${user.username}/${provider}`, String(e));
+    return tok; // let the real API call decide
+  }
 }
 export async function anilistConnected(user?: UserRecord): Promise<boolean> {
   return Boolean(await anilistTokenFor(user));
