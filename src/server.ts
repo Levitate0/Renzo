@@ -130,6 +130,26 @@ async function main() {
     handler(req, res, next);
   });
 
+  // Cross-account read-only media sharing (household dedupe): stream another
+  // user's DOWNLOADED episode instead of re-resolving it through debrid. Only
+  // the exact file paths recorded on the owner's episode records are served —
+  // this is a whitelist, not a browse surface; sendFile's root option also
+  // contains any traversal attempt.
+  app.use("/sharedfiles", downloadAuth, (req, res) => {
+    const segs = req.path.split("/").filter(Boolean).map((s) => decodeURIComponent(s));
+    const ownerId = segs.shift();
+    const rel = segs.join("/");
+    const owner = ownerId ? db.users().find((u) => u.id === ownerId) : undefined;
+    if (!owner || !rel) { res.status(404).json({ error: "not found" }); return; }
+    const known = Object.values(owner.eps ?? {}).some(
+      (e) => e.status === "downloaded" && e.filePath === rel,
+    );
+    if (!known) { res.status(404).json({ error: "not found" }); return; }
+    res.sendFile(rel, { root: userRoot(owner.id), acceptRanges: true, dotfiles: "deny" }, (err) => {
+      if (err && !res.headersSent) res.status(404).json({ error: "not found" });
+    });
+  });
+
   // Build id for clients (Electron desktop) to poll and auto-refresh on deploy.
   // Unauthenticated + no-store so the poll is cheap and always current.
   const BUILD = Date.now().toString(36);

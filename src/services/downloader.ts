@@ -47,6 +47,22 @@ function getUserEp(user: UserRecord, titleId: number, num: number): EpisodeRecor
 export function peekUserEp(user: UserRecord, titleId: number, num: number): EpisodeRecord | undefined {
   return user.eps?.[epKey(titleId, num)];
 }
+
+/** Another account's downloaded copy of (title, episode) whose file exists on
+ *  disk — the household-dedupe source for resolveStream and previews. */
+export async function sharedCopy(
+  titleId: number, episode: number, excludeUserId: string,
+): Promise<{ owner: UserRecord; ownerEp: EpisodeRecord } | null> {
+  for (const owner of db.users()) {
+    if (owner.id === excludeUserId) continue;
+    const ownerEp = peekUserEp(owner, titleId, episode);
+    if (ownerEp?.status === "downloaded" && ownerEp.filePath
+        && (await library.exists(library.userAbs(owner.id, ownerEp.filePath)))) {
+      return { owner, ownerEp };
+    }
+  }
+  return null;
+}
 export function userDownloadedCount(user: UserRecord, titleId: number): number {
   const prefix = `${titleId}:`;
   return Object.entries(user.eps ?? {}).filter(([k, e]) => k.startsWith(prefix) && e.status === "downloaded").length;
@@ -207,6 +223,40 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
       subtitles: [...localSubs, ...await subtitleList(anilistId, episode, user.jimakuKey)],
       downloading: activeJobFor(anilistId, episode, user.id),
     });
+  }
+
+  // 1b) Someone ELSE on this server already downloaded it -> stream THEIR file.
+  // Household dedupe (user request): a file that already exists on disk always
+  // beats burning a fresh debrid resolve — and it lets debrid-less accounts
+  // (e.g. the TV login) play anything the household has saved. Served through
+  // /sharedfiles/<ownerId>/<path>, which only accepts exact recorded episode
+  // paths (see server.ts). Deliberately NOT cached: local resolves are cheap
+  // and the owner can delete the file at any time.
+  const shared = await sharedCopy(anilistId, episode, user.id);
+  if (shared) {
+    const { owner, ownerEp } = shared;
+    // Reuse the owner's extracted release subs; extract lazily if missing —
+    // the same maintenance the owner's own first play would have done.
+    if (ownerEp.subs === undefined || ownerEp.subsV !== captions.SUBS_VERSION) {
+      try {
+        const emb = await captions.extractEmbedded(library.userAbs(owner.id, ownerEp.filePath!));
+        const relBase = ownerEp.filePath!.replace(/\.[^.]+$/, "");
+        ownerEp.subs = emb.map((e) => ({ file: relBase + e.suffix, lang: e.lang, label: e.label }));
+      } catch (e) { ownerEp.subs = []; log.warn("extract embedded (shared)", String(e)); }
+      ownerEp.subsV = captions.SUBS_VERSION;
+      await db.save();
+    }
+    const sharedSubs = (ownerEp.subs ?? []).map((s) => ({
+      id: Buffer.from(`lshare::${owner.id}::${s.file}`).toString("base64url"), label: s.label, lang: s.lang,
+    }));
+    log.info(`▶ shared local file: ${owner.username} -> ${user.username}`);
+    return {
+      source: "local",
+      url: `/sharedfiles/${owner.id}/` + ownerEp.filePath!.split("/").map(encodeURIComponent).join("/"),
+      filename: ownerEp.filePath!.split("/").pop() ?? "",
+      subtitles: [...sharedSubs, ...await subtitleList(anilistId, episode, user.jimakuKey)],
+      downloading: activeJobFor(anilistId, episode, user.id),
+    };
   }
 
   // 2) Otherwise resolve an instant debrid stream — mandatory: all torrent traffic

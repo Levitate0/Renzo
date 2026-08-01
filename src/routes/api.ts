@@ -14,7 +14,8 @@ import * as captions from "../services/captions.js";
 import * as library from "../services/library.js";
 import * as watch from "../services/watch.js";
 import * as mal from "../services/mal.js";
-import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
+import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, sharedCopy, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
+import * as previews from "../services/previews.js";
 import * as autodl from "../services/autodl.js";
 import { requireAdmin, mintDownloadToken, type AuthedRequest } from "../services/auth.js";
 import { isTrackStatus } from "../services/tracker.js";
@@ -630,6 +631,31 @@ api.get("/titles/:id/play/:ep", wrap(async (req, res) => {
   res.json(resolved);
 }));
 
+// Scrub-preview frame for the player seek bar: ?at=<seconds>, snapped to a
+// 10s bucket, extracted from a LOCAL file (mine or a household shared copy)
+// and cached on disk. Debrid-only episodes 404 — clients fall back to the
+// static episode thumbnail.
+api.get("/titles/:id/preview/:ep", wrap(async (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  const ep = Math.max(1, Number(req.params.ep) || 1);
+  const bucket = previews.bucketFor(Number(req.query.at) || 0);
+  const user = req.user!;
+  const mine = peekUserEp(user, id, ep);
+  let abs: string | null = null;
+  if (mine?.status === "downloaded" && mine.filePath
+      && (await library.exists(library.userAbs(user.id, mine.filePath)))) {
+    abs = library.userAbs(user.id, mine.filePath);
+  } else {
+    const shared = await sharedCopy(id, ep, user.id);
+    if (shared) abs = library.userAbs(shared.owner.id, shared.ownerEp.filePath!);
+  }
+  if (!abs) { res.status(404).json({ error: "no local file" }); return; }
+  const jpg = await previews.frame(abs, id, ep, bucket);
+  if (!jpg) { res.status(404).json({ error: "no frame" }); return; }
+  res.set("Cache-Control", "private, max-age=86400, immutable");
+  res.sendFile(jpg);
+}));
+
 // --- Watch links: per-series URL id (stable per-user if saved, else temp) ---
 api.post("/titles/:id/watch", wrap(async (req, res) => {
   const user = req.user!;
@@ -881,6 +907,22 @@ api.post("/titles/:id/retry/:ep", wrap(async (req, res) => {
 
 // --- Captions proxy: remote sub -> WebVTT ----------------------------------
 api.get("/captions/:id.vtt", wrap(async (req: AuthedRequest, res) => {
+  // lshare::<ownerId>::<relpath> — a shared-copy stream's subtitle track (see
+  // downloader.sharedCopy): serve ANOTHER user's extracted sidecar, but only
+  // when that exact file is recorded on one of the owner's episode records.
+  const decoded = Buffer.from(req.params.id, "base64url").toString("utf8");
+  if (decoded.startsWith("lshare::")) {
+    const [, ownerId, ...relParts] = decoded.split("::");
+    const rel = relParts.join("::");
+    const owner = db.users().find((u) => u.id === ownerId);
+    const known = owner && Object.values(owner.eps ?? {}).some(
+      (e) => (e.subs ?? []).some((s) => s.file === rel),
+    );
+    const vtt = known ? await captions.readUserVtt(ownerId, rel) : null;
+    if (!vtt) { res.status(404).json({ error: "not found" }); return; }
+    res.type("text/vtt").send(vtt);
+    return;
+  }
   const vtt = await captions.fetchAsVtt(req.params.id, req.user?.jimakuKey, (rel) => req.user ? captions.readUserVtt(req.user.id, rel) : Promise.resolve(null));
   res.type("text/vtt").send(vtt);
 }));
