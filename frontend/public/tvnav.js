@@ -198,22 +198,29 @@
       else if (now >= s.next) { s.next = now + REPEAT_MS; onDown(); }
     } else { s.down = false; }
   }
-  const DEAD = 0.65;        // wide: TV "pads" report noisy/offset resting values
-  const rest = Object.create(null); // pad index -> resting [x, y], captured once
+  const DEAD = 0.6;
+  // Chromium exposes a gamepad only on its FIRST INPUT — so any "resting"
+  // calibration taken at first sight is really taken MID-PRESS, and the release
+  // then reads as the opposite direction held forever (that was the login-screen
+  // focus ping-pong on TV). No calibration: fixed threshold, and each pad's
+  // AXES are ignored for a short grace period after it appears (buttons are
+  // edge-detected and safe immediately).
+  const padSeen = Object.create(null); // pad index -> first-seen timestamp
+  const AXIS_GRACE_MS = 800;
   function pollPads() {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const now = performance.now();
     for (const p of pads) {
       if (!p) continue;
       const b = p.buttons || [], ax = p.axes || [];
-      const x0 = typeof ax[0] === "number" ? ax[0] : 0, y0 = typeof ax[1] === "number" ? ax[1] : 0;
-      // Treat wherever the sticks sit when first seen as centre, so a stuck or
-      // drifting axis can't read as a direction that is permanently held.
-      if (!rest[p.index]) rest[p.index] = [x0, y0];
-      const dx = x0 - rest[p.index][0], dy = y0 - rest[p.index][1];
-      const up = (b[12] && b[12].pressed) || dy < -DEAD;
-      const down = (b[13] && b[13].pressed) || dy > DEAD;
-      const left = (b[14] && b[14].pressed) || dx < -DEAD;
-      const right = (b[15] && b[15].pressed) || dx > DEAD;
+      if (!padSeen[p.index]) padSeen[p.index] = now;
+      const axesLive = now - padSeen[p.index] > AXIS_GRACE_MS;
+      const x0 = axesLive && typeof ax[0] === "number" ? ax[0] : 0;
+      const y0 = axesLive && typeof ax[1] === "number" ? ax[1] : 0;
+      const up = (b[12] && b[12].pressed) || y0 < -DEAD;
+      const down = (b[13] && b[13].pressed) || y0 > DEAD;
+      const left = (b[14] && b[14].pressed) || x0 < -DEAD;
+      const right = (b[15] && b[15].pressed) || x0 > DEAD;
       edge("up", up, () => move("up"));
       edge("down", down, () => move("down"));
       edge("left", left, () => move("left"));
@@ -225,6 +232,13 @@
   }
   window.addEventListener("gamepadconnected", () => {
     enableTvMode();
+    // Android TV: NEVER poll gamepads. The remote (and any paired controller)
+    // already delivers real DPAD key events there, but it ALSO enumerates as a
+    // gamepad whose buttons mirror those keys — polling it double-fires every
+    // press and, worse, its first-input axis snapshot poisons direction
+    // detection (the reported focus bouncing). Key events are the only input
+    // path on TV; gamepad polling stays for consoles (Xbox/PS browsers).
+    if (window.__RENZO_TV) return;
     if (!padLoop) padLoop = requestAnimationFrame(pollPads);
   });
 
