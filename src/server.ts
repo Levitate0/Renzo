@@ -1,6 +1,7 @@
 import express, { type Request, type Response, type NextFunction } from "express";
-import { resolve } from "node:path";
-import { promises as fs, readFileSync } from "node:fs";
+import { resolve, join, sep } from "node:path";
+import { promises as fs, readFileSync, readdirSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { config, assertConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { db } from "./db.js";
@@ -17,6 +18,11 @@ import * as autodl from "./services/autodl.js";
 const log = logger("server");
 
 // Security headers — safe defaults for a public (cloudflared) deployment.
+// Inline-script hashes for the Next UI bootstrap (populated at boot when the
+// static export is served; empty for the legacy UI, which has no inline scripts —
+// this keeps CSP hash-based instead of falling back to 'unsafe-inline').
+let scriptSrcExtra = "";
+
 function securityHeaders(req: Request, res: Response, next: NextFunction): void {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -32,7 +38,7 @@ function securityHeaders(req: Request, res: Response, next: NextFunction): void 
       "img-src 'self' https: data:",
       "media-src 'self' https: blob:",
       "style-src 'self' 'unsafe-inline'",
-      "script-src 'self'",
+      "script-src 'self'" + scriptSrcExtra,
       "connect-src 'self'",
       "frame-ancestors 'none'",
       "base-uri 'self'",
@@ -120,22 +126,62 @@ async function main() {
     handler(req, res, next);
   });
 
-  // Static web UI (login shell + app). Public so the login page can load.
-  const publicDir = resolve("public");
-  // Cache-bust app.js/styles.css per build so clients never run stale JS against
-  // fresh markup (index.html itself is served no-store so it's always fresh).
-  const BUILD = Date.now().toString(36);
-  const indexHtml = readFileSync(resolve(publicDir, "index.html"), "utf8")
-    .replace('href="/styles.css"', `href="/styles.css?v=${BUILD}"`)
-    .replace('src="/app.js"', `src="/app.js?v=${BUILD}"`)
-    .replace('src="/tvnav.js"', `src="/tvnav.js?v=${BUILD}"`);
-  const sendIndex = (res: Response) => res.set("Cache-Control", "no-store").type("html").send(indexHtml);
   // Build id for clients (Electron desktop) to poll and auto-refresh on deploy.
   // Unauthenticated + no-store so the poll is cheap and always current.
+  const BUILD = Date.now().toString(36);
   app.get("/version", (_req, res) => res.set("Cache-Control", "no-store").json({ build: BUILD }));
-  app.use(express.static(publicDir, { index: false }));
-  app.get("/", (_req, res) => sendIndex(res));
-  app.get("*", (_req, res) => sendIndex(res));
+
+  // --- Web UI: Next.js static export (frontend/out) behind USE_NEXT_UI, else the
+  // legacy vanilla SPA in public/. The flag keeps cutover reversible: same image
+  // carries both UIs until the new one has proven parity.
+  const nextOut = resolve("frontend/out");
+  const useNextUi =
+    ["1", "true", "yes", "on"].includes((process.env.USE_NEXT_UI ?? "").toLowerCase()) &&
+    existsSync(join(nextOut, "index.html"));
+  if (useNextUi) {
+    // Next bootstraps with inline <script>s; collect their sha256 hashes at boot so
+    // CSP stays hash-based (no 'unsafe-inline'). The export is immutable per build,
+    // so boot-time hashing is complete.
+    const hashes = new Set<string>();
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.name.endsWith(".html")) {
+          const html = readFileSync(p, "utf8");
+          for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+            const body = m[1] ?? "";
+            if (body.trim()) hashes.add(`'sha256-${createHash("sha256").update(body).digest("base64")}'`);
+          }
+        }
+      }
+    };
+    walk(nextOut);
+    scriptSrcExtra = hashes.size ? " " + [...hashes].join(" ") : "";
+    log.info(`web UI: Next static export (frontend/out), ${hashes.size} inline-script hashes in CSP`);
+    app.use(
+      express.static(nextOut, {
+        setHeaders: (res, p) => {
+          if (p.endsWith(".html")) res.setHeader("Cache-Control", "no-store");
+          else if (p.includes(`${sep}_next${sep}`)) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        },
+      }),
+    );
+    const spaFallback = readFileSync(join(nextOut, "index.html"), "utf8");
+    app.get("*", (_req, res) => res.set("Cache-Control", "no-store").type("html").send(spaFallback));
+  } else {
+    // Legacy SPA. Cache-bust app.js/styles.css per build so clients never run
+    // stale JS against fresh markup (index.html itself is served no-store).
+    const publicDir = resolve("public");
+    const indexHtml = readFileSync(resolve(publicDir, "index.html"), "utf8")
+      .replace('href="/styles.css"', `href="/styles.css?v=${BUILD}"`)
+      .replace('src="/app.js"', `src="/app.js?v=${BUILD}"`)
+      .replace('src="/tvnav.js"', `src="/tvnav.js?v=${BUILD}"`);
+    const sendIndex = (res: Response) => res.set("Cache-Control", "no-store").type("html").send(indexHtml);
+    app.use(express.static(publicDir, { index: false }));
+    app.get("/", (_req, res) => sendIndex(res));
+    app.get("*", (_req, res) => sendIndex(res));
+  }
 
   app.listen(config.port, () => {
     log.info(`Renzo listening on ${config.publicUrl} (port ${config.port})`);

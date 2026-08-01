@@ -1,0 +1,69 @@
+// ---------------------------------------------------------------------------
+// Central API client — mirrors the old `api()` in public/app.js:20.
+//   * same-origin credentials, JSON in/out, /api prefix
+//   * 401  -> broadcast the auth-gate event (AuthProvider shows the login gate;
+//             never a redirect loop)
+//   * 402 realdebrid_required -> open the settings credentials pane + toast
+// Auth-flow endpoints (login/setup/reset/invite) call fetch directly in the
+// gates, exactly like the old app, so a 401 there can't re-trigger the gate.
+// ---------------------------------------------------------------------------
+import { toast } from "sonner";
+
+/** Fired on any 401 from the API — AuthProvider listens and shows the login gate. */
+export const AUTH_GATE_EVENT = "renzo:auth-gate";
+/** Fired to open a settings pane: detail = { pane: string }. GateHost routes it. */
+export const OPEN_SETTINGS_EVENT = "renzo:open-settings";
+/** Fired to open the offline Downloads gate (mode pill; phone/desktop only). */
+export const OPEN_DOWNLOADS_EVENT = "renzo:open-downloads";
+
+export function emitAppEvent(name: string, detail?: unknown): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+/** Ask the shell to open a settings pane (routes to /settings/?pane=…). */
+export function openSettings(pane = "credentials"): void {
+  emitAppEvent(OPEN_SETTINGS_EVENT, { pane });
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status = 0,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+  /** True when the failure was network-level (server unreachable / offline). */
+  get network(): boolean {
+    return this.status === 0;
+  }
+}
+
+export async function api<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, {
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      ...opts,
+    });
+  } catch {
+    throw new ApiError("Network error — server unreachable", 0);
+  }
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    if (res.status === 401) {
+      emitAppEvent(AUTH_GATE_EVENT);
+      throw new ApiError("unauthorized", 401);
+    }
+    if (res.status === 402 && err.error === "realdebrid_required") {
+      openSettings("credentials");
+      toast("Connect Real-Debrid to stream or download");
+      throw new ApiError("realdebrid_required", 402);
+    }
+    throw new ApiError(err.error || `${res.status}`, res.status);
+  }
+  if (res.status === 204) return null as T;
+  return (await res.json()) as T;
+}
