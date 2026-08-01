@@ -9,6 +9,8 @@
 // ---------------------------------------------------------------------------
 import { toast } from "sonner";
 
+import { isTv } from "@/lib/native";
+
 /** Fired on any 401 from the API — AuthProvider listens and shows the login gate. */
 export const AUTH_GATE_EVENT = "renzo:auth-gate";
 /** Fired to open a settings-family route: detail = { href: string }. GateHost routes it. */
@@ -83,8 +85,14 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
       throw new ApiError("unauthorized", 401);
     }
     if (res.status === 402 && err.error === "realdebrid_required") {
-      openSettings("credentials");
-      toast("Connect Real-Debrid to stream or download");
+      // TV: never auto-open the credentials page — a remote can't type API
+      // tokens and the settings-family `modal` root traps D-pad focus there.
+      if (isTv()) {
+        toast("Connect a debrid service to this account in the Renzo web app");
+      } else {
+        openSettings("credentials");
+        toast("Connect Real-Debrid to stream or download");
+      }
       throw new ApiError("realdebrid_required", 402);
     }
     throw new ApiError(err.error || `${res.status}`, res.status);

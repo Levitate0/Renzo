@@ -50,6 +50,10 @@
   function roots() {
     const vis = (id) => { const n = document.getElementById(id); return n && !n.classList.contains("hidden") ? n : null; };
     const blocking = vis("imgLightbox")
+      // An open Radix dialog/sheet (nav drawer, avatar editor…) portals to
+      // <body> OUTSIDE the app roots and traps focus — it must OWN navigation
+      // while open, or the D-pad fights the trap and can only reach its X.
+      || document.querySelector('[role="dialog"][data-state="open"]')
       || document.querySelector(".auth-gate:not(.hidden)")   // login / first-run setup / password reset
       || document.querySelector(".modal:not(.hidden)")
       || vis("offlineGate")
@@ -130,9 +134,9 @@
   // which is what makes Back breadcrumb correctly on TV instead of quitting from
   // mid-playback.
   function back() {
-    // An open Radix menu closes on Escape (its own handler) — remote Back
-    // must dismiss it rather than navigate the app underneath it.
-    if (radixOpen()) {
+    // An open Radix menu / dialog / drawer closes on Escape (its own handler)
+    // — remote Back must dismiss it rather than navigate the app underneath.
+    if (radixOpen() || document.querySelector('[role="dialog"][data-state="open"]')) {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       return true;
     }

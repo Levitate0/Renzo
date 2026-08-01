@@ -194,7 +194,14 @@ export function isTv(): boolean {
   return (
     !!window.__RENZO_TV ||
     document.documentElement.classList.contains("tv-nav") ||
-    document.body.classList.contains("tv-nav")
+    document.body.classList.contains("tv-nav") ||
+    // Synchronous fallback: the flag arrives via a native poke and the class
+    // via tvnav's deferred enable — both can lose a race against early boot
+    // logic (the credentials auto-nudge fired before either landed and
+    // navigated TVs into a settings trap). "AndroidTV" (no space) is our own
+    // shell's UA marker; the rest are stock TV/console browsers.
+    /Android TV|AndroidTV|AFT[A-Z]|BRAVIA|GoogleTV|Google TV|Web0S|WebOS|Tizen|SMART-TV|SmartTV|CrKey|Xbox|PlayStation/i
+      .test(navigator.userAgent)
   );
 }
 
