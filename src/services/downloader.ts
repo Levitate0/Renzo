@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { db } from "../db.js";
-import type { Title, EpisodeRecord, DownloadJob, TorrentResult, UserRecord } from "../types.js";
+import type { Title, EpisodeRecord, DownloadJob, DownloadStatus, TorrentResult, UserRecord } from "../types.js";
 import * as anilist from "./anilist.js";
 import * as torrents from "./torrents.js";
 import * as rd from "./realdebrid.js";
@@ -152,12 +152,29 @@ async function candidatesFor(t: Title, episode: number, preferredGroup?: string)
 // ---------------------------------------------------------------------------
 // Resolve a playable source: local file if we have it, else Real-Debrid link
 // ---------------------------------------------------------------------------
+/** The job fields a client may see — /api/jobs strips the same set. */
+export interface PublicDownloadJob {
+  id: string;
+  status: DownloadStatus;
+  /** 0..1 fraction, NOT a percentage. */
+  progress: number;
+  message?: string;
+}
+
+/** Never hand a raw DownloadJob to a client: it carries the magnet, the debrid
+ *  torrent id and the owning userId. /api/jobs has always stripped these; the
+ *  play responses were shipping them verbatim. */
+function publicJob(j: DownloadJob | undefined): PublicDownloadJob | undefined {
+  if (!j) return undefined;
+  return { id: j.id, status: j.status, progress: j.progress, message: j.message };
+}
+
 export interface ResolvedStream {
   source: "local" | "realdebrid" | "alldebrid";
   url: string;
   filename: string;
   subtitles: { id: string; label: string; lang: string }[];
-  downloading?: DownloadJob;
+  downloading?: PublicDownloadJob;
 }
 
 // Short-lived cache of resolved streams so the player can prefetch the next
@@ -188,7 +205,23 @@ async function cachedStillValid(data: ResolvedStream, ep: EpisodeRecord, userId:
   return !(ep.status === "downloaded" && ep.filePath);
 }
 
-export async function resolveStream(anilistId: number, episode: number, user: UserRecord): Promise<ResolvedStream> {
+// Coalesce concurrent resolves of the SAME episode. Two things make this worth
+// having: the batch endpoint abandons a resolve at its deadline and the client
+// retries (which would otherwise start a second magnet add for the same file),
+// and two devices playing the same episode used to hit the debrid API twice.
+// The stream cache only fills once a resolve COMPLETES, so it can't help here.
+const inFlight = new Map<string, Promise<ResolvedStream>>();
+
+export function resolveStream(anilistId: number, episode: number, user: UserRecord): Promise<ResolvedStream> {
+  const key = `${user.id}:${anilistId}:${episode}`;
+  const running = inFlight.get(key);
+  if (running) return running;
+  const p = resolveStreamNow(anilistId, episode, user).finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  return p;
+}
+
+async function resolveStreamNow(anilistId: number, episode: number, user: UserRecord): Promise<ResolvedStream> {
   const t = await getOrCreateTitle(anilistId);
   const ep = getUserEp(user, anilistId, episode);
   const cacheKey = `${user.id}:${anilistId}:${episode}`;
@@ -221,7 +254,7 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
       filename: ep.filePath.split("/").pop() ?? "",
       // Extracted release subs (English) first, then Jimaku (Japanese) as a fallback.
       subtitles: [...localSubs, ...await subtitleList(anilistId, episode, user.jimakuKey)],
-      downloading: activeJobFor(anilistId, episode, user.id),
+      downloading: publicJob(activeJobFor(anilistId, episode, user.id)),
     });
   }
 
@@ -255,7 +288,7 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
       url: `/sharedfiles/${owner.id}/` + ownerEp.filePath!.split("/").map(encodeURIComponent).join("/"),
       filename: ownerEp.filePath!.split("/").pop() ?? "",
       subtitles: [...sharedSubs, ...await subtitleList(anilistId, episode, user.jimakuKey)],
-      downloading: activeJobFor(anilistId, episode, user.id),
+      downloading: publicJob(activeJobFor(anilistId, episode, user.id)),
     };
   }
 
@@ -270,7 +303,7 @@ export async function resolveStream(anilistId: number, episode: number, user: Us
     url: link.download,
     filename: link.filename,
     subtitles: await subtitleList(anilistId, episode, user.jimakuKey), // use the user's key while streaming too
-    downloading: activeJobFor(anilistId, episode, user.id),
+    downloading: publicJob(activeJobFor(anilistId, episode, user.id)),
   });
 }
 

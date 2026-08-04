@@ -105,6 +105,11 @@ async function main() {
   app.use("/api/smtp", requireAuth, requireOwner, smtpRoutes);
   // --- Everything else requires a session ---
   app.use("/api", requireAuth, api);
+  // An unmatched /api GET used to fall through to the SPA catch-all and answer
+  // 200 with index.html — so a client that fetched a route this build doesn't
+  // have (an older server, a renamed endpoint) wrote HTML into whatever it was
+  // expecting, e.g. a .vtt sidecar. The API must always answer as an API.
+  app.use("/api", (_req, res) => { res.status(404).json({ error: "not found" }); });
   // --- Jellyfin plugin API (public; guarded by RENZO_PLUGIN_KEY) ---
   app.use("/jellyfin", jellyfinPluginRoutes);
 
@@ -124,10 +129,26 @@ async function main() {
     const uid = (req as AuthedRequest).user!.id;
     let handler = userStatic.get(uid);
     if (!handler) {
-      handler = express.static(userRoot(uid), { acceptRanges: true, dotfiles: "ignore" });
+      // fallthrough:false is load-bearing, not tidiness. express.static defaults
+      // to true, so a missing file (renamed, deleted, or still a .part) fell
+      // through to the SPA catch-all and answered 200 with index.html. A
+      // downloading client reads 200 as success and not-206 as "server ignored
+      // my Range", so it discarded its partial file and wrote 27 KB of HTML in
+      // place of a 2 GB episode. Missing media must 404.
+      handler = express.static(userRoot(uid), {
+        acceptRanges: true, dotfiles: "ignore", fallthrough: false,
+      });
       userStatic.set(uid, handler);
     }
     handler(req, res, next);
+  });
+  // fallthrough:false hands a 404 to the error chain; answer it as JSON, the
+  // same shape /sharedfiles uses, instead of Express's default HTML page.
+  app.use("/files", (err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) { next(err); return; }
+    const status = (err as { statusCode?: number; status?: number })?.statusCode
+      ?? (err as { status?: number })?.status ?? 404;
+    res.status(status >= 400 && status < 600 ? status : 404).json({ error: "not found" });
   });
 
   // Cross-account read-only media sharing (household dedupe): stream another

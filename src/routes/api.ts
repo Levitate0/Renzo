@@ -15,6 +15,7 @@ import * as library from "../services/library.js";
 import * as watch from "../services/watch.js";
 import * as mal from "../services/mal.js";
 import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, sharedCopy, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
+import type { ResolvedStream } from "../services/downloader.js";
 import * as previews from "../services/previews.js";
 import * as autodl from "../services/autodl.js";
 import { requireAdmin, mintDownloadToken, type AuthedRequest } from "../services/auth.js";
@@ -631,6 +632,91 @@ api.get("/titles/:id/play/:ep", wrap(async (req, res) => {
   res.json(resolved);
 }));
 
+// Batch resolve for a season download (client handoff 2026-08-03 §3.2).
+// One resolve can block ~45s in the debrid pipeline, so resolving a 12-episode
+// season one call at a time costs minutes before the first byte moves. This
+// resolves several at once and NEVER fails the batch: every requested episode
+// comes back with either a stream or its own error.
+const BATCH_MAX = 24;          // a season; longer requests are chunked by the client
+const BATCH_CONCURRENCY = 3;   // debrid providers rate-limit — don't fan out wide
+// Native clients read-time-out at 75s, so answer well inside that. Episodes that
+// don't make it are reported retriable, NOT failed: their resolve keeps running
+// and lands in the 8-minute stream cache, so the client's next call gets them
+// back immediately.
+const BATCH_DEADLINE_MS = 55_000;
+
+interface BatchResolveItem {
+  ep: number;
+  ok: boolean;
+  stream?: ResolvedStream;
+  error?: string;
+  /** false only for a permanent failure (no debrid connected). */
+  retriable?: boolean;
+}
+
+api.post("/titles/:id/play", wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const user = req.user!;
+  const asked: unknown = req.body?.episodes;
+  if (!Array.isArray(asked) || asked.length === 0) {
+    return res.status(400).json({ error: "episodes[] required" });
+  }
+  const eps = [...new Set(asked.map((n) => Math.max(1, Number(n) || 1)))].sort((a, b) => a - b);
+  const take = eps.slice(0, BATCH_MAX);
+  const overflow = eps.slice(BATCH_MAX);
+
+  const deadline = Date.now() + BATCH_DEADLINE_MS;
+  const done = new Map<number, BatchResolveItem>();
+  let cursor = 0;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const ep = take[cursor++];
+      if (ep === undefined) return;
+      const left = deadline - Date.now();
+      if (left <= 0) { done.set(ep, { ep, ok: false, error: "timeout", retriable: true }); continue; }
+      const pending = resolveStream(id, ep, user);
+      // The race abandons the loser: swallow a late rejection here or Node
+      // sees an unhandled promise rejection after we've already responded.
+      pending.catch(() => {});
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const stream = await Promise.race([
+          pending,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("timeout")), left);
+          }),
+        ]);
+        done.set(ep, { ep, ok: true, stream });
+      } catch (e) {
+        const error = String(e instanceof Error ? e.message : e);
+        // realdebrid_required is permanent for this user until they connect one
+        // — the client must not retry it per §6 of the client handoff.
+        done.set(ep, { ep, ok: false, error, retriable: error !== "realdebrid_required" });
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, take.length) }, worker));
+
+  const results: BatchResolveItem[] = take.map(
+    (ep) => done.get(ep) ?? { ep, ok: false, error: "timeout", retriable: true },
+  );
+  for (const ep of overflow) {
+    results.push({ ep, ok: false, error: "batch_too_large", retriable: true });
+  }
+
+  // No debrid connected at all fails every episode the same way — answer 402 so
+  // the existing "connect a debrid service" handling fires instead of the client
+  // reading a list of identical per-item errors.
+  if (results.length > 0 && results.every((r) => r.error === "realdebrid_required")) {
+    return res.status(402).json({ error: "realdebrid_required", results });
+  }
+  res.json({ results });
+}));
+
 // Scrub-preview frame for the player seek bar: ?at=<seconds>, snapped to a
 // 10s bucket, extracted from a LOCAL file (mine or a household shared copy)
 // and cached on disk. Debrid-only episodes 404 — clients fall back to the
@@ -785,6 +871,10 @@ api.get("/updates", wrap(async (req, res) => {
     id: number; type: string; title: string; poster: string | null;
     ep?: number; latest?: number; releasing?: boolean; upcoming?: boolean; year?: number | null;
     season?: number | null; key: number; sortYear: number; rank: number;
+    // Adult tags travel with the card or the feed is UNFILTERABLE: every client
+    // filters on `content` (falling back to `genres`), so an item with neither
+    // is always shown, whatever the user's "show up to" level says.
+    content: string[];
   }
   const items: Upd[] = [];
 
@@ -794,16 +884,23 @@ api.get("/updates", wrap(async (req, res) => {
     if (t.type === "series" && avail > w) {
       items.push({ kind: "episode", id: t.id, type: "series", title: t.english ?? t.romaji, poster: t.poster ?? null,
         ep: w + 1, latest: avail, releasing: t.airingStatus === "RELEASING",
-        key: canon(t.id), sortYear: t.year ?? 0, rank: 1 });
+        key: canon(t.id), sortYear: t.year ?? 0, rank: 1, content: contentTags(t.genres, t.isAdult) });
     } else if (t.type === "movie" && avail >= 1 && w < 1) {
       items.push({ kind: "movie", id: t.id, type: "movie", title: t.english ?? t.romaji, poster: t.poster ?? null,
-        key: canon(t.id), sortYear: t.year ?? 0, rank: 1 });
+        key: canon(t.id), sortYear: t.year ?? 0, rank: 1, content: contentTags(t.genres, t.isAdult) });
     }
   }
 
   // New seasons: sequels of saved titles that aren't in the library yet.
   const seenSeasons = new Set<number>();
   for (const id of libIds.slice(0, 20)) {
+    // A brand-new season isn't in the DB yet, so it has no genres of its own.
+    // Inherit the parent's tags: a sequel to an adult series is adult, and
+    // erring toward hiding is the right way to be wrong here.
+    const parentTags = ((): string[] => {
+      const p = db.getTitle(id);
+      return p ? contentTags(p.genres, p.isAdult) : [];
+    })();
     const ex = await anilist.detailExtra(id).catch(() => ({ seasons: [] as { id: number; title: string; poster: string | null; year: number | null; relation: string; status: string | null }[] }));
     for (const s of ex.seasons) {
       if (s.relation !== "SEQUEL" || inLib.has(s.id) || seenSeasons.has(s.id)) continue;
@@ -811,7 +908,7 @@ api.get("/updates", wrap(async (req, res) => {
       seenSeasons.add(s.id);
       items.push({ kind: "season", id: s.id, type: "series", title: s.title, poster: s.poster ?? null, year: s.year,
         upcoming: s.status === "NOT_YET_RELEASED", season: (s as { num?: number }).num ?? null,
-        key: canon(id), sortYear: s.year ?? 0, rank: 2 });
+        key: canon(id), sortYear: s.year ?? 0, rank: 2, content: parentTags });
     }
   }
 
@@ -923,8 +1020,20 @@ api.get("/captions/:id.vtt", wrap(async (req: AuthedRequest, res) => {
     res.type("text/vtt").send(vtt);
     return;
   }
-  const vtt = await captions.fetchAsVtt(req.params.id, req.user?.jimakuKey, (rel) => req.user ? captions.readUserVtt(req.user.id, rel) : Promise.resolve(null));
-  res.type("text/vtt").send(vtt);
+  // A sidecar that has been deleted or renamed is NOT a server fault: answer
+  // 404 so a downloading client skips the track. It used to surface as a 500,
+  // which the offline downloader treats as a failed item — throwing away an
+  // already-downloaded episode because its subtitle went missing.
+  try {
+    const vtt = await captions.fetchAsVtt(req.params.id, req.user?.jimakuKey, (rel) => req.user ? captions.readUserVtt(req.user.id, rel) : Promise.resolve(null));
+    res.type("text/vtt").send(vtt);
+  } catch (e) {
+    if (String(e instanceof Error ? e.message : e).includes("local subtitle unavailable")) {
+      res.status(404).json({ error: "subtitle unavailable" });
+      return;
+    }
+    throw e;
+  }
 }));
 
 // --- Tracker connections (per-user tokens) ----------------------------------

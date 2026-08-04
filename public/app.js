@@ -557,15 +557,17 @@ async function loadStatus() {
 // ---------------------------------------------------------------------------
 // Graduated "show up to" content level: none < ecchi < erotica < hentai
 // (cumulative). e.g. "erotica" shows ecchi + erotica but hides hentai. Persisted;
-// default "ecchi" (ecchi is mainstream; erotica + hentai hidden by default).
+// default "none" — a fresh user opts IN to adult content. Kept in step with the
+// Next UI (frontend/src/components/media/content-filter.tsx): this SPA is only
+// the LEGACY_UI=1 escape hatch, but it must not be a laxer way in.
 const CONTENT_LEVEL_KEY = "renzo:contentLevel";
 const CONTENT_LADDER = ["none", "ecchi", "erotica", "hentai"]; // ascending
 const CONTENT_LABELS = { none: "Off", ecchi: "Ecchi", erotica: "Erotica", hentai: "Hentai" };
 const CAT_RANK = { ecchi: 1, erotica: 2, hentai: 3 };
 let contentLevel = loadContentLevel();
 function loadContentLevel() {
-  try { const v = localStorage.getItem(CONTENT_LEVEL_KEY); return CONTENT_LADDER.includes(v) ? v : "ecchi"; }
-  catch { return "ecchi"; }
+  try { const v = localStorage.getItem(CONTENT_LEVEL_KEY); return CONTENT_LADDER.includes(v) ? v : "none"; }
+  catch { return "none"; }
 }
 function saveContentLevel() { try { localStorage.setItem(CONTENT_LEVEL_KEY, contentLevel); } catch {} }
 function levelRank(level) { return CONTENT_LADDER.indexOf(level); } // none=0 … hentai=3

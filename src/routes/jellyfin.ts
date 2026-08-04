@@ -134,11 +134,16 @@ jellyfinPluginRoutes.get("/api/stream", async (req, res) => {
   // AllDebrid accounts outright — and even their own local files.
   try {
     const r = await resolveStream(id, ep, user);
-    if (r.source === "local") {
+    if (r.source === "local" && r.url.startsWith("/files/")) {
       // /files/<enc path> -> serve directly (ranged) through the key-protected
       // file route; carry the SAME per-user key so it stays this user's file.
-      const rel = r.url.replace(/^\/files\//, "");
+      const rel = r.url.slice("/files/".length);
       res.redirect(302, `/jellyfin/api/file?p=${rel}&key=${encodeURIComponent(key)}`);
+    } else if (r.source === "local") {
+      // A household shared copy resolves to /sharedfiles/<ownerId>/… — another
+      // user's file, which the per-user /jellyfin/api/file route cannot serve.
+      // A blind prefix-strip used to build a broken redirect here.
+      res.status(409).json({ error: "episode is only available as another account's copy; download it on this account to stream it through the plugin" });
     } else {
       res.redirect(302, r.url); // direct Real-Debrid https link
     }

@@ -4,12 +4,17 @@ How to build, sign, deploy, and release every Renzo artifact: the **server / web
 (this repo), the **Android APK**, and the **Windows desktop app**.
 
 > **Where the code lives.** This repo (`Levitate0/Renzo`) is the **server + web app**
-> (`src/` + `public/`). The native client *source* is intentionally **not** committed —
-> it lives on the build host under `/opt/zurg-stack/renzo-clients/` (`capacitor/` for
-> Android, `desktop/` for Electron) alongside the signing material in `signing/`. Both
-> clients are thin shells that load the **user's own server** (no address is compiled in —
-> the app asks on first run), so **web-only
-> changes never need a client rebuild** — deploy the server and reload the app.
+> (`src/` + `frontend/`). The client *source* is intentionally **not** committed — it
+> lives on the build host under `/opt/zurg-stack/renzo-clients/` (`tv-native/` for
+> Android, `desktop/` for Electron) alongside the signing material in `signing/`.
+> No server address is compiled in — the app asks on first run.
+>
+> **The Android app is now NATIVE** (Kotlin + Compose, `tv-native/`), not a web shell.
+> Web changes therefore reach the browser and the Electron app on a redeploy, but
+> **do not reach the Android app at all** — anything the native client should show
+> has to be built into it and shipped as a new APK. The older `capacitor/` and
+> `android/` (raw WebView) client directories are **superseded**; see
+> `renzo-clients/README.md`.
 >
 > Paths below are this build host's layout; adapt them if you build elsewhere. **Never
 > commit secrets** — keystore / PFX passwords and API tokens are read from files on the
@@ -57,36 +62,42 @@ curl -s http://localhost:8787/api/health        # 401 unless authed — that's e
 
 ---
 
-## 2. Android app (Capacitor)  — `renzo-clients/capacitor`
+## 2. Android app (native Kotlin/Compose) — `renzo-clients/tv-native`
 
-A Capacitor 8 shell that loads **the server the user configures** and adds native plugins:
-`RenzoServer` (first-run server picker — no URL is baked in; the address is verified against
-`/version`, stored in SharedPreferences, and applied via `CapConfig.Builder.setServerUrl()` in
-`MainActivity.load()`; "Change server" in the account menu calls `RenzoServer.clear()`),
-`RenzoSaf` (SAF folder picker + offline playback), `RenzoDownloader` (foreground-service
-background downloader), and status-bar inset handling in `MainActivity`.
+**Fully native** — Kotlin + Jetpack Compose (`androidx.tv` tv-material) + Media3/ExoPlayer,
+talking to the server's HTTP API. No WebView, no web shell. ONE APK covers phones,
+tablets, Android TV and Fire TV (both `LAUNCHER` and `LEANBACK_LAUNCHER`, with `leanback`
+and `touchscreen` declared `required="false"`).
+
+> The `capacitor/` and `android/` (raw WebView) directories under `renzo-clients/` are
+> **superseded** and must not be built. Don't delete `android/` though — `android/sdk/`
+> is the shared Android SDK both this app and the Hub build against.
+
+Because the client is native, **it does not pick up web changes**: anything it should
+display has to be implemented in Kotlin and shipped as a new APK.
 
 **Toolchain (already installed on the build host):**
 
 | Tool | Location / version |
 |------|--------------------|
-| JDK  | **21** at `/opt/jdk21` (Capacitor 8 plugins require 21, not the system 17) |
+| JDK  | **21** at `/opt/jdk21` (pinned via `org.gradle.java.home` in `gradle.properties`) |
 | Android SDK | `/opt/zurg-stack/renzo-clients/android/sdk` — platform **android-36**, build-tools **36.0.0** (`local.properties` → `sdk.dir=…`) |
-| Gradle | wrapper **8.14.3** (`./gradlew`) |
-| SDK levels | `minSdk 24`, `compileSdk`/`targetSdk 36` (see `android/variables.gradle`) |
+| Gradle / AGP | wrapper **8.14.3** / AGP **8.13** |
+| SDK levels | `minSdk 24`, `compileSdk`/`targetSdk 36` (`app/build.gradle.kts`) |
 
 **Build the release APK:**
 
 ```bash
-cd /opt/zurg-stack/renzo-clients/capacitor/android
-export JAVA_HOME=/opt/jdk21
-export PATH="$JAVA_HOME/bin:$PATH"
-export ANDROID_HOME=/opt/zurg-stack/renzo-clients/android/sdk
-./gradlew :app:assembleRelease --console=plain --no-daemon
+cd /opt/zurg-stack/renzo-clients/tv-native
+./gradlew :app:assembleRelease --console=plain
 # -> app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-**Sign** (there is no `signingConfig` in Gradle — sign the unsigned APK afterwards):
+There is also a `demo` build type used only to shoot Play listing screenshots — it
+swaps every image from the server for Renzo-icon placeholders so no third-party cover
+art lands in the store. See `renzo-clients/tv-native/DEMO-BUILD.md`. **Never publish it.**
+
+**Sign** (no `signingConfig` in Gradle — sign the unsigned APK afterwards):
 
 ```bash
 cd /opt/zurg-stack/renzo-clients
@@ -94,7 +105,7 @@ BT=android/sdk/build-tools/36.0.0
 # Keystore password (store == key) is read from CREDENTIALS.txt — never echo it.
 KSPASS="$(grep 'store/key pass' signing/CREDENTIALS.txt | awk -F': ' '{print $2}')"
 "$BT/zipalign" -f -p 4 \
-  capacitor/android/app/build/outputs/apk/release/app-release-unsigned.apk artifacts/_a.apk
+  tv-native/app/build/outputs/apk/release/app-release-unsigned.apk artifacts/_a.apk
 "$BT/apksigner" sign --ks signing/renzo-release.jks --ks-pass "pass:$KSPASS" \
   --ks-key-alias renzo --key-pass "pass:$KSPASS" --min-sdk-version 24 \
   --out artifacts/Renzo.apk artifacts/_a.apk
@@ -103,10 +114,14 @@ rm -f artifacts/_a.apk
 "$BT/aapt2" dump badging artifacts/Renzo.apk | grep -o "versionCode='[0-9]*' versionName='[^']*'"
 ```
 
-**Versioning:** bump `versionCode` in `capacitor/android/app/build.gradle` on **every**
-build (Android requires a higher `versionCode` to update in place). `versionName` can stay
-the same within a release (e.g. `1.2.0`, versionCode 10 → 11 → 12…) — a higher versionCode
+**Versioning:** bump `versionCode` in `tv-native/app/build.gradle.kts` on **every** build
+(Android requires a higher `versionCode` to update in place). `versionName` can stay the
+same within a release (e.g. `1.3.1`, versionCode 42 → 43 → 44…) — a higher versionCode
 installs over the existing app and **keeps user data**. Same keystore = in-place update.
+
+**applicationId `top.levitatemedia.renzo` and `signing/renzo-release.jks` are permanent**
+— the Play listing is bound to both. Renaming the package means a new listing with no
+install base; losing the key means every user must uninstall and reinstall.
 
 **TV support:** the manifest declares a `LEANBACK_LAUNCHER` category + `uses-feature`
 `leanback`/`touchscreen` `required=false` + a 320×180 `@drawable/renzo_tv_banner`, so the SAME
@@ -118,15 +133,15 @@ Play needs an **`.aab`** (App Bundle), not an APK, and uses **Play App Signing**
 signed with your keystore as the *upload key*; Google re-signs for distribution).
 
 ```bash
-cd capacitor/android
-./gradlew :app:bundleRelease --no-daemon
+cd tv-native
+./gradlew :app:bundleRelease
 # -> app/build/outputs/bundle/release/app-release.aab   (unsigned)
 # Sign with the keystore as the upload key (jarsigner, not apksigner — AABs are JAR-signed):
-KSPASS="$(grep 'store/key pass' ../../signing/CREDENTIALS.txt | awk -F': ' '{print $2}')"
-jarsigner -keystore ../../signing/renzo-release.jks -storepass "$KSPASS" -keypass "$KSPASS" \
-  -sigalg SHA256withRSA -digestalg SHA-256 -signedjar ../../artifacts/Renzo.aab \
+KSPASS="$(grep 'store/key pass' ../signing/CREDENTIALS.txt | awk -F': ' '{print $2}')"
+jarsigner -keystore ../signing/renzo-release.jks -storepass "$KSPASS" -keypass "$KSPASS" \
+  -sigalg SHA256withRSA -digestalg SHA-256 -signedjar ../artifacts/Renzo.aab \
   app/build/outputs/bundle/release/app-release.aab renzo
-jarsigner -verify ../../artifacts/Renzo.aab
+jarsigner -verify ../artifacts/Renzo.aab
 ```
 
 **Distribution (no sideloading):** this app can't go on a **public** Play listing (anime
@@ -191,8 +206,8 @@ client binaries live in releases, and client *source* is not tracked here.
 
 | I changed… | Rebuild | Users get it by |
 |------------|---------|-----------------|
-| `src/` or `public/` (server/web) | `docker compose up -d --build renzo` (from `/opt/zurg-stack`) | reloading the web app / any client (they load the remote UI) |
-| `capacitor/` Java or config | Gradle `assembleRelease` + sign + release | reinstalling the APK (versionCode bump) |
+| `src/` or `frontend/` (server/web) | `docker compose up -d --build renzo` (from `/opt/zurg-stack`) | reloading the web app or the Electron client — **not** the Android app, which is native |
+| `tv-native/` Kotlin or resources | Gradle `assembleRelease` + sign + release | reinstalling the APK (versionCode bump) |
 | `desktop/` main/preload | `npm run dist` + release | installing the new `.exe` |
 
 **Commit trailer** for repo commits:

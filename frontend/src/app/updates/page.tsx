@@ -26,7 +26,9 @@ function UpdatesView() {
     poster: u.poster,
     year: u.year ?? null,
     genres: [],
-    content: [],
+    // Pass the server's adult tags through — hardcoding [] here made every
+    // updates card unhideable regardless of the content level.
+    content: u.content ?? [],
     updKind: u.kind,
     ep: u.ep,
     upcoming: u.upcoming,

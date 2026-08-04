@@ -4,8 +4,11 @@
 // Graduated "show up to" content filter — port of public/app.js:556-611.
 // none < ecchi < erotica < hentai (cumulative): picking "erotica" shows ecchi
 // + erotica but hides hentai. Persisted under the OLD localStorage key so an
-// upgraded install keeps the user's choice; default "ecchi" (mainstream —
-// erotica + hentai hidden by default). Filtering is client-side over the
+// upgraded install keeps the user's choice; default "none" — a FRESH user sees
+// no adult content until they opt in. That default is a store-listing
+// commitment as much as a taste call: the Play content-rating questionnaire
+// asks what a user can reach, and "hidden until opted into" is the answer the
+// listing is rated on. Filtering is client-side over the
 // card's `content` tags (server-computed), falling back to genres for MAL
 // fallback cards (old contentCatsOf).
 // The chip ladder renders on every platform, including TV: old
@@ -44,15 +47,15 @@ function readStored(): ContentLevel {
     const v = localStorage.getItem(CONTENT_LEVEL_KEY);
     return (CONTENT_LADDER as readonly string[]).includes(v ?? "")
       ? (v as ContentLevel)
-      : "ecchi";
+      : "none";
   } catch {
-    return "ecchi";
+    return "none";
   }
 }
 
 export function getContentLevel(): ContentLevel {
   if (cached === null) {
-    cached = typeof window === "undefined" ? "ecchi" : readStored();
+    cached = typeof window === "undefined" ? "none" : readStored();
   }
   return cached;
 }
@@ -74,7 +77,9 @@ function subscribe(fn: () => void): () => void {
 
 /** Reactive content level (shared across every chip ladder + grid). */
 export function useContentLevel(): [ContentLevel, (l: ContentLevel) => void] {
-  const level = useSyncExternalStore(subscribe, getContentLevel, () => "ecchi" as ContentLevel);
+  // Server snapshot must match the fresh-user default, or the first paint
+  // would flash adult cards before hydration corrects it.
+  const level = useSyncExternalStore(subscribe, getContentLevel, () => "none" as ContentLevel);
   const set = useCallback((l: ContentLevel) => setContentLevel(l), []);
   return [level, set];
 }

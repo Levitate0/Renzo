@@ -370,6 +370,8 @@ export interface UpdateItem {
   year?: number | null;
   season: number | null;
   seasonPart: number | null;
+  /** Adult tags, so the "show up to" filter applies here like everywhere else. */
+  content?: string[];
 }
 
 // --- Jobs / downloads -------------------------------------------------------

@@ -10,7 +10,8 @@
 //                topbar already navigates here when the user types.
 // Search wins over category; "‹ Back" clears search (old #discoverBack) or
 // leaves the category view. Content chips sit at the top in every mode (old
-// #browseContentChips) and are hidden on TV.
+// #browseContentChips) — on EVERY platform including TV, where they are plain
+// <button>s that tvnav's D-pad discovery picks up.
 // ---------------------------------------------------------------------------
 
 import { useQuery } from "@tanstack/react-query";
