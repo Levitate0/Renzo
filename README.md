@@ -93,11 +93,15 @@ npm install
 npm run build && npm start   # or: npm run dev
 ```
 
-### Building the native apps + releases
+### Clients
 
-The Android APK and Windows desktop app are thin shells that load this same web app, so
-**web changes need no client rebuild**. Full build/sign/release instructions for the
-server, the APK (Capacitor), and the `.exe` (Electron) live in **[BUILD.md](./BUILD.md)**.
+The **Windows desktop app** is an Electron shell that loads this same web app, so web
+changes reach it on a redeploy with no client rebuild. Build, sign and release
+instructions for the server and the `.exe` live in **[BUILD.md](./BUILD.md)**.
+
+**Phones, tablets and TV are served by Renzo Hub**, a separate native application that
+carries both Renzo and Renzo Shiori. It is not built or released from this repo; it
+talks to this server over `/api` like any other client.
 
 ---
 
