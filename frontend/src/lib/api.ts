@@ -10,6 +10,7 @@
 import { toast } from "sonner";
 
 import { isTv } from "@/lib/native";
+import type { ResumeMap, ResumeSaveResult } from "@/lib/types";
 
 /** Fired on any 401 from the API — AuthProvider listens and shows the login gate. */
 export const AUTH_GATE_EVENT = "renzo:auth-gate";
@@ -100,3 +101,36 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
   if (res.status === 204) return null as T;
   return (await res.json()) as T;
 }
+
+// --- Resume position --------------------------------------------------------
+// Where playback stopped inside an episode, stored per user on the server so a
+// phone and the web player continue each other. The "is this worth keeping"
+// policy (too near the start / too near the end -> drop it) lives in
+// src/routes/api.ts ONLY: clients post freely and read `saved` back.
+
+/** Every saved position of one title, keyed by episode number. */
+export function getResume(titleId: number): Promise<ResumeMap> {
+  return api<ResumeMap>(`/titles/${titleId}/resume`);
+}
+
+/**
+ * Store the current position. `durationMs` may be 0 when unknown.
+ * `keepalive` lets the browser finish the request after the page is gone —
+ * needed on the pagehide/hidden path, where a normal fetch is cancelled.
+ */
+export function saveResume(
+  titleId: number,
+  ep: number,
+  positionMs: number,
+  durationMs: number,
+  keepalive = false,
+): Promise<ResumeSaveResult> {
+  return api<ResumeSaveResult>(`/titles/${titleId}/resume/${ep}`, {
+    method: "POST",
+    body: JSON.stringify({ positionMs, durationMs }),
+    keepalive,
+  });
+}
+// No client wrapper for DELETE /titles/:id/resume/:ep on purpose: every way the
+// UI drops a position (episode ended, mark watched, mark season watched) already
+// clears it server-side, so a client-side clear would be an unused second path.

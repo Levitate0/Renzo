@@ -137,6 +137,13 @@ async function main() {
       // place of a 2 GB episode. Missing media must 404.
       handler = express.static(userRoot(uid), {
         acceptRanges: true, dotfiles: "ignore", fallthrough: false,
+        // NEVER let a shared cache hold these. express.static defaults to
+        // `Cache-Control: public, max-age=0`, and /files paths are relative to
+        // each user's own root — so /files/Library/Show/S01E01.mkv is the SAME
+        // URL for every account with different bytes behind it. A `public`
+        // response in front of a CDN is a cross-user content leak waiting to
+        // happen, and this hostname sits behind Cloudflare.
+        setHeaders: (res) => { res.setHeader("Cache-Control", "private, no-store"); },
       });
       userStatic.set(uid, handler);
     }
@@ -166,7 +173,11 @@ async function main() {
       (e) => e.status === "downloaded" && e.filePath === rel,
     );
     if (!known) { res.status(404).json({ error: "not found" }); return; }
-    res.sendFile(rel, { root: userRoot(owner.id), acceptRanges: true, dotfiles: "deny" }, (err) => {
+    res.sendFile(rel, {
+      root: userRoot(owner.id), acceptRanges: true, dotfiles: "deny",
+      // Same reasoning as /files: per-user content on a shareable URL.
+      headers: { "Cache-Control": "private, no-store" },
+    }, (err) => {
       if (err && !res.headersSent) res.status(404).json({ error: "not found" });
     });
   });

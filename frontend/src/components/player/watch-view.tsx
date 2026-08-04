@@ -33,11 +33,11 @@ import {
 } from "@/components/player/season-utils";
 import { Topbar } from "@/components/shell/topbar";
 import { useAuth } from "@/contexts/auth-context";
-import { api } from "@/lib/api";
+import { api, getResume, saveResume } from "@/lib/api";
 import { getOffline, offlineDetail, playbackFor, queueWatched } from "@/lib/offline";
 import { useTvBodyState } from "@/lib/tv";
 import { cn } from "@/lib/utils";
-import type { Job, SeasonRef, TitleDetail, WatchResolve } from "@/lib/types";
+import type { Job, ResumeMap, SeasonRef, TitleDetail, WatchResolve } from "@/lib/types";
 
 // What GET /titles/:id/play/:ep actually returns (ResolvedStream + the active
 // job for this episode, downloader.ts:208 — lib/types' ResolvedStream omits it).
@@ -73,6 +73,64 @@ interface CcTrackRef {
   track: TextTrack;
 }
 
+/** One title's saved positions, loaded once per watch session and kept in sync
+ *  with what we post so re-opening an episode mid-session isn't stale. */
+interface ResumeStore {
+  titleId: number;
+  points: ResumeMap;
+  /** Resolves when the read attempts have settled — check `loaded` for success. */
+  ready: Promise<void>;
+  /** True once a GET actually came back. Until then `points` says nothing about
+   *  what is stored, so we must not post: playing from 0 for ten seconds would
+   *  post ~10s and the server's "barely started" rule would DELETE the real
+   *  position. A read we never saw must never be able to destroy it. */
+  loaded: boolean;
+  /** A GET is in flight — don't stack a second one on top of it. */
+  loading: boolean;
+}
+
+/** Per-episode resume bookkeeping (reset by goToEp on every switch). */
+interface ResumeRun {
+  ep: number;
+  /** Last position/duration seen while the <video> was still mounted, and the
+   *  ONLY thing saves are built from. React nulls `videoRef.current` during the
+   *  commit phase — before passive effect cleanups run — so a teardown save
+   *  that reads the ref finds nothing; these survive it. Kept fresh by the
+   *  `timeupdate`/`seeked`/`pause` recorder below (0 while `awaitingSeek`). */
+  positionMs: number;
+  durationMs: number;
+  /** True until the resume seek has been applied — posting `currentTime` while
+   *  the element is still at 0 would wipe the very position we're restoring. */
+  awaitingSeek: boolean;
+  /** Latched on `ended`: "mark watched" clears the position server-side, and a
+   *  late periodic save must not put it back. Cleared again if playback leaves
+   *  the end (a rewatch must still be saved). */
+  ended: boolean;
+  /** Position of the last POST the server answered, for the tick's "has this
+   *  actually moved?" check. */
+  lastSavedMs: number;
+  /** This episode started at 0 because the read hadn't landed. If it lands
+   *  later and holds a position, saving over it would destroy a point we never
+   *  got to offer — so we hold off until playback passes it. */
+  blindStart: boolean;
+}
+
+const RESUME_SAVE_MS = 10_000;
+/** One retry for the initial read: a single blip on mobile wifi shouldn't cost
+ *  the session its position (and with it the ability to save at all). */
+const RESUME_RETRY_MS = 2_000;
+/** Mirrors of the server's thresholds (src/routes/api.ts RESUME_MIN_MS /
+ *  RESUME_TAIL_MS). The server stays the authority on what gets STORED — these
+ *  only stop the client doing work whose outcome is already known: posting a
+ *  position it would reject, and seeking to one it would never have kept. */
+const RESUME_MIN_MS = 15_000;
+const RESUME_TAIL_MS = 60_000;
+/** Below this the periodic save is skipped: every POST rewrites the whole
+ *  db.json server-side, and a buffering stall would re-post the same second
+ *  every tick. Deltas accumulate (`lastSavedMs` only moves on a real answer),
+ *  so slow playback is delayed, never starved. Teardown saves ignore this. */
+const RESUME_MIN_DELTA_MS = 5_000;
+
 function clearTracks(video: HTMLVideoElement): void {
   video.querySelectorAll("track").forEach((t) => t.remove());
 }
@@ -99,6 +157,16 @@ export function WatchView() {
     tracks: [],
     active: -1,
     handler: null,
+  });
+  const resumeRef = useRef<ResumeStore | null>(null);
+  const runRef = useRef<ResumeRun>({
+    ep: 0,
+    positionMs: 0,
+    durationMs: 0,
+    awaitingSeek: false,
+    ended: false,
+    lastSavedMs: 0,
+    blindStart: false,
   });
   const userRef = useRef(user);
   userRef.current = user;
@@ -261,6 +329,148 @@ export function WatchView() {
     };
   }, []);
 
+  // --- resume position (server-owned, see src/routes/api.ts) ----------------
+  // One GET per watch session: it returns every saved episode of the title, so
+  // switching episodes in place costs no extra round-trip. The 15s / last-60s
+  // "is it worth keeping" policy is the server's — we post and take its word.
+
+  /** Read the title's positions, once, retrying a single failure. Never throws:
+   *  a store that stays `loaded: false` just plays from 0 and saves nothing. */
+  const loadResume = useCallback((store: ResumeStore): Promise<void> => {
+    if (store.loaded || store.loading) return store.ready;
+    store.loading = true;
+    const attempt = (canRetry: boolean): Promise<void> =>
+      getResume(store.titleId)
+        .then((m) => {
+          // Never clobber a position we already wrote during this session.
+          for (const [k, v] of Object.entries(m)) store.points[k] ??= v;
+          store.loaded = true;
+        })
+        .catch(() =>
+          canRetry
+            ? new Promise<void>((r) => setTimeout(r, RESUME_RETRY_MS)).then(() => attempt(false))
+            : undefined,
+        );
+    store.ready = attempt(true).finally(() => {
+      store.loading = false;
+    });
+    return store.ready;
+  }, []);
+
+  const resumeStore = useCallback(
+    (titleId: number): ResumeStore => {
+      const cur = resumeRef.current;
+      if (cur && cur.titleId === titleId) return cur;
+      const store: ResumeStore = {
+        titleId,
+        points: {},
+        ready: Promise.resolve(),
+        loaded: false,
+        loading: false,
+      };
+      resumeRef.current = store;
+      return store;
+    },
+    [],
+  );
+
+  /** Seek this episode to its saved position once the media can accept it.
+   *  Never awaited by the caller — playback starts from 0 regardless. */
+  const applyResume = useCallback(
+    async (video: HTMLVideoElement, titleId: number, epN: number, gen: number) => {
+      const store = resumeStore(titleId);
+      await loadResume(store); // retries here too, so a later episode gets a fresh chance
+      if (genRef.current !== gen || !watchRef.current) return; // switched episode meanwhile
+      runRef.current.blindStart = !store.loaded;
+      const positionMs = store.points[String(epN)]?.positionMs ?? 0;
+      if (positionMs <= 0) {
+        runRef.current.awaitingSeek = false;
+        return;
+      }
+      const seek = () => {
+        if (genRef.current !== gen) return;
+        // Check the point against THIS file: the stored durationMs may be 0 (the
+        // server skips its tail rule when duration is unknown) and the release
+        // behind an episode can change between sessions. Seeking at/after the
+        // end fires `ended` on its own, which marks the episode watched and
+        // auto-advances — so anything in the last minute starts from 0 instead.
+        const durationMs =
+          Number.isFinite(video.duration) && video.duration > 0
+            ? Math.floor(video.duration * 1000)
+            : 0;
+        if (durationMs > 0 && positionMs >= durationMs - RESUME_TAIL_MS) {
+          runRef.current.awaitingSeek = false;
+          return;
+        }
+        video.currentTime = positionMs / 1000;
+        runRef.current.awaitingSeek = false;
+      };
+      // Setting currentTime before the browser knows the duration is silently
+      // dropped, so wait for metadata unless it is already there.
+      if (video.readyState >= 1) seek();
+      else video.addEventListener("loadedmetadata", seek, { once: true });
+    },
+    [loadResume, resumeStore],
+  );
+
+  /**
+   * Post where we are now. Safe to call from any teardown path — duplicates are
+   * harmless (last write wins) and the server drops positions not worth keeping.
+   *
+   * Deliberately does NOT touch `videoRef`: on unmount React has already nulled
+   * it by the time this runs, so the position comes from the run object, which
+   * the video listeners keep current. Every path (tick, pause, pagehide,
+   * episode switch, unmount) therefore saves the same value.
+   */
+  const saveResumeNow = useCallback(
+    (keepalive = false) => {
+      const w = watchRef.current;
+      const run = runRef.current;
+      if (!w || w.ep == null) return;
+      // The `ended` latch also covers the `pause` that browsers fire on the way
+      // into `ended` (onPause skips it) — that save could otherwise land after
+      // /watched wiped the position.
+      if (run.ep !== w.ep || run.ended || run.awaitingSeek) return;
+      if (typeof navigator !== "undefined" && !navigator.onLine) return; // offline: nothing to post to
+      const store = resumeRef.current;
+      if (!store || store.titleId !== w.titleId) return;
+      if (!store.loaded) {
+        // We never saw what is stored — posting now could delete it. Take the
+        // failed read as the thing to fix instead of writing over the position.
+        void loadResume(store);
+        return;
+      }
+      const { positionMs, durationMs } = run;
+      if (positionMs <= 0) return; // nothing played yet — don't overwrite with 0
+      const { titleId, ep: epN } = w;
+      const key = String(epN);
+      // The read landed only after this episode had already started from 0: the
+      // position it brought was never offered to the viewer, so don't move it
+      // backwards. Once they watch past it, saving is plainly the right thing.
+      const unapplied = run.blindStart ? (store.points[key]?.positionMs ?? 0) : 0;
+      if (positionMs < unapplied) return;
+      // Under the server's floor it stores nothing, so the request buys a whole
+      // db.json rewrite to be told "no" — every episode's first tick used to do
+      // exactly that. The one sub-floor post still worth making is over a point
+      // that EXISTS: there the rejection is the thing we want (rewinding to the
+      // top must not leave the old position behind), and the server decides.
+      if (positionMs < RESUME_MIN_MS && !store.points[key]) return;
+      saveResume(titleId, epN, positionMs, durationMs, keepalive)
+        .then((r) => {
+          const cur = runRef.current;
+          if (cur.ep === epN) cur.lastSavedMs = positionMs; // the tick's moved-since check
+          // The read is settled before we ever post, so nothing can arrive later
+          // and undo this. Mirror what the server just did with the point.
+          if (resumeRef.current !== store) return; // different title now
+          if (cur.ep === epN && cur.ended) return; // finished mid-flight: /watched cleared it
+          if (r.saved) store.points[key] = r.saved;
+          else delete store.points[key];
+        })
+        .catch(() => {}); // a lost position is not worth interrupting playback for
+    },
+    [loadResume],
+  );
+
   // --- switch episode WITHOUT reloading (old goToEp) ------------------------
   const goToEp = useCallback(
     async (target: number) => {
@@ -275,7 +485,17 @@ export function WatchView() {
         toast("That episode hasn't aired yet");
         return;
       }
+      saveResumeNow(); // outgoing episode — before w.ep moves to the new one
       w.ep = epN;
+      runRef.current = {
+        ep: epN,
+        positionMs: 0,
+        durationMs: 0,
+        awaitingSeek: true,
+        ended: false,
+        lastSavedMs: 0,
+        blindStart: false,
+      };
       const gen = ++genRef.current; // guard against out-of-order stream resolves
       setAutoNext(null);
       setEp(epN);
@@ -333,6 +553,7 @@ export function WatchView() {
           video.append(track);
         });
         video.load();
+        void applyResume(video, w.titleId, epN, gen); // continue where any device left off
         video.play().catch(() => {});
         setupCaptions(video); // custom caption rendering + language menu + preferred language
         showControls();
@@ -348,7 +569,7 @@ export function WatchView() {
         setNote((e as Error).message || String(e));
       }
     },
-    [prefetchNext, setupCaptions, showControls, watchJob],
+    [applyResume, prefetchNext, saveResumeNow, setupCaptions, showControls, watchJob],
   );
 
   // --- enter/leave the watch session (old enterWatch/exitWatch) -------------
@@ -360,6 +581,13 @@ export function WatchView() {
       if (epParam && epParam !== cur.ep) void goToEp(epParam);
       return;
     }
+
+    // A different series on the SAME route (the in-player season <select> pushes
+    // a new ?id=): nothing unmounts, and the new WatchState — ep: null — is
+    // installed below before goToEp gets a chance to save, which would make its
+    // outgoing save a no-op. Post the position now, while the state and the run
+    // it belongs to are still the current ones.
+    saveResumeNow();
 
     let cancelled = false;
     (async () => {
@@ -406,7 +634,13 @@ export function WatchView() {
   // Teardown on unmount (old exitWatch).
   useEffect(() => {
     const pollers = pollersRef.current;
+    // Captured at SETUP, while the element is still ours: React detaches refs
+    // (`ref.current = null`) in the commit phase, before this cleanup runs, so
+    // reading videoRef here would find null and silently skip the stop.
+    const video = videoRef.current;
     return () => {
+      // Reads the run object, not the element — see saveResumeNow.
+      saveResumeNow(); // last position before the element and watch state go away
       const st = ccRef.current;
       if (st.active >= 0 && st.tracks[st.active] && st.handler) {
         st.tracks[st.active]!.track.removeEventListener("cuechange", st.handler);
@@ -420,7 +654,6 @@ export function WatchView() {
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
       pollers.forEach((iv) => clearInterval(iv));
       pollers.clear();
-      const video = videoRef.current;
       if (video) {
         video.pause();
         video.removeAttribute("src");
@@ -437,18 +670,57 @@ export function WatchView() {
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
+    // The `ended` latch stops a late save from resurrecting a finished episode,
+    // but holding it for good would silently drop a rewatch. `ended` flips back
+    // to false the moment playback leaves the end, so this needs no threshold of
+    // its own (the "worth keeping" call stays the server's).
+    const leaveEnded = () => {
+      const run = runRef.current;
+      if (run.ended && !v.ended) {
+        run.ended = false;
+        run.lastSavedMs = 0; // whatever we posted before the end says nothing now
+      }
+    };
+    // The single place playback position is read off the element. Everything
+    // that saves uses what this leaves on the run object, so a teardown running
+    // after React detached the ref still knows where the viewer was. Cheap
+    // enough for `timeupdate` (~4x/s): two assignments, no state, no request.
+    const record = () => {
+      const run = runRef.current;
+      if (run.awaitingSeek) return; // still at 0, pre-resume-seek — not a position
+      run.positionMs = Math.floor(v.currentTime * 1000);
+      run.durationMs = Number.isFinite(v.duration) ? Math.floor(v.duration * 1000) : 0;
+    };
     const onPlay = () => {
       setPaused(false);
+      leaveEnded();
       showControls();
+    };
+    const onSeeked = () => {
+      leaveEnded();
+      record();
     };
     const onPause = () => {
       setPaused(true);
       showControls();
+      record();
+      // Ending playback fires `pause` just before `ended` (the latch isn't set
+      // yet): saving here could land after /watched cleared the position.
+      if (v.ended) return;
+      saveResumeNow();
     };
     const onEnded = async () => {
       const w = watchRef.current;
       if (!w || w.ep == null) return;
+      // Latch BEFORE the awaits: /watched clears the position server-side, and
+      // an in-flight periodic save must not write it back.
+      if (runRef.current.ep === w.ep) runRef.current.ended = true;
       const { titleId, ep: endedEp, detail: d } = w; // capture: watch may change during await
+      // Mirror the server's clearResume on /watched: the cached point is gone
+      // there, so coming back to this episode in the same session must not seek
+      // to whatever the last tick happened to store.
+      const store = resumeRef.current;
+      if (store && store.titleId === titleId) delete store.points[String(endedEp)];
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         queueWatched(titleId, endedEp); // sync on reconnect
       } else {
@@ -476,14 +748,49 @@ export function WatchView() {
       }
     };
     v.addEventListener("play", onPlay);
+    v.addEventListener("timeupdate", record);
+    v.addEventListener("seeked", onSeeked);
     v.addEventListener("pause", onPause);
     v.addEventListener("ended", onEnded);
     return () => {
       v.removeEventListener("play", onPlay);
+      v.removeEventListener("timeupdate", record);
+      v.removeEventListener("seeked", onSeeked);
       v.removeEventListener("pause", onPause);
       v.removeEventListener("ended", onEnded);
     };
-  }, [queryClient, showControls]);
+  }, [queryClient, saveResumeNow, showControls]);
+
+  // --- persist the position: every 10s of playback + on the way out ---------
+  useEffect(() => {
+    // An interval, not `timeupdate` — that fires ~4x a second and only records
+    // the position on the run object; posting stays on this 10s beat.
+    const iv = setInterval(() => {
+      const v = videoRef.current;
+      if (!v || v.paused || v.ended) return;
+      // A stalled/buffering element sits on the same second: re-posting it costs
+      // a full db.json rewrite for nothing. Pause and teardown still save
+      // unconditionally, so the exact stop point is never lost. Compare the same
+      // value a save would post, so the two can't disagree.
+      const run = runRef.current;
+      if (Math.abs(run.positionMs - run.lastSavedMs) < RESUME_MIN_DELTA_MS) return;
+      saveResumeNow();
+    }, RESUME_SAVE_MS);
+    // Backgrounding a phone browser fires visibilitychange/pagehide and often
+    // nothing else — `beforeunload` is not dispatched on mobile Safari/Chrome
+    // when the tab is frozen or discarded, so it is deliberately not used.
+    const onHide = () => saveResumeNow(true);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") onHide();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onHide);
+    };
+  }, [saveResumeNow]);
 
   // --- fullscreen the STAGE (keeps our controls + captions) -----------------
   const enterVideoFullscreen = useCallback(() => {

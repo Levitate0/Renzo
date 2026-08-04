@@ -66,6 +66,14 @@ export interface EpisodeRecord {
 }
 
 /** A running/queued download job. */
+/** Saved playback position for one episode (see UserRecord.resume). */
+export interface ResumePoint {
+  positionMs: number;
+  /** 0 when the client didn't know it; clients should then offer the resume anyway. */
+  durationMs: number;
+  updatedAt: string;
+}
+
 export interface DownloadJob {
   id: string;
   titleId: number;
@@ -100,6 +108,13 @@ export interface UserRecord {
   titleFolder?: Record<string, string>; // titleId -> folder name (default folder if unset)
   titleProvider?: Record<string, string>; // titleId -> preferred release group (all eps/seasons)
   progress?: Record<string, number>;   // titleId -> last episode watched (for "up next")
+  /**
+   * titleId -> episode -> where playback stopped, so a series picks up on any
+   * device. Distinct from `progress`, which is a whole-episode high-water mark:
+   * this is a position INSIDE one episode and is last-write-wins, because
+   * seeking backwards is normal. Cleared when the episode is marked watched.
+   */
+  resume?: Record<string, Record<string, ResumePoint>>;
   history?: WatchHistoryEntry[];        // recently-watched titles, most-recent first
   watchIds?: Record<string, string>;   // titleId -> stable per-user watch token (for saved titles)
   updatesSeen?: Record<string, number>; // titleId -> aired-count last acknowledged in Updates

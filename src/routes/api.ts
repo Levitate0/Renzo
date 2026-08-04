@@ -4,6 +4,7 @@ import { db } from "../db.js";
 import { logger } from "../logger.js";
 import * as authsite from "../services/authsite.js";
 import type { AniListMedia } from "../services/anilist.js";
+import type { ResumePoint } from "../types.js";
 import * as anilist from "../services/anilist.js";
 import * as rd from "../services/realdebrid.js";
 import * as ad from "../services/alldebrid.js";
@@ -820,11 +821,67 @@ api.post("/titles/:id/watched/:ep", wrap(async (req: AuthedRequest, res) => {
   const ep = Math.max(1, Number(req.params.ep) || 1);
   const t = await getOrCreateTitle(id);
   setWatched(req.user!, id, ep);   // powers "up next"
+  clearResume(req.user!, id, ep);  // or a finished episode reopens at the credits
   logHistory(req.user!, id, ep);
   await db.save();
   await tracker.scrobble(t, ep, req.user); // progress + "watching" on the trackers
   await syncWatchStatus(t, req.user!);     // …escalate to "completed" once fully watched
   res.json({ ok: true, upNext: upNextFor(req.user!, t) });
+}));
+
+// --- Resume position (titleId + episode -> where playback stopped) ----------
+// Distinct from `progress`, which is a whole-episode high-water mark. This is a
+// position INSIDE an episode so a series picks up on any device.
+//
+// The thresholds live HERE, not in each client, so web and native agree on what
+// counts as "worth resuming": anything under 15s is treated as "barely started"
+// and anything within 60s of the end as "finished". A write outside those
+// bounds DELETES the entry rather than storing a useless one.
+const RESUME_MIN_MS = 15_000;
+const RESUME_TAIL_MS = 60_000;
+
+/** Drop a saved position (episode finished, or watched by other means). */
+function clearResume(user: UserRecord, titleId: number, episode: number): void {
+  const byEp = user.resume?.[String(titleId)];
+  if (!byEp) return;
+  delete byEp[String(episode)];
+  if (Object.keys(byEp).length === 0) delete user.resume![String(titleId)];
+}
+
+api.get("/titles/:id/resume", wrap(async (req: AuthedRequest, res) => {
+  res.json(req.user!.resume?.[String(Number(req.params.id))] ?? {});
+}));
+
+api.post("/titles/:id/resume/:ep", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const id = Number(req.params.id);
+  const ep = Math.max(1, Number(req.params.ep) || 1);
+  const positionMs = Math.max(0, Math.floor(Number(req.body?.positionMs) || 0));
+  const durationMs = Math.max(0, Math.floor(Number(req.body?.durationMs) || 0));
+
+  // Last write wins — NO Math.max. Seeking backwards is normal; a monotonic
+  // maximum here would make it impossible to rewatch from earlier.
+  const worthKeeping = positionMs >= RESUME_MIN_MS
+    && (durationMs <= 0 || positionMs < durationMs - RESUME_TAIL_MS);
+
+  if (!worthKeeping) {
+    clearResume(user, id, ep);
+    await db.save();
+    res.json({ ok: true, saved: null });
+    return;
+  }
+  user.resume ??= {};
+  user.resume[String(id)] ??= {};
+  const point: ResumePoint = { positionMs, durationMs, updatedAt: new Date().toISOString() };
+  user.resume[String(id)]![String(ep)] = point;
+  await db.save();
+  res.json({ ok: true, saved: point });
+}));
+
+api.delete("/titles/:id/resume/:ep", wrap(async (req: AuthedRequest, res) => {
+  clearResume(req.user!, Number(req.params.id), Math.max(1, Number(req.params.ep) || 1));
+  await db.save();
+  res.json({ ok: true });
 }));
 
 // Set the exact watched-through episode (0 = none) — powers the manual
@@ -838,7 +895,13 @@ api.post("/titles/:id/progress", wrap(async (req: AuthedRequest, res) => {
   const ep = Math.max(0, Math.min(Math.floor(Number(req.body?.ep) || 0), Math.max(1, total)));
   user.progress ??= {};
   if (ep <= 0) delete user.progress[String(id)];
-  else { user.progress[String(id)] = ep; logHistory(user, id, ep); }
+  else {
+    user.progress[String(id)] = ep;
+    logHistory(user, id, ep);
+    // Marking through ep N means 1..N are done — drop their saved positions so
+    // none of them reopens at the credits. Un-marking (ep <= 0) leaves them.
+    for (let n = 1; n <= ep; n++) clearResume(user, id, n);
+  }
   await db.save();
   if (ep > 0) {
     await tracker.scrobble(t, ep, user).catch(() => {});

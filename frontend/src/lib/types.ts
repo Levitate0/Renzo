@@ -349,6 +349,26 @@ export interface WatchedResult {
   upNext: number | null;
 }
 
+/** A saved playback position INSIDE one episode (src/types.ts ResumePoint) —
+ *  distinct from `progress`/`watchedThrough`, which counts whole episodes. */
+export interface ResumePoint {
+  positionMs: number;
+  /** 0 when the writing client didn't know it. */
+  durationMs: number;
+  updatedAt: string;
+}
+
+/** GET /api/titles/:id/resume — every saved episode of one title, keyed by
+ *  episode number as a string; `{}` when nothing is saved. */
+export type ResumeMap = Record<string, ResumePoint>;
+
+/** POST /api/titles/:id/resume/:ep — `saved: null` means the server judged the
+ *  position not worth keeping (too near the start/end) and dropped the entry. */
+export interface ResumeSaveResult {
+  ok: boolean;
+  saved: ResumePoint | null;
+}
+
 /** GET /api/history item — a card + last watched ep/time. */
 export interface HistoryItem extends CardItem {
   id: number;
