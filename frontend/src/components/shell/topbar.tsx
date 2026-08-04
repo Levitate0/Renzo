@@ -18,6 +18,7 @@ import { ModePill, OfflineBar, PurgePrompt } from "@/components/shell/offline-st
 import { useHealthQuery } from "@/components/shell/queries";
 import { SearchBox } from "@/components/shell/search-box";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { ApiError } from "@/lib/api";
 import type { DebridHealth } from "@/lib/types";
 
 const RD_SHORT: Record<DebridHealth, string> = {
@@ -33,9 +34,12 @@ const RD_SHORT: Record<DebridHealth, string> = {
  *  AllDebrid-only account permanently displayed "RD ✗" next to working playback
  *  (confirmed audit finding); /health names the resolved provider in .debrid. */
 function StatusLine() {
-  const { data: h, isError } = useHealthQuery();
+  const { data: h, isError, error } = useHealthQuery();
   let text = "…";
-  if (isError) text = "offline";
+  // A 401 is a dead session, not an unreachable server — saying "offline" sent
+  // people hunting for a network problem. The forced logout handles the rest.
+  if (isError && error instanceof ApiError && error.status === 401) text = "signed out";
+  else if (isError) text = "offline";
   else if (h) {
     const debrid =
       h.debrid === "alldebrid"

@@ -25,6 +25,7 @@ import React, {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { AUTH_GATE_EVENT, openSettings } from "@/lib/api";
 import { isTv } from "@/lib/tv";
@@ -91,6 +92,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [gate, setGate] = useState<GateState>({ kind: "none" });
   const nudged = useRef(false);
+  // Legal here: QueryProvider wraps AuthProvider in app/layout.tsx.
+  const queryClient = useQueryClient();
 
   const refresh = useCallback(async () => {
     let info: MeResponse;
@@ -140,14 +143,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void refresh();
   }, [refresh]);
 
-  // Any API 401 anywhere -> login gate (never while an auth flow is already up).
+  // Any API 401 anywhere -> a REAL forced logout (never while an auth flow is
+  // already up). Raising the gate alone was cosmetic: `user` stayed populated,
+  // so every `enabled: !!user` query kept firing against a dead session — jobs
+  // re-polled each 4s, each one 401ing and re-raising this event — and the
+  // previous session's library/history/jobs stayed in the query cache, ready to
+  // be shown to whoever logged in next.
   useEffect(() => {
     const onUnauthorized = () => {
-      setGate((g) => (g.kind === "none" || g.kind === "offline" ? { kind: "login" } : g));
+      setGate((g) => {
+        if (g.kind !== "none" && g.kind !== "offline") return g;
+        setUser(null);        // stops every enabled:!!user poll immediately
+        queryClient.clear();  // nothing from the dead session survives re-login
+        return { kind: "login" };
+      });
     };
     window.addEventListener(AUTH_GATE_EVENT, onUnauthorized);
     return () => window.removeEventListener(AUTH_GATE_EVENT, onUnauthorized);
-  }, []);
+  }, [queryClient]);
 
   const completeAuth = useCallback((u: PublicUser) => {
     // Clear any ?reset= / /invite/ token from the URL (old history.replaceState).
@@ -155,12 +168,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { invite, reset } = urlTokens();
       if (invite || reset) window.history.replaceState(null, "", "/");
     }
+    // Signing in starts a clean slate. Errored queries from the expired session
+    // do not refetch on a re-render, so without this the pages sat on empty
+    // grids until a poll or staleTime expired — and a DIFFERENT user signing in
+    // would briefly be shown the previous user's library, history and jobs.
+    queryClient.clear();
     setUser(u);
     setGate({ kind: "none" });
     setLoading(false);
     nudged.current = true;
     maybeNudgeCredentials(u);
-  }, []);
+  }, [queryClient]);
 
   const showLogin = useCallback(() => {
     setUser(null);

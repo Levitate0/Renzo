@@ -13,6 +13,7 @@
  * snapshot pair at the bottom.
  */
 
+import { AUTH_GATE_EVENT } from "./api";
 import {
   getNativeBridge,
   convertFileSrc,
@@ -198,6 +199,11 @@ let apiFetch: OfflineApiFetch = async (path, opts) => {
     ...opts,
   });
   if (!res.ok) {
+    // This fallback runs before offline-react swaps in the real api() client,
+    // so a 401 here would otherwise die silently instead of forcing a logout.
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(AUTH_GATE_EVENT));
+    }
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error || `${res.status}`);
   }
