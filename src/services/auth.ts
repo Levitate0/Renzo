@@ -1,11 +1,11 @@
-import { randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual, createHmac } from "node:crypto";
+import { randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual, createHmac, createHash } from "node:crypto";
 import { promisify } from "node:util";
 import type { Request, Response, NextFunction } from "express";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { db } from "../db.js";
 import { newApiKey } from "./apikeys.js";
-import type { UserRecord, Role } from "../types.js";
+import type { UserRecord, Role, SessionRecord } from "../types.js";
 
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
 const log = logger("auth");
@@ -102,7 +102,10 @@ export function requireStaff(req: AuthedRequest, res: Response, next: NextFuncti
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
-export async function createSession(userId: string): Promise<string> {
+// `deviceName` is only set for sessions minted by TV pairing — it labels the
+// device in "your devices". Everything else about the session is identical to a
+// typed login: nothing downstream can tell a paired TV apart from a browser.
+export async function createSession(userId: string, deviceName?: string): Promise<string> {
   const token = randomBytes(32).toString("base64url");
   const now = Date.now();
   await db.addSession({
@@ -110,8 +113,52 @@ export async function createSession(userId: string): Promise<string> {
     userId,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + config.sessionTtlDays * 24 * 3600_000).toISOString(),
+    deviceName,
+    lastSeenAt: new Date(now).toISOString(),
   });
   return token;
+}
+
+/**
+ * Opaque handle for a session, derived with sha256 from its token. The device
+ * list is rendered and revoked with THIS, never the token, so a live credential
+ * is never handed to a page (or logged, or put in a URL).
+ */
+export function sessionId(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 32);
+}
+
+// Last-seen tracking. db.json is rewritten IN FULL on every save, so stamping
+// lastSeenAt per request would rewrite the entire database on every API call:
+// the live value is kept in memory and persisted at most once an hour per
+// session. A stamp lost to a restart is cosmetic.
+const LAST_SEEN_PERSIST_MS = 60 * 60_000;
+const lastSeen = new Map<string, number>();
+
+function touchSession(s: SessionRecord): void {
+  const now = Date.now();
+  lastSeen.set(s.token, now);
+  // Sessions expire and get pruned from the db; their in-memory stamps would
+  // otherwise linger forever, so drop the dead ones once the map gets big.
+  if (lastSeen.size > 500) {
+    const live = new Set(db.sessions().map((x) => x.token));
+    for (const t of lastSeen.keys()) if (!live.has(t)) lastSeen.delete(t);
+  }
+  const persisted = s.lastSeenAt ? new Date(s.lastSeenAt).getTime() : 0;
+  if (now - persisted >= LAST_SEEN_PERSIST_MS) {
+    s.lastSeenAt = new Date(now).toISOString();
+    void db.save(); // fire-and-forget: never make a request wait on a disk write
+  }
+}
+
+/** Freshest last-use we know for a session (memory beats the hourly stamp). */
+export function sessionLastSeen(s: SessionRecord): string {
+  const t = Math.max(
+    lastSeen.get(s.token) ?? 0,
+    s.lastSeenAt ? new Date(s.lastSeenAt).getTime() : 0,
+    new Date(s.createdAt).getTime(),
+  );
+  return new Date(t).toISOString();
 }
 
 export function sessionUser(token: string | undefined): UserRecord | undefined {
@@ -119,11 +166,14 @@ export function sessionUser(token: string | undefined): UserRecord | undefined {
   const s = db.getSession(token);
   if (!s) return undefined;
   if (new Date(s.expiresAt).getTime() < Date.now()) return undefined;
+  touchSession(s);
   return db.getUser(s.userId);
 }
 
 export async function destroySession(token: string | undefined): Promise<void> {
-  if (token) await db.removeSession(token);
+  if (!token) return;
+  lastSeen.delete(token);
+  await db.removeSession(token);
 }
 
 // ---------------------------------------------------------------------------

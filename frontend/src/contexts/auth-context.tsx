@@ -69,7 +69,11 @@ function urlTokens(): { invite: string | null; reset: string | null } {
 }
 
 /** Nudge to connect a debrid service (old startApp tail) — not when deep-linked
- *  into the player/detail overlays, where the toast would be instantly buried.
+ *  into the player/detail overlays, where the toast would be instantly buried,
+ *  and not on /tv: that page is a task someone was sent to by a TV, and on a
+ *  debrid-less account (i.e. a fresh install pairing its first TV) the nudge's
+ *  router push threw them onto the credentials page mid-approval — verified
+ *  end to end, the code they had just typed went with it.
  *  NEVER navigate on TV: a remote can't type API tokens, and auto-opening the
  *  credentials page trapped debrid-less accounts there on every launch (the
  *  settings-family `modal` root scopes D-pad focus inside the page — reported
@@ -77,7 +81,7 @@ function urlTokens(): { invite: string | null; reset: string | null } {
 function maybeNudgeCredentials(user: PublicUser): void {
   if (typeof window === "undefined") return;
   const p = window.location.pathname;
-  if (p.startsWith("/watch") || p.startsWith("/title")) return;
+  if (p.startsWith("/watch") || p.startsWith("/title") || p.startsWith("/tv")) return;
   if (user.realDebridConnected || user.allDebridConnected) return;
   if (isTv()) {
     toast("Connect a debrid service to this account in the Renzo web app to stream");

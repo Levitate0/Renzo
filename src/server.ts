@@ -78,9 +78,17 @@ async function main() {
 
   const app = express();
   app.disable("x-powered-by");
-  // Behind the cloudflared tunnel; trust proxy so req.ip / req.secure reflect
-  // the real client (also used for login rate-limiting).
-  app.set("trust proxy", true);
+  // Behind the cloudflared tunnel, but ALSO published straight onto the LAN
+  // (network_mode: host). Forwarding headers are believed only from the peers
+  // in config.trustProxy — by default just loopback, because that is where
+  // cloudflared connects from and nothing else on the network has any business
+  // saying who a client is. Never `true`: Express would then take the leftmost
+  // X-Forwarded-For entry, i.e. whatever the client typed. req.secure, req.ip,
+  // the login limiter and TV pairing all hang off this.
+  app.set("trust proxy", config.trustProxy);
+  log.info(
+    `trust proxy: ${config.trustProxy.length ? config.trustProxy.join(", ") : "nothing (no proxy in front)"}`,
+  );
   app.use(securityHeaders);
   app.use("/api", csrfGuard);
   // Avatar uploads are small base64 images (client resizes to ~128px) but can

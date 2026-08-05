@@ -109,6 +109,43 @@ export interface GravatarPreview {
   avatarContentType: string;
 }
 
+// --- TV pairing (OAuth device-authorisation shape) --------------------------
+// A TV shows a short `userCode` and holds the secret `deviceCode`; the phone
+// half (app/tv/) looks the code up, shows WHAT it is approving, then approves
+// or denies. /code + /poll are the TV's endpoints — the web UI never calls
+// them, so only the authenticated half is typed here.
+
+/** POST /api/auth/tv/lookup `{userCode}` — 404 unknown code, 410 expired. */
+export interface TvPairingRequest {
+  /** Name the TV supplied for itself, e.g. "Living Room TV". */
+  deviceName: string;
+  /** IP the pairing request came from — a LAN address is the normal case. */
+  ip: string;
+  /** When the pending request lapses. ISO string or epoch ms (Date takes both). */
+  expiresAt: string | number;
+}
+
+/** POST /api/auth/tv/approve `{userCode}` */
+export interface TvApproveResult {
+  ok: boolean;
+  deviceName: string;
+}
+
+// --- Sessions / paired devices ----------------------------------------------
+
+/** One row of GET /api/account/sessions. `id` is a sha256-derived opaque
+ *  handle, NOT the session token — safe to render and to DELETE against. */
+export interface DeviceSession {
+  id: string;
+  /** Null for sessions that never supplied one — i.e. ordinary browser logins;
+   *  paired TVs carry the name the device sent to /auth/tv/code. */
+  deviceName: string | null;
+  createdAt: string | number;
+  lastSeenAt: string | number;
+  /** True for the session this page is using — revoking it is a sign-out. */
+  current: boolean;
+}
+
 // --- Health -----------------------------------------------------------------
 
 export type DebridHealth =

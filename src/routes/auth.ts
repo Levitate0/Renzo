@@ -7,6 +7,8 @@ import { logger } from "../logger.js";
 import { db } from "../db.js";
 import * as auth from "../services/auth.js";
 import * as apikeys from "../services/apikeys.js";
+import * as tvpairing from "../services/tvpairing.js";
+import { clientIp } from "../services/netip.js";
 import * as rd from "../services/realdebrid.js";
 import * as ad from "../services/alldebrid.js";
 import * as mailer from "../services/mailer.js";
@@ -27,12 +29,10 @@ function wrap(fn: (req: Request, res: Response) => Promise<unknown>) {
   };
 }
 
-function clientIp(req: Request): string {
-  // Behind cloudflared: prefer CF's real-client header, then Express's proxy-aware ip.
-  const cf = req.headers["cf-connecting-ip"];
-  if (typeof cf === "string" && cf) return cf;
-  return req.ip ?? req.socket.remoteAddress ?? "unknown";
-}
+// clientIp(): the proxy-attested client when the socket peer is a trusted proxy
+// (cloudflared on this host), else the socket peer itself. It is the only
+// address these routes name — limiter keys, log lines, and the "requested from"
+// shown to a person approving a TV. See services/netip.ts.
 
 function publicUser(u: {
   id: string; username: string; role: string; email?: string;
@@ -126,6 +126,109 @@ authRoutes.post("/logout", wrap(async (req, res) => {
   const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
   await auth.destroySession(token);
   res.setHeader("Set-Cookie", auth.sessionCookie("", 0, req.secure));
+  res.json({ ok: true });
+}));
+
+// --- TV pairing (OAuth device-authorisation shape) ---------------------------
+// /code and /poll are UNAUTHENTICATED: they run on a device that has no session
+// yet. /lookup, /approve and /deny require a normal session, because the
+// approver's identity IS the identity granted — a username in the body is never
+// read for any of them.
+const TV_ERRORS: Record<tvpairing.PairError, { status: number; error: string }> = {
+  unknown:   { status: 404, error: "That code isn't recognised — check it and try again" },
+  expired:   { status: 410, error: "That code has expired — start pairing again on the TV" },
+  locked:    { status: 429, error: "Too many attempts for that code — start pairing again on the TV" },
+  used:      { status: 409, error: "That code has already been used" },
+  throttled: { status: 429, error: "Too many attempts — try again in 15 minutes" },
+};
+
+// Opt-in per instance (TV_PAIRING). Off — the default — the five endpoints
+// below do not exist: 404, not 403, because clients feature-detect the flow and
+// hide the option when it 404s, so an instance that never asked for TV pairing
+// behaves exactly like a build without it. Mounted BEFORE the routes, so it
+// also runs ahead of requireAuth: a disabled endpoint must not answer 401
+// either (that would still confirm it exists).
+authRoutes.use("/tv", (_req, res, next) => {
+  if (!config.tvPairing) return res.status(404).json({ error: "not found" });
+  next();
+});
+
+// Bodies here are JSON from an UNAUTHENTICATED caller, so a field can be any
+// JSON value. `String(x)` is not safe on all of them: `{"deviceName":{"toString":1}}`
+// makes String() throw ("Cannot convert object to primitive value"), which used
+// to come back as a 500 with the raw exception text in it. A non-string field is
+// simply not a value we accept.
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+// Absolute, because the TV prints it verbatim. Prefer the configured public URL
+// — but only when it is actually reachable from another device: .env.example
+// ships PUBLIC_URL=http://localhost:8787, and printing "localhost" on a
+// television is worse than useless, so a loopback value falls through to the
+// host this request really arrived on. The Host header is client-controlled, so
+// it is only echoed back to the caller (never used for a redirect) and is
+// shape-checked first.
+function verificationUrl(req: Request): string {
+  if (config.publicUrlUsable) return `${config.publicUrl}/tv`;
+  const host = str(req.headers.host).trim();
+  const safe = /^[A-Za-z0-9.\-:[\]]{1,255}$/.test(host) ? host : `localhost:${config.port}`;
+  return `${req.protocol}://${safe}/tv`;
+}
+
+// Every pairing endpoint is keyed on clientIp(): the RESOLVED client, i.e. the
+// socket peer for a direct LAN device and the Cloudflare-attested visitor for
+// anything that came down the tunnel. The transport peer alone cannot do this
+// job here — cloudflared runs on this host, so every internet request has peer
+// 127.0.0.1: one shared rate-limit bucket for the entire internet, and a
+// "Requested from" line that reads 127.0.0.1 for the living-room TV and for an
+// attacker abroad alike. Trusting only loopback (config.trustProxy) is what
+// makes the resolved value unforgeable from the LAN — see services/netip.ts.
+authRoutes.post("/tv/code", wrap(async (req, res) => {
+  const ip = clientIp(req);
+  const p = tvpairing.createRequest(str(req.body?.deviceName), ip);
+  if (!p) return res.status(429).json({ error: "Too many pairing requests — try again later" });
+  // Log the device and where it came from, NEVER either code: the deviceCode is
+  // a credential, and the userCode is enough for someone to approve a device.
+  log.info(`tv pairing requested: "${p.deviceName}" from ${ip}`);
+  res.json({
+    userCode: p.userCode,
+    deviceCode: p.deviceCode,
+    verificationUrl: verificationUrl(req),
+    expiresIn: tvpairing.EXPIRES_IN_S,
+    interval: tvpairing.INTERVAL_S,
+  });
+}));
+
+authRoutes.post("/tv/poll", wrap(async (req, res) => {
+  const r = tvpairing.poll(str(req.body?.deviceCode));
+  if (r.status !== "approved") return res.json({ status: r.status });
+  const user = db.getUser(r.userId);
+  if (!user) return res.json({ status: "expired" }); // approver disappeared between approve and poll
+  // Exactly the session /login issues, with a persistent cookie (a TV can't be
+  // asked to sign in again when its browser process restarts).
+  const token = await auth.createSession(user.id, r.deviceName);
+  res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
+  log.info(`tv paired: "${r.deviceName}" as ${user.username}`);
+  res.json({ status: "approved", user: publicUser(user) });
+}));
+
+// What am I about to approve? Shown before anything is granted.
+authRoutes.post("/tv/lookup", auth.requireAuth, wrap(async (req: AuthedRequest, res) => {
+  const r = tvpairing.lookup(str(req.body?.userCode), clientIp(req));
+  if (!r.ok) return res.status(TV_ERRORS[r.error].status).json({ error: TV_ERRORS[r.error].error });
+  res.json(r.view);
+}));
+
+authRoutes.post("/tv/approve", auth.requireAuth, wrap(async (req: AuthedRequest, res) => {
+  const r = tvpairing.approve(str(req.body?.userCode), req.user!.id, clientIp(req));
+  if (!r.ok) return res.status(TV_ERRORS[r.error].status).json({ error: TV_ERRORS[r.error].error });
+  res.json({ ok: true, deviceName: r.view.deviceName });
+}));
+
+authRoutes.post("/tv/deny", auth.requireAuth, wrap(async (req: AuthedRequest, res) => {
+  const r = tvpairing.deny(str(req.body?.userCode), clientIp(req));
+  if (!r.ok) return res.status(TV_ERRORS[r.error].status).json({ error: TV_ERRORS[r.error].error });
   res.json({ ok: true });
 }));
 
@@ -236,6 +339,46 @@ accountRoutes.post("/password", wrap(async (req: AuthedRequest, res) => {
   const fresh = await auth.createSession(user.id);
   await db.removeSession(currentToken ?? "");
   res.setHeader("Set-Cookie", auth.sessionCookie(fresh, config.sessionTtlDays * 24 * 3600, req.secure));
+  res.json({ ok: true });
+}));
+
+// --- My devices (active sessions) -------------------------------------------
+// A paired TV in a shared room stays signed in indefinitely by design, so the
+// account surface has to be able to see and kill it. `id` is a sha256-derived
+// handle, never the session token — the page can list and revoke devices
+// without ever holding a live credential.
+accountRoutes.get("/sessions", wrap(async (req: AuthedRequest, res) => {
+  const current = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
+  const now = Date.now();
+  const mine = db.sessions().filter(
+    (s) => s.userId === req.user!.id && new Date(s.expiresAt).getTime() > now,
+  );
+  res.json(
+    mine
+      .map((s) => ({
+        id: auth.sessionId(s.token),
+        deviceName: s.deviceName ?? null,
+        createdAt: s.createdAt,
+        lastSeenAt: auth.sessionLastSeen(s),
+        current: Boolean(current) && s.token === current,
+      }))
+      .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt)),
+  );
+}));
+
+accountRoutes.delete("/sessions/:id", wrap(async (req: AuthedRequest, res) => {
+  // Scoped to the caller's OWN sessions, so a handle from another account (or a
+  // guessed one) can never revoke someone else's device.
+  const target = db.sessions().find(
+    (s) => s.userId === req.user!.id && auth.sessionId(s.token) === req.params.id,
+  );
+  if (!target) return res.status(404).json({ error: "no such device" });
+  const current = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
+  await auth.destroySession(target.token);
+  // Revoking the session you're using is effectively a logout — clear the cookie
+  // too, or the browser keeps sending a token that no longer exists.
+  if (target.token === current) res.setHeader("Set-Cookie", auth.sessionCookie("", 0, req.secure));
+  log.info(`session revoked for ${req.user!.username}${target.deviceName ? ` ("${target.deviceName}")` : ""}`);
   res.json({ ok: true });
 }));
 

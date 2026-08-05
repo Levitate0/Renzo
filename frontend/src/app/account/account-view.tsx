@@ -11,7 +11,7 @@
 // shows it as a left sidebar; mobile keeps the Sheet drawer pattern the old
 // settings page used.
 
-import { ChevronDown, FolderCog, KeyRound, Plug, UserRound } from "lucide-react";
+import { ChevronDown, FolderCog, KeyRound, MonitorSmartphone, Plug, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import React, { useState } from "react";
@@ -26,6 +26,7 @@ import { AccountPane } from "./sections/account-pane";
 import { ApiKeyPane } from "./sections/apikey-pane";
 import { CredentialsPane } from "./sections/credentials-pane";
 import { DefaultsPane } from "./sections/defaults-pane";
+import { DevicesPane } from "./sections/devices-pane";
 
 interface SectionDef {
   id: string;
@@ -38,6 +39,7 @@ const SECTIONS: SectionDef[] = [
   { id: "account", label: "Account", icon: UserRound, render: () => <AccountPane /> },
   { id: "credentials", label: "Required credentials", icon: KeyRound, render: () => <CredentialsPane /> },
   { id: "defaults", label: "Library", icon: FolderCog, render: () => <DefaultsPane /> },
+  { id: "devices", label: "Devices", icon: MonitorSmartphone, render: () => <DevicesPane /> },
   { id: "apikey", label: "API key", icon: Plug, render: () => <ApiKeyPane /> },
 ];
 
@@ -45,6 +47,7 @@ const SECTIONS: SectionDef[] = [
 const ALIASES: Record<string, string> = {
   security: "account",
   jellyfin: "apikey",
+  sessions: "devices", // paired TVs live in the same list as browser sessions
 };
 
 export function AccountView() {

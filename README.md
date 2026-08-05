@@ -115,9 +115,10 @@ accounts, so the token can look valid while downloads fail with:
 RD POST /torrents/addMagnet -> 403: permission_denied (error_code 9)
 ```
 
-At last check this token's account was `type: free, premium: 0`. Renew premium (you had
-1600 fidelity points — enough to activate) and streaming/downloading will work
-immediately; no code change needed.
+If downloads 403 with that code, check the account's premium status (`GET /user` →
+`type`/`premium`) before debugging anything else — a lapsed subscription looks exactly
+like broken code. AllDebrid works as an alternative provider and is configured the same
+way, per-user in Settings.
 
 ---
 
@@ -182,7 +183,16 @@ Designed to be exposed through your cloudflared tunnel. Every request is gated.
   Users list (they can still stream); denied users are skipped by the auto-downloader.
 - **Library defaults (per-user):** optionally set a tracking status, a default folder, and
   auto-download to apply automatically the first time a series enters your library.
-- **Hardening:** login rate-limiting (5 fails → 15-min lockout, keyed on `CF-Connecting-IP`),
+- **Client addresses (`TRUST_PROXY`):** everything that names a client — the login lockout,
+  TV-pairing limits, log lines, the “requested from” address shown when approving a TV —
+  resolves it the same way: the socket peer, unless that peer is a **trusted proxy**, in which
+  case that proxy's `CF-Connecting-IP`/`X-Forwarded-For`. The default trusts **loopback only**,
+  which is exactly right when cloudflared (or any reverse proxy) runs on the same host: tunnel
+  visitors are identified individually instead of collapsing into `127.0.0.1`, while a LAN
+  client — which reaches the port directly — cannot forge a header to rotate past any limit.
+  Set `TRUST_PROXY=<ip|cidr>` for a proxy on another machine, or `none` if nothing is in front.
+  Never `true` (Express reads that as “trust every hop”); it is accepted, but read as `loopback`.
+- **Hardening:** login rate-limiting (5 fails → 15-min lockout, per resolved client address),
   CSRF protection (`Sec-Fetch-Site` guard + SameSite cookies), strict **CSP** + security
   headers, `/files` media is auth-gated (never publicly listable), SSRF allowlist on the
   subtitle proxy (re-checked across redirects), first-run `/setup` race-locked to one admin,
@@ -194,6 +204,23 @@ all confirmed findings from both are fixed and re-verified.
 
 **Trusted-LAN escape hatch:** `AUTH_DISABLED=true` skips login entirely. Never set this
 behind the public tunnel.
+
+### TV pairing (`TV_PAIRING`, off by default)
+
+A television shows a short code; you type it into `/tv` (or the app's approval screen) on a
+device you're already signed into, and the TV collects a session by polling. Because approving
+a code hands that TV a **full session for your account**, the flow is **opt-in per instance**:
+
+```yaml
+environment:
+  TV_PAIRING: "true"
+```
+
+With it unset or false the five `/api/auth/tv/*` endpoints answer **404** — not 403 — so
+clients that feature-detect the flow simply don't offer it, and the server behaves like a build
+without the feature. The approval page and **Account → Devices** (where any paired TV is listed
+and can be revoked) work either way. Codes expire in 10 minutes, are single-use, lock after 5
+wrong attempts, and are rate-limited per client address (see `TRUST_PROXY` above).
 
 ## Ports & network footprint
 

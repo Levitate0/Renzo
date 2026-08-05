@@ -159,6 +159,13 @@ export interface SessionRecord {
   userId: string;
   createdAt: string;
   expiresAt: string;
+  deviceName?: string;            // set when a TV pairing created this session (shown in "your devices")
+  /**
+   * Coarse last-use stamp. Persisted at most ~hourly per session (see
+   * services/auth.ts): db.json is rewritten in FULL on every save, so writing
+   * this per request would rewrite the whole database on every API call.
+   */
+  lastSeenAt?: string;
 }
 
 export interface InviteRecord {

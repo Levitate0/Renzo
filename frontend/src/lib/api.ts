@@ -10,7 +10,13 @@
 import { toast } from "sonner";
 
 import { isTv } from "@/lib/native";
-import type { ResumeMap, ResumeSaveResult } from "@/lib/types";
+import type {
+  DeviceSession,
+  ResumeMap,
+  ResumeSaveResult,
+  TvApproveResult,
+  TvPairingRequest,
+} from "@/lib/types";
 
 /** Fired on any 401 from the API — AuthProvider listens and shows the login gate. */
 export const AUTH_GATE_EVENT = "renzo:auth-gate";
@@ -34,6 +40,7 @@ export function settingsHref(pane = "credentials"): string {
     case "credentials":
     case "defaults":
     case "apikey":
+    case "devices":
       return `/account/?section=${pane}`;
     case "jellyfin": // old hash alias
       return "/account/?section=apikey";
@@ -134,3 +141,54 @@ export function saveResume(
 // No client wrapper for DELETE /titles/:id/resume/:ep on purpose: every way the
 // UI drops a position (episode ended, mark watched, mark season watched) already
 // clears it server-side, so a client-side clear would be an unused second path.
+
+// --- TV pairing (the phone half) -------------------------------------------
+// docs TV-PAIRING-RENZO.md §2/§4. All three take the SHORT code the TV shows;
+// the secret `deviceCode` belongs to the TV and never touches this app — that
+// separation is the security model, so there is deliberately no /code or /poll
+// wrapper here. Every call is authenticated: the approver's session IS the
+// identity granted, and a 401 raises the login gate exactly like anywhere else.
+//
+// Status codes the approval page distinguishes (they mean different things to
+// the person typing): 404 = no such pending code, 410 = expired,
+// 429 = too many attempts (the server locks a code after ~5 failures).
+
+/** What is asking to be paired — call this BEFORE approving, never after. */
+export function tvLookup(userCode: string): Promise<TvPairingRequest> {
+  return api<TvPairingRequest>("/auth/tv/lookup", {
+    method: "POST",
+    body: JSON.stringify({ userCode }),
+  });
+}
+
+/** Grant the signed-in account to the waiting device. */
+export function tvApprove(userCode: string): Promise<TvApproveResult> {
+  return api<TvApproveResult>("/auth/tv/approve", {
+    method: "POST",
+    body: JSON.stringify({ userCode }),
+  });
+}
+
+/** Reject it — the TV stops waiting instead of timing out. */
+export function tvDeny(userCode: string): Promise<{ ok: boolean }> {
+  return api<{ ok: boolean }>("/auth/tv/deny", {
+    method: "POST",
+    body: JSON.stringify({ userCode }),
+  });
+}
+
+// --- Sessions / paired devices ----------------------------------------------
+// A paired TV in a shared room stays signed in by design (docs §5), so the
+// list and the revoke are the only way back out.
+
+export function listSessions(): Promise<DeviceSession[]> {
+  return api<DeviceSession[]>("/account/sessions");
+}
+
+/** Revoke one session by its opaque id. Revoking `current` is a sign-out —
+ *  callers must follow it with the auth context's logout(). */
+export function revokeSession(id: string): Promise<{ ok: boolean }> {
+  return api<{ ok: boolean }>(`/account/sessions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
