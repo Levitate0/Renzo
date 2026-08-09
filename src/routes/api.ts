@@ -37,6 +37,20 @@ function wrap(fn: (req: AuthedRequest, res: Response) => Promise<unknown>) {
         if (!res.headersSent) res.status(402).json({ error: "realdebrid_required" });
         return;
       }
+      // AniList's quota is 30 requests/minute PER IP, so this is the whole
+      // server's budget, not this user's — and it is temporary. Answer 503 with
+      // the reset delay rather than a 500, so the UI can say something true
+      // instead of reporting it as an unreachable server.
+      const limited = /^anilist_rate_limited:(\d+)$/.exec(msg);
+      if (limited || msg === "anilist_unavailable") {
+        const secs = limited ? Number(limited[1]) : 30;
+        if (!res.headersSent) {
+          res.status(503)
+            .set("Retry-After", String(secs))
+            .json({ error: `AniList is rate-limiting this server — try again in about ${secs}s` });
+        }
+        return;
+      }
       log.error(req.method, req.path, msg);
       if (!res.headersSent) res.status(500).json({ error: msg });
     });

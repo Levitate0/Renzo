@@ -40,21 +40,89 @@ const MEDIA_FIELDS = `
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------------------------------------------------------------------
+// Rate-limit state
+// ---------------------------------------------------------------------------
+// AniList allows 30 requests/minute per IP and answers 429 with a Retry-After
+// (typically ~30s) plus X-RateLimit-Reset. The old policy clamped that wait to
+// 8s and retried up to four times, so every retry landed INSIDE a window that
+// had not reset yet: each one was guaranteed to 429 and each one still counted
+// against the quota. One rate-limited search therefore fired five doomed
+// requests, kept the bucket empty, and blocked the caller for ~32s before
+// failing — which the UI reported as "server unreachable" because the request
+// was still hanging when the connection gave up.
+//
+// So: remember when the window actually reopens and refuse to spend requests
+// before then, rather than hammering a closed door.
+let rateLimitedUntil = 0;
+
+/** Seconds until AniList will accept requests again (0 when it will now). */
+export function rateLimitedFor(): number {
+  return Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1000));
+}
+
+/** Thrown when the quota is spent. Carries the reset delay for the UI. */
+export class AniListRateLimited extends Error {
+  constructor(public readonly retryAfterSec: number) {
+    super(`anilist_rate_limited:${retryAfterSec}`);
+    this.name = "AniListRateLimited";
+  }
+}
+
+// A retry only makes sense while the caller can still afford to wait. Anything
+// longer is served better by failing fast with an honest "try again in Ns".
+const MAX_RETRY_WAIT_MS = 2_500;
+
+// Identical concurrent queries (two discover rows, a re-render, two clients)
+// used to fire separately and burn separate quota — the logs showed duplicate
+// retries in the same millisecond. One in-flight request per distinct query.
+const inFlight = new Map<string, Promise<unknown>>();
+
 // AniList rate-limits aggressively (429, sometimes 30/min in degraded mode) and
 // occasionally 5xx. Retry with backoff so a burst of requests — e.g. walking a
 // season chain while the discovery rows also load — doesn't fail a hop and leave
 // the chain incomplete.
 async function gql<T>(query: string, variables: Record<string, unknown>, attempt = 0): Promise<T> {
+  // attempt 0 is the entry hop: it refuses spent quota and coalesces. The
+  // checks belong HERE and not on retries — a retry has already slept out the
+  // window it was told to wait for, and re-checking would reject its own wait.
+  if (attempt === 0) {
+    const waiting = rateLimitedFor();
+    if (waiting > 0) throw new AniListRateLimited(waiting);
+    const key = `${query}|${JSON.stringify(variables)}`;
+    const running = inFlight.get(key) as Promise<T> | undefined;
+    if (running) return running;
+    const p = gql<T>(query, variables, 1).finally(() => inFlight.delete(key));
+    inFlight.set(key, p);
+    return p;
+  }
+
   const res = await fetch(ENDPOINT, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ query, variables }),
   });
-  if ((res.status === 429 || res.status >= 500) && attempt < 4) {
+  if (res.status === 429) {
     await res.text().catch(() => {}); // drain the body so the socket can be reused
+    // Believe Retry-After. AniList means it: retrying earlier is a wasted
+    // request that also refreshes nothing.
     const retryAfter = Number(res.headers.get("retry-after"));
-    const wait = Math.min(retryAfter > 0 ? retryAfter * 1000 : (attempt + 1) * 800, 8000);
-    log.warn(`AniList ${res.status}, retry ${attempt + 1}/4 in ${wait}ms`);
+    const reset = Number(res.headers.get("x-ratelimit-reset"));
+    const waitMs = retryAfter > 0 ? retryAfter * 1000
+      : reset > 0 ? Math.max(0, reset * 1000 - Date.now())
+      : 30_000;
+    rateLimitedUntil = Date.now() + waitMs;
+    log.warn(`AniList 429 — quota spent, holding off ${Math.ceil(waitMs / 1000)}s`);
+    if (waitMs > MAX_RETRY_WAIT_MS) throw new AniListRateLimited(Math.ceil(waitMs / 1000));
+    await sleep(waitMs);
+    rateLimitedUntil = 0; // we waited it out; the window is open again
+    return gql<T>(query, variables, attempt + 1);
+  }
+  if (res.status >= 500 && attempt < 4) {
+    // A 5xx is a different failure: short backoff, it isn't a quota problem.
+    await res.text().catch(() => {});
+    const wait = Math.min(attempt * 800, 4000);
+    log.warn(`AniList ${res.status}, retry ${attempt}/4 in ${wait}ms`);
     await sleep(wait);
     return gql<T>(query, variables, attempt + 1);
   }
@@ -204,6 +272,7 @@ export async function getById(id: number): Promise<AniListMedia | null> {
     // A rate-limit/outage is NOT "this title doesn't exist" — rethrow so callers
     // (and the UI) report a temporary failure instead of a bogus not-found, which
     // made a season card look permanently unclickable.
+    if (e instanceof AniListRateLimited) throw e;
     if (/AniList (429|5\d\d)/.test(String(e))) throw new Error("anilist_unavailable");
     return null;
   }
