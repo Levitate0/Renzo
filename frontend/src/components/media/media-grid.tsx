@@ -150,7 +150,9 @@ export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps)
         /* Horizontal snap-scroll row at EVERY width (user request: desktop
            matches the mobile layout) — child sizing lives in the appended
            `.browse-scroll` rules in globals.css. */
-        <div className="relative">
+        /* `row-body`: the flex child that takes the row's leftover height when
+           browse mode fills the window (see #browseWrap in globals.css). */
+        <div className="row-body relative">
           {canLeft && (
             <button type="button" aria-label="Scroll left" className={cn(arrowCls, "-left-3")} onClick={() => page(-1)}>
               <ChevronLeft className="h-5 w-5" />

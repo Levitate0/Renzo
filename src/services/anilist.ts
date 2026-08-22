@@ -189,7 +189,11 @@ export async function searchAnime(search: string, type?: MediaType): Promise<Ani
 
 /** Trending anime for the landing page. */
 export async function trendingAnime(): Promise<AniListMedia[]> {
-  const query = `
+  // Cached like the other two rows. It wasn't, so every Discover load spent an
+  // AniList request on it — the row is the first thing every client asks for,
+  // which made it the biggest single contributor to hitting the rate limit.
+  return cachedList("trending", async () => {
+    const query = `
     query {
       Page(perPage: 30) {
         media(type: ANIME, sort: TRENDING_DESC) {
@@ -197,13 +201,16 @@ export async function trendingAnime(): Promise<AniListMedia[]> {
         }
       }
     }`;
-  const data = await gql<{ Page: { media: AniListMedia[] } }>(query, {});
-  return data.Page.media;
+    const data = await gql<{ Page: { media: AniListMedia[] } }>(query, {});
+    return data.Page.media;
+  });
 }
 
 // Light TTL cache for the browse rows (they change slowly; avoids hammering AniList).
 const listCache = new Map<string, { at: number; data: AniListMedia[] }>();
-const LIST_TTL_MS = 10 * 60_000;
+// 30 minutes: these rows move on the order of a day, and this cache is what
+// stands between every client's Discover load and AniList's 30-req/min budget.
+const LIST_TTL_MS = 30 * 60_000;
 async function cachedList(key: string, fetcher: () => Promise<AniListMedia[]>): Promise<AniListMedia[]> {
   const hit = listCache.get(key);
   if (hit && Date.now() - hit.at < LIST_TTL_MS) return hit.data;

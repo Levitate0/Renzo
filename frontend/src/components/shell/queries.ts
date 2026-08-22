@@ -21,13 +21,25 @@ export function useJobsQuery() {
   });
 }
 
-/** Updates feed — refreshed on load + every 2 min. Powers the Updates badge. */
+/**
+ * Updates feed — refreshed on load + every 30 min. Powers the Updates badge.
+ *
+ * The interval was 2 minutes, which is the single most expensive poll in the
+ * app: /updates walks up to 20 library titles through anilist.detailExtra(),
+ * and each of those can spend several AniList requests chasing a season chain.
+ * AniList allows 30 requests a minute, so one cold-cache /updates can exhaust
+ * the whole budget on its own — and at 2 minutes it fired 30 times an hour, on
+ * every open tab, against a detailExtra cache that expires hourly. New
+ * episodes do not appear on a two-minute frequency; 30 minutes matches the
+ * Discover rows and the server's own browse-row cache.
+ */
 export function useUpdatesQuery() {
   const { user } = useAuth();
   return useQuery({
     queryKey: ["updates"],
     queryFn: () => api<UpdateItem[]>("/updates"),
-    refetchInterval: 120_000,
+    refetchInterval: 1_800_000,
+    staleTime: 1_800_000,
     enabled: !!user,
   });
 }

@@ -23,7 +23,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-dvh flex-col">
       <Topbar />
-      <main className="mx-auto w-full max-w-[1440px] flex-1 overflow-x-hidden px-4 pb-16 pt-6 sm:px-6">
+      {/* Full-bleed, like the Hub: the old max-w-[1440px] column left a wide
+          monitor with empty gutters while the Hub's window fills edge to edge.
+          The topbar drops the same cap so the two stay aligned. */}
+      <main className="w-full flex-1 overflow-x-hidden px-4 pb-16 pt-6 sm:px-6">
         {children}
       </main>
     </div>

@@ -62,11 +62,15 @@ export function RoleBadge({ role }: { role: Role | string }) {
     <span
       className={cn(
         "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-semibold leading-4",
+        // Shiori's LEVEL_BADGE ladder, as carried into the clients by Hub
+        // 3f40d1f: owner = primary, manager = purple-300, user = blue-300,
+        // each on a 15% wash of itself. "User" is a tinted role now, not the
+        // grey non-role it used to render as.
         role === "owner"
           ? "bg-primary/15 text-primary"
           : role === "manager"
-            ? "bg-sky-500/15 text-sky-400"
-            : "bg-muted text-muted-foreground",
+            ? "bg-purple-300/15 text-purple-300"
+            : "bg-blue-300/15 text-blue-300",
       )}
     >
       {/* Medal icon = Shiori's level pill (user-manager.tsx levelColors row). */}
@@ -127,12 +131,13 @@ export function PaneSection({
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             {title ? <h2 className="text-base font-semibold">{title}</h2> : null}
-            {sub ? <p className="mt-1 text-sm text-muted-foreground">{sub}</p> : null}
+            {/* Card description is bodySmall (12sp) in the clients, not 14. */}
+            {sub ? <p className="mt-1 text-xs text-muted-foreground">{sub}</p> : null}
           </div>
           {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
         </div>
       )}
-      {!title && sub ? <p className="mb-3 text-sm text-muted-foreground">{sub}</p> : null}
+      {!title && sub ? <p className="mb-3 text-xs text-muted-foreground">{sub}</p> : null}
       <div className="grid grid-cols-1 gap-4">{children}</div>
     </section>
   );

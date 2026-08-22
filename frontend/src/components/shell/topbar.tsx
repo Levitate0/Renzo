@@ -77,7 +77,7 @@ export function Topbar() {
         className="topbar sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-xl backdrop-saturate-150"
         style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
       >
-        <div className="relative mx-auto flex h-14 w-full max-w-[1440px] items-center gap-3 px-3 lg:px-5">
+        <div className="relative flex h-14 w-full items-center gap-3 px-3 lg:px-5">
           {/* Mobile hamburger -> drawer with the tab list */}
           <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
             <SheetTrigger asChild>

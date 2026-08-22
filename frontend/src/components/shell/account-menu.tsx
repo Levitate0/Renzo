@@ -2,8 +2,9 @@
 
 // Account menu — Shiori's user-menu.tsx grouped structure, adapted to Renzo:
 //
-//   header: avatar + username + role pill (Medal icon; owner=primary,
-//           manager=sky, user=muted — same tints as settings/shared.tsx RoleBadge)
+//   header: username + role pill (Medal icon; owner=primary,
+//           manager=purple-300, user=blue-300 — same tints as
+//           settings/shared.tsx RoleBadge). No avatar: the trigger is one.
 //   ── account actions: "Edit avatar…" (avatar-dialog.tsx) + "Change password…"
 //                 (small dialog → POST /api/account/password)
 //   ── nav links: Users (staff) · Account (everyone) · Settings (owner) ·
@@ -12,6 +13,8 @@
 //                 tier selector (same useContentLevel store as the page chips,
 //                 so the two controls always agree)
 //   ── Log out (red)
+//
+//   ── project links (GitHub / Website), as at the foot of Shiori's menu
 //
 // Shiori items with NO Renzo equivalent are deliberately absent: OPDS row,
 // Suwayomi import, Import Series, Take a tour, Trackers dialog
@@ -48,6 +51,7 @@ import {
   useContentLevel,
 } from "@/components/media/content-filter";
 import { AvatarDialog } from "@/components/shell/avatar-dialog";
+import { ExternalLinks } from "@/components/shell/external-links";
 import { ChangePasswordDialog } from "@/components/shell/change-password-dialog";
 import { UserAvatar } from "@/components/shell/user-avatar";
 import {
@@ -67,11 +71,12 @@ const roleLabel = (r?: Role) =>
   r === "owner" ? "Owner" : r === "manager" ? "Manager" : "User";
 
 // Same tint ladder as settings/shared.tsx RoleBadge / Shiori's LEVEL_BADGE
-// (dark-only app, so only the dark variants matter).
+// (dark-only app, so only the dark variants matter). Keep the two in step —
+// the pill appears in both places and a split palette reads as a bug.
 const ROLE_PILL_CLS: Record<Role, string> = {
   owner: "bg-primary/15 text-primary",
-  manager: "bg-sky-500/15 text-sky-400",
-  user: "bg-muted text-muted-foreground",
+  manager: "bg-purple-300/15 text-purple-300",
+  user: "bg-blue-300/15 text-blue-300",
 };
 
 /** Role pill — Shiori's user-menu header badge, Medal icon and all. */
@@ -89,13 +94,13 @@ function RolePill({ role }: { role?: Role }) {
   );
 }
 
-/** Menu header — avatar + username left, role pill inline right
- *  (user-menu.tsx:143; avatar circle mirrors the Shiori header treatment). */
+/** Menu header — username left, role pill right, matching Shiori's user-menu
+ *  header exactly. No avatar in the panel: the trigger you just clicked IS the
+ *  avatar, so repeating it inside costs a row and says nothing. */
 function WhoHeader({ user }: { user: PublicUser | null }) {
   return (
     <div className="who mb-1 border-b border-border px-3 py-2">
-      <div className="flex items-center gap-2">
-        <UserAvatar user={user} chars={2} className="h-8 w-8 text-[11px]" />
+      <div className="flex items-center justify-between gap-2">
         <p className="n min-w-0 flex-1 truncate text-sm font-medium text-foreground">
           {user?.username ?? "—"}
         </p>
@@ -123,7 +128,7 @@ const CONTENT_LABELS: Record<ContentLevel, string> = {
 function ContentTierControl() {
   const [level, setLevel] = useContentLevel();
   return (
-    <div className="content-tier px-2 py-1.5">
+    <div className="content-tier px-3.5 py-1.5">
       <div className="mb-1.5 flex items-center gap-2 text-xs text-muted-foreground">
         <EyeOff className="h-4 w-4 shrink-0" />
         <span>Show up to</span>
@@ -157,6 +162,11 @@ function ContentTierControl() {
 // Shiori's avatar circle treatment (user-menu.tsx trigger): translucent
 // primary fill + primary ring + primary initials. Keeps the literal
 // `avatar avatar-btn` classes + #acctBtn id for tvnav/legacy CSS.
+// MenuRow metrics from the clients' AccountMenu (Hub 3f40d1f): 14/11 padding
+// around a 16px filled icon and a bodyMedium label. Radix's default item is
+// 8/6, which reads noticeably tighter than the app.
+const MENU_ITEM_CLS = "px-3.5 py-[11px]";
+
 const AVATAR_CLS =
   "avatar avatar-btn grid shrink-0 place-items-center overflow-hidden rounded-full " +
   "border border-primary/30 bg-primary/20 text-xs font-semibold text-primary " +
@@ -178,7 +188,7 @@ function TvMenuItem({
       type="button"
       onClick={onClick}
       className={
-        "flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground " +
+        `flex w-full items-center rounded-sm ${MENU_ITEM_CLS} text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground ` +
         (className ?? "")
       }
     >
@@ -299,6 +309,8 @@ export function AccountMenu() {
             >
               <LogOut className="mr-2 h-4 w-4" /> Log out
             </TvMenuItem>
+            <div className="my-1 h-px bg-border" />
+            <ExternalLinks className="px-2 py-1" />
           </div>
         )}
       </div>
@@ -319,14 +331,14 @@ export function AccountMenu() {
             <UserAvatar user={user} chars={2} bare className="h-full w-full" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="acct-menu w-60">
+        <DropdownMenuContent align="end" className="acct-menu w-[300px]">
           <WhoHeader user={user} />
 
           {/* — account actions — */}
-          <DropdownMenuItem onSelect={() => setAvOpen(true)}>
+          <DropdownMenuItem className={MENU_ITEM_CLS} onSelect={() => setAvOpen(true)}>
             <ImageIcon className="mr-2 h-4 w-4" /> Edit avatar…
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setPwOpen(true)}>
+          <DropdownMenuItem className={MENU_ITEM_CLS} onSelect={() => setPwOpen(true)}>
             <KeyRound className="mr-2 h-4 w-4" /> Change password…
           </DropdownMenuItem>
 
@@ -334,23 +346,23 @@ export function AccountMenu() {
 
           {/* — nav links — */}
           {isStaff && (
-            <DropdownMenuItem onSelect={() => router.push("/users/")}>
+            <DropdownMenuItem className={MENU_ITEM_CLS} onSelect={() => router.push("/users/")}>
               <Users className="mr-2 h-4 w-4" /> Users
             </DropdownMenuItem>
           )}
           {/* Account — every role: per-user settings (password/email,
               credentials, library defaults, API key). */}
-          <DropdownMenuItem onSelect={() => router.push("/account/")}>
+          <DropdownMenuItem className={MENU_ITEM_CLS} onSelect={() => router.push("/account/")}>
             <KeyRound className="mr-2 h-4 w-4" /> Account
           </DropdownMenuItem>
           {/* Settings — owner only (app-wide SMTP/Email config). */}
           {isOwner && (
-            <DropdownMenuItem onSelect={() => router.push("/settings/")}>
+            <DropdownMenuItem className={MENU_ITEM_CLS} onSelect={() => router.push("/settings/")}>
               <Settings className="mr-2 h-4 w-4" /> Settings
             </DropdownMenuItem>
           )}
           {canChangeServer && (
-            <DropdownMenuItem onSelect={() => void changeServer()}>
+            <DropdownMenuItem className={MENU_ITEM_CLS} onSelect={() => void changeServer()}>
               <Server className="mr-2 h-4 w-4" /> Change server
             </DropdownMenuItem>
           )}
@@ -358,7 +370,7 @@ export function AccountMenu() {
           <DropdownMenuSeparator />
 
           {/* — personalization — */}
-          <DropdownMenuItem onSelect={() => router.push("/appearance/")}>
+          <DropdownMenuItem className={MENU_ITEM_CLS} onSelect={() => router.push("/appearance/")}>
             <Palette className="mr-2 h-4 w-4" /> Appearance
           </DropdownMenuItem>
           <ContentTierControl />
@@ -368,11 +380,16 @@ export function AccountMenu() {
           {/* Log out stays red/destructive — a deliberate Renzo choice
               (Shiori renders it as a neutral item; do not "fix" this). */}
           <DropdownMenuItem
-            className="text-destructive focus:text-destructive"
+            className={`${MENU_ITEM_CLS} text-destructive focus:text-destructive`}
             onSelect={() => void logout()}
           >
             <LogOut className="mr-2 h-4 w-4" /> Log out
           </DropdownMenuItem>
+
+          <DropdownMenuSeparator />
+
+          {/* Project links, as at the foot of Shiori's user menu. */}
+          <ExternalLinks className="px-2 py-1" />
         </DropdownMenuContent>
       </DropdownMenu>
 

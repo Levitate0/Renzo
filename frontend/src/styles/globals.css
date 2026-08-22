@@ -4237,6 +4237,13 @@ body.tv-nav .mode-pill { cursor: default; pointer-events: none; }
    Child sizing needs descendant selectors, hence CSS instead of utilities. ─────────────────────────────── */
 /* Applies at EVERY width — desktop Discover uses the same horizontal rows as
    mobile (user request 2026-08-01); cards grow a little on wide screens. */
+/* Chrome above the Discover rows — topbar, chip row and the page's own top and
+   bottom padding. One constant: it sets both the height the rows divide up and
+   the card width derived from it, so the two can't drift apart. */
+:root {
+  --browse-chrome: 200px;
+}
+
 .browse-scroll {
   display: flex;
   overflow-x: auto;
@@ -4256,9 +4263,58 @@ body.tv-nav .mode-pill { cursor: default; pointer-events: none; }
   flex: 0 0 96px;
   scroll-snap-align: start;
 }
+
+/* Card sizing, ported from the Hub (components/Common.kt tileWidthFor +
+   tileWidthTier). Two rules, not one fixed width:
+     1. a WIDTH TIER that grows with the viewport — 150 / 172 / 190 / 210;
+     2. a HEIGHT CAP, because a tile is a 2:3 poster plus ~96px of caption and
+        the Hub's desktop Discover fits its three rows in the window, so the
+        card can never be taller than a third of it. Hence
+        min(tier, (row height - caption) * 2/3), floored at 64px.
+   The web only ever implemented the bottom two tiers and no cap, so its rows
+   ran wider-carded and sparser than the Hub's at the same window size.
+   Phones keep the flat 150px tier — the Hub bounds nothing there either. */
 @media (min-width: 768px) {
+  .browse-scroll {
+    --browse-tier: 172px;
+    /* Height of ONE row's card area: the three rows split what's left under
+       the chrome, minus the row's own heading and margin. Same arithmetic the
+       Hub's MediaRow hands to tileWidthFor as its BoxWithConstraints height. */
+    --browse-row-h: calc((100dvh - var(--browse-chrome)) / 3 - 40px);
+  }
   .browse-scroll > .card {
-    flex-basis: 172px;
+    flex-basis: clamp(64px, calc((var(--browse-row-h) - 96px) * 2 / 3), var(--browse-tier));
+  }
+
+  /* Browse mode fills the window, as the Hub's desktop Discover does: three
+     rows share the height and the page itself doesn't scroll (HomeScreen.kt —
+     "the three rows split the window height evenly and the page never scrolls
+     vertically"). Search and category views keep their scrolling grids. */
+  #browseWrap {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - var(--browse-chrome));
+  }
+  #browseWrap > .browse-row {
+    display: flex;
+    flex: 1 1 0;
+    min-height: 0;
+    flex-direction: column;
+    margin-bottom: 0;
+  }
+  #browseWrap .row-body {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+@media (min-width: 1100px) {
+  .browse-scroll {
+    --browse-tier: 190px;
+  }
+}
+@media (min-width: 1400px) {
+  .browse-scroll {
+    --browse-tier: 210px;
   }
 }
 

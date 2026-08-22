@@ -63,17 +63,20 @@ export function SettingsRouteShell({
       <div className="mb-6 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+          {/* PageHeading subtitle is bodySmall (12sp) in the clients. */}
           {description ? (
-            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{description}</p>
           ) : null}
         </div>
-        {/* Old modal's ✕ close (public/index.html:273). */}
+        {/* Old modal's ✕ close (public/index.html:273), now the clients' close
+            affordance: the glyph inside a 1px ring, filling with --card rather
+            than --accent on hover (Hub 3f40d1f). */}
         <Button
           variant="ghost"
           size="icon"
           aria-label={`Close ${title.toLowerCase()}`}
           onClick={close}
-          className="shrink-0"
+          className="shrink-0 rounded-full border border-border text-muted-foreground hover:bg-card hover:text-foreground"
         >
           <X className="h-5 w-5" />
         </Button>

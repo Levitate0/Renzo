@@ -9,6 +9,9 @@ import React, { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { GateBanner, GateError, GateShell } from "@/components/gates/gate-shell";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/auth-context";
 import type { AuthSuccess } from "@/lib/types";
 
@@ -66,52 +69,62 @@ export function LoginGate() {
     setBusy(false);
   }
 
-  const inputCls =
-    "w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring";
-
   return (
-    <GateShell>
+    // Shiori's login card: max-w-md, centred banner, "Enter your credentials"
+    // description, labelled fields, remember row, full-width submit, and the
+    // forgot link centred at the foot of the form.
+    <GateShell wide>
       <GateBanner />
       <p className="muted-note text-center text-sm text-muted-foreground">
-        Sign in to your account.
+        Enter your credentials to log in
       </p>
       <form
         id="authForm"
-        className="auth-form flex flex-col gap-3"
+        className="auth-form flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
           void submit();
         }}
       >
-        <input
-          id="authUser"
-          type="text"
-          placeholder="Username"
-          autoComplete="username"
-          enterKeyHint="next"
-          className={inputCls}
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          onKeyDown={(e) => {
-            // Go/Next from the username field moves on instead of dead-ending.
-            if (e.key === "Enter") {
-              e.preventDefault();
-              passRef.current?.focus();
-            }
-          }}
-          autoFocus
-        />
-        <input
-          id="authPass"
-          ref={passRef}
-          type="password"
-          placeholder="Password"
-          autoComplete="current-password"
-          enterKeyHint="go"
-          className={inputCls}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+        {/* Above the fields, as on Shiori — an error under the button is easy
+            to miss when the button is what you just pressed. */}
+        <GateError>{error}</GateError>
+        <div className="space-y-2">
+          <Label htmlFor="authUser">Username</Label>
+          <Input
+            id="authUser"
+            type="text"
+            placeholder="Enter your username"
+            autoComplete="username"
+            enterKeyHint="next"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            onKeyDown={(e) => {
+              // Go/Next from the username field moves on instead of dead-ending.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                passRef.current?.focus();
+              }
+            }}
+            autoFocus
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="authPass">Password</Label>
+          <Input
+            id="authPass"
+            ref={passRef}
+            type="password"
+            placeholder="Enter your password"
+            autoComplete="current-password"
+            enterKeyHint="go"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        {/* Native checkbox, not Shiori's Radix one: the gate is a tvnav
+            blocking root and a real <input> is what the D-pad reliably lands
+            on. Same look via accent-color. */}
         <label className="remember-row flex items-center gap-2 text-sm text-muted-foreground">
           <input
             id="authRemember"
@@ -120,26 +133,22 @@ export function LoginGate() {
             onChange={(e) => setRemember(e.target.checked)}
             className="h-4 w-4 accent-[hsl(var(--primary))]"
           />
-          <span>Remember me on this device</span>
+          <span>Remember me</span>
         </label>
-        <button
-          id="authSubmit"
-          type="submit"
-          disabled={busy}
-          className="w-full rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          Sign in
-        </button>
+        <Button id="authSubmit" type="submit" className="w-full" disabled={busy}>
+          {busy ? "Logging in…" : "Log in"}
+        </Button>
+        <div className="text-center text-sm">
+          <button
+            type="button"
+            onClick={() => void forgot()}
+            disabled={busy}
+            className="link-btn text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            Forgot password?
+          </button>
+        </div>
       </form>
-      <GateError>{error}</GateError>
-      <button
-        type="button"
-        onClick={() => void forgot()}
-        disabled={busy}
-        className="link-btn self-center text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-      >
-        Forgot password?
-      </button>
     </GateShell>
   );
 }

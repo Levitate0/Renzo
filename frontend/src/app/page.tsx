@@ -44,7 +44,12 @@ function useDiscoverRow(key: CatKey) {
   return useQuery({
     queryKey: ["discover", key],
     queryFn: () => api<CardItem[]>(CAT_URLS[key]),
-    staleTime: 300_000,
+    // 30 minutes, matching the server's browse-row cache (services/anilist.ts
+    // LIST_TTL_MS). At the old 5 the client re-asked six times per server
+    // cache entry — every one of those a chance to land on a cold cache and
+    // spend an AniList request.
+    staleTime: 1_800_000,
+    gcTime: 1_800_000,
     enabled: !!user,
   });
 }

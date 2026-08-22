@@ -65,7 +65,10 @@ const SheetContent = React.forwardRef<
       {...props}
     >
       {children}
-      <SheetPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-secondary">
+      {/* Close affordance: the glyph inside a 1px ring, filling with --card on
+          hover — the clients' treatment (Hub 3f40d1f), shared by every sheet so
+          the nav drawer and the settings pages close the same way. */}
+      <SheetPrimitive.Close className="absolute right-4 top-4 rounded-full border border-border p-1.5 text-muted-foreground ring-offset-background transition-colors hover:bg-card hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
         <Cross2Icon className="h-4 w-4" />
         <span className="sr-only">Close</span>
       </SheetPrimitive.Close>
