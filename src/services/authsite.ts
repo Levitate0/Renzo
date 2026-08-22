@@ -4,7 +4,7 @@ import { logger } from "../logger.js";
 
 const log = logger("authsite");
 
-export type Provider = "anilist" | "myanimelist";
+export type Provider = "anilist" | "myanimelist" | "kitsu";
 
 interface Cached {
   token: string | null; // null = known-not-connected (negative cache)

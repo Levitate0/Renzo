@@ -38,25 +38,26 @@ export function TrackingRow({ id }: { id: number }) {
   const providers: string[] = [];
   if (t && "anilist" in t) providers.push("AniList");
   if (t && "mal" in t) providers.push("MyAnimeList");
+  if (t && "kitsu" in t) providers.push("Kitsu");
   const connected = providers.length > 0;
 
   // Prefer AniList's values for display (old loadTracking).
   useEffect(() => {
     if (!t) return;
-    const e = t.anilist || t.mal || null;
+    const e = t.anilist || t.mal || t.kitsu || null;
     setStatus(e?.status || "");
     setProgress(String(e?.progress ?? 0));
     setScore(e?.score ? String(e.score) : "");
   }, [t]);
 
-  const total = (t && (t.anilist || t.mal)?.total) || null;
+  const total = (t && (t.anilist || t.mal || t.kitsu)?.total) || null;
   const note = q.isError
     ? ""
     : !t
       ? ""
       : connected
         ? `Syncs to ${providers.join(" + ")}`
-        : "Connect AniList or MAL in Settings to track";
+        : "Connect AniList, MAL or Kitsu in Settings to track";
 
   const sync = async () => {
     const body: { progress: number; status?: string; score?: number } = {

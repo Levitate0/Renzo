@@ -36,7 +36,7 @@ function wrap(fn: (req: Request, res: Response) => Promise<unknown>) {
 
 function publicUser(u: {
   id: string; username: string; role: string; email?: string;
-  realDebridToken?: string; anilistToken?: string; malToken?: string; theme?: ThemeSettings;
+  realDebridToken?: string; anilistToken?: string; malToken?: string; kitsuToken?: string; theme?: ThemeSettings;
   allDebridKey?: string; debrid?: "realdebrid" | "alldebrid";
   downloadsDenied?: boolean; addDefaults?: AddDefaults; autoStatus?: boolean; ccLang?: string; jimakuKey?: string;
   avatarBase64?: string; avatarContentType?: string;
@@ -52,6 +52,7 @@ function publicUser(u: {
     jimakuConnected: Boolean(u.jimakuKey),
     anilistConnected: Boolean(u.anilistToken),
     malConnected: Boolean(u.malToken),
+    kitsuConnected: Boolean(u.kitsuToken),
     theme: u.theme ?? null,
     downloadsDenied: Boolean(u.downloadsDenied),
     addDefaults: u.addDefaults ?? null,
@@ -580,6 +581,10 @@ accountRoutes.post("/add-defaults", wrap(async (req: AuthedRequest, res) => {
 // The auth site owns the provider app + callback; we mint the auth URL, the user
 // authorizes in a popup, and we poll the state until tokens arrive — stored on
 // THIS user (per-user connections; the auth site keeps nothing for machine flows).
+// Redirect-flow providers only. Kitsu is deliberately absent: it uses the
+// OAuth2 password grant and has no authorize URL (its /api/oauth/authorize
+// answers HTTP 500 for third parties), so it is connected either by pasting a
+// token below or centrally on the auth-site dashboard.
 const OAUTH_PROVIDERS: Record<string, authsiteSvc.Provider> = { anilist: "anilist", mal: "myanimelist" };
 
 accountRoutes.post("/oauth/:provider/start", wrap(async (req: AuthedRequest, res) => {
@@ -621,6 +626,9 @@ accountRoutes.post("/trackers", wrap(async (req: AuthedRequest, res) => {
   }
   if ("malToken" in (req.body ?? {})) {
     user.malToken = String(req.body.malToken ?? "").trim() || undefined;
+  }
+  if ("kitsuToken" in (req.body ?? {})) {
+    user.kitsuToken = String(req.body.kitsuToken ?? "").trim() || undefined;
   }
   await db.save();
   res.json(publicUser(user));

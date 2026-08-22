@@ -39,11 +39,14 @@ export function CredentialsPane() {
   const [jimakuKey, setJimakuKey] = useState("");
   const [aniToken, setAniToken] = useState("");
   const [malToken, setMalToken] = useState("");
+  const [kitsuToken, setKitsuToken] = useState("");
   const rdMask = useMaskedInput();
   const adMask = useMaskedInput();
   const jimakuMask = useMaskedInput();
   const aniMask = useMaskedInput();
   const malMask = useMaskedInput();
+  // Its own instance: sharing malMask would tie the two fields' reveal state together.
+  const kitsuMask = useMaskedInput();
 
   // Latest health for event handlers (origin checks, connect URLs).
   const healthRef = useRef<Health | undefined>(health);
@@ -242,7 +245,7 @@ export function CredentialsPane() {
     }
   };
 
-  const saveTracker = async (field: "anilistToken" | "malToken", val: string) => {
+  const saveTracker = async (field: "anilistToken" | "malToken" | "kitsuToken", val: string) => {
     try {
       await api("/account/trackers", { method: "POST", body: JSON.stringify({ [field]: val }) });
       if (field === "anilistToken") setAniToken("");
@@ -520,6 +523,39 @@ export function CredentialsPane() {
                   variant="ghost"
                   className="shrink-0"
                   onClick={() => void saveTracker("malToken", "")}
+                >
+                  Clear
+                </Button>
+              </div>
+            </Field>
+            {/*
+              Kitsu has no redirect flow — its authorize endpoint answers 500
+              for third parties, so the only OAuth grant it offers is
+              username/password. Connecting an account happens on the auth-site
+              dashboard (which exchanges the credentials once and stores only
+              the tokens); pasting a token here is the per-user alternative.
+            */}
+            <Field label="Kitsu access token" htmlFor="kitsuToken">
+              <div className="flex flex-wrap gap-2">
+                <Input
+                  id="kitsuToken"
+                  {...kitsuMask}
+                  className={cn(kitsuMask.className, "w-full flex-1 sm:w-auto")}
+                  placeholder="Kitsu token"
+                  value={kitsuToken}
+                  onChange={(e) => setKitsuToken(e.target.value)}
+                />
+                <Button
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => void saveTracker("kitsuToken", kitsuToken.trim())}
+                >
+                  Save
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="shrink-0"
+                  onClick={() => void saveTracker("kitsuToken", "")}
                 >
                   Clear
                 </Button>

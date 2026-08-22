@@ -378,12 +378,13 @@ function detailFromTitle(t: Title, user?: UserRecord) {
 api.get("/health", wrap(async (req, res) => {
   const token = req.user?.realDebridToken;
   const adKey = req.user?.allDebridKey;
-  const [acct, adAcct, jf, anilistOn, malOn] = await Promise.all([
+  const [acct, adAcct, jf, anilistOn, malOn, kitsuOn] = await Promise.all([
     token ? rd.accountInfo(token) : Promise.resolve(null),
     adKey ? ad.accountInfo(adKey) : Promise.resolve(null),
     jellyfin.jellyfinConfigured() ? jellyfin.ping() : Promise.resolve("not-configured" as const),
     tracker.anilistConnected(req.user),
     tracker.malConnected(req.user),
+    tracker.kitsuConnected(req.user),
   ]);
   res.json({
     ok: true,
@@ -393,7 +394,7 @@ api.get("/health", wrap(async (req, res) => {
     alldebrid: !adKey ? "not-connected" : !adAcct ? "connected" : ad.isPremium(adAcct) ? "premium" : "not-premium",
     debrid: debrid.resolveDebrid(req.user)?.name ?? null, // active provider
     jellyfin: jf,
-    trackers: { anilist: anilistOn, mal: malOn },
+    trackers: { anilist: anilistOn, mal: malOn, kitsu: kitsuOn },
     // Where the BROWSER links AniList/MAL accounts (public host for the popup +
     // postMessage origin). Token fetching uses the internal host, not this one.
     authsite: { enabled: authsite.configured(), url: config.authsitePublicUrl },

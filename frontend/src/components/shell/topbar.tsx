@@ -45,7 +45,7 @@ function StatusLine() {
       h.debrid === "alldebrid"
         ? (h.alldebrid === "invalid" || h.alldebrid === "not-connected" ? "AD ✗" : "AD ✓")
         : RD_SHORT[h.realdebrid] ?? "RD ✗";
-    const tr = [h.trackers.anilist && "AniList", h.trackers.mal && "MAL"]
+    const tr = [h.trackers.anilist && "AniList", h.trackers.mal && "MAL", h.trackers.kitsu && "Kitsu"]
       .filter(Boolean)
       .join("+");
     text = [debrid, tr && `⇄ ${tr}`].filter(Boolean).join("  ·  ");

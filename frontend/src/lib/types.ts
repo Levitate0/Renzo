@@ -39,6 +39,7 @@ export interface PublicUser {
   debrid: "realdebrid" | "alldebrid" | null;
   jimakuConnected: boolean;
   anilistConnected: boolean;
+  kitsuConnected: boolean;
   malConnected: boolean;
   theme: ThemeSettings | null;
   downloadsDenied: boolean;
@@ -162,7 +163,7 @@ export interface Health {
   alldebrid: DebridHealth;
   debrid: "realdebrid" | "alldebrid" | null;
   jellyfin: string;
-  trackers: { anilist: boolean; mal: boolean };
+  trackers: { anilist: boolean; mal: boolean; kitsu: boolean };
   authsite: { enabled: boolean; url: string | null };
 }
 
@@ -333,6 +334,7 @@ export interface TrackEntry {
 export interface Tracking {
   anilist?: TrackEntry | null;
   mal?: TrackEntry | null;
+  kitsu?: TrackEntry | null;
 }
 
 // --- Playback / watch links -------------------------------------------------

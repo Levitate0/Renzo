@@ -157,6 +157,7 @@ export const config = {
   // the self-hosted auth site (below), which fetches/refreshes tokens centrally.
   anilistToken: process.env.ANILIST_TOKEN ?? "",
   malToken: process.env.MAL_TOKEN ?? "",
+  kitsuToken: process.env.KITSU_TOKEN ?? "",
 
   // Self-hosted auth site (Renzo Apps) that stores + auto-refreshes AniList/MAL
   // tokens. Two bases:

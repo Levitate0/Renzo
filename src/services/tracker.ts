@@ -7,6 +7,8 @@ import type { Title, UserRecord } from "../types.js";
 
 const log = logger("tracker");
 const MAL = "https://api.myanimelist.net/v2";
+const KITSU = "https://kitsu.io/api/edge";
+const KITSU_JSONAPI = "application/vnd.api+json";
 
 // Token resolution, highest priority first:
 //   1. the user's own connected token (per-user, from Settings)
@@ -20,14 +22,21 @@ export async function malTokenFor(user?: UserRecord): Promise<string> {
   if (user?.malToken) return (await freshUserToken(user, "myanimelist")) ?? user.malToken;
   return config.malToken || (await authsite.getToken("myanimelist")) || "";
 }
+export async function kitsuTokenFor(user?: UserRecord): Promise<string> {
+  if (user?.kitsuToken) return (await freshUserToken(user, "kitsu")) ?? user.kitsuToken;
+  return config.kitsuToken || (await authsite.getToken("kitsu")) || "";
+}
 
 /** Per-user OAuth tokens carry an expiry + refresh token (auth-site machine
  *  flow). Refresh through the auth site shortly before expiry; on any failure
  *  fall back to the stored token (the API call itself will surface a real 401).
  *  Manually-pasted tokens have no expiry recorded and pass straight through. */
 async function freshUserToken(user: UserRecord, provider: authsite.Provider): Promise<string | null> {
-  const [tok, refresh, expiresAt] = provider === "anilist"
-    ? [user.anilistToken, user.anilistRefresh, user.anilistExpiresAt]
+  // A table rather than a ternary: with three providers the "else" branch
+  // silently became wrong for the third.
+  const [tok, refresh, expiresAt] =
+    provider === "anilist" ? [user.anilistToken, user.anilistRefresh, user.anilistExpiresAt]
+    : provider === "kitsu" ? [user.kitsuToken, user.kitsuRefresh, user.kitsuExpiresAt]
     : [user.malToken, user.malRefresh, user.malExpiresAt];
   if (!tok || !refresh || !expiresAt) return tok ?? null;
   const exp = Date.parse(expiresAt);
@@ -38,6 +47,10 @@ async function freshUserToken(user: UserRecord, provider: authsite.Provider): Pr
       user.anilistToken = t.accessToken;
       user.anilistRefresh = t.refreshToken ?? refresh;
       user.anilistExpiresAt = t.expiresAt ?? undefined;
+    } else if (provider === "kitsu") {
+      user.kitsuToken = t.accessToken;
+      user.kitsuRefresh = t.refreshToken ?? refresh;
+      user.kitsuExpiresAt = t.expiresAt ?? undefined;
     } else {
       user.malToken = t.accessToken;
       user.malRefresh = t.refreshToken ?? refresh;
@@ -56,6 +69,9 @@ export async function anilistConnected(user?: UserRecord): Promise<boolean> {
 }
 export async function malConnected(user?: UserRecord): Promise<boolean> {
   return Boolean(await malTokenFor(user));
+}
+export async function kitsuConnected(user?: UserRecord): Promise<boolean> {
+  return Boolean(await kitsuTokenFor(user));
 }
 
 // ---------------------------------------------------------------------------
@@ -260,13 +276,79 @@ const FROM_MAL: Record<string, TrackStatus> = {
   watching: "watching", completed: "completed", plan_to_watch: "planning", on_hold: "paused", dropped: "dropped",
 };
 
+// Kitsu's own vocabulary. "rewatching" is not a status there — it is the
+// `reconsuming` boolean on top of `current`, the same shape MAL uses for
+// is_rewatching.
+const TO_KITSU: Record<TrackStatus, string> = {
+  watching: "current", completed: "completed", planning: "planned",
+  paused: "on_hold", dropped: "dropped", rewatching: "current",
+};
+const FROM_KITSU: Record<string, TrackStatus> = {
+  current: "watching", completed: "completed", planned: "planning",
+  on_hold: "paused", dropped: "dropped",
+};
+
+/**
+ * Kitsu's id for a title, resolved from the MAL id and then cached on the
+ * Title.
+ *
+ * AniList returns no Kitsu id, so unlike malId there is no free source. Kitsu
+ * publishes its own cross-service mappings unauthenticated, which means this
+ * costs nothing against AniList's quota — the point that matters, since the
+ * whole reason a third tracker is useful is to keep working when AniList is
+ * rate-limited.
+ */
+export async function kitsuIdFor(title: Title): Promise<number | null> {
+  if (title.kitsuId) return title.kitsuId;
+  if (!title.malId) return null;
+  try {
+    const url =
+      `${KITSU}/mappings?filter%5BexternalSite%5D=myanimelist/anime` +
+      `&filter%5BexternalId%5D=${title.malId}&include=item`;
+    const res = await fetch(url, { headers: { accept: KITSU_JSONAPI }, signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw new Error(`Kitsu ${res.status}`);
+    const j = (await res.json()) as {
+      data?: { relationships?: { item?: { data?: { id?: string; type?: string } } } }[];
+    };
+    const item = j.data?.[0]?.relationships?.item?.data;
+    if (!item?.id || item.type !== "anime") return null;
+    const id = Number(item.id);
+    if (!Number.isFinite(id)) return null;
+    title.kitsuId = id;
+    await db.upsertTitle(title);
+    return id;
+  } catch (e) {
+    log.warn("kitsuIdFor", title.romaji, String(e));
+    return null;
+  }
+}
+
+/** The caller's own Kitsu user id — needed to scope a library-entry lookup. */
+async function kitsuUserId(token: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${KITSU}/users?filter%5Bself%5D=true`, {
+      headers: { accept: KITSU_JSONAPI, authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`Kitsu ${res.status}`);
+    const j = (await res.json()) as { data?: { id?: string }[] };
+    return j.data?.[0]?.id ?? null;
+  } catch (e) {
+    log.warn("kitsuUserId", String(e));
+    return null;
+  }
+}
+
 export interface TrackEntry { status: TrackStatus | null; progress: number; score: number; total: number | null; }
-export interface Tracking { anilist?: TrackEntry | null; mal?: TrackEntry | null } // key present+null = connected but failed; absent = not connected
+// key present+null = connected but failed; absent = not connected
+export interface Tracking { anilist?: TrackEntry | null; mal?: TrackEntry | null; kitsu?: TrackEntry | null }
 
 /** Read MY current list entry (status/progress/score) for a title from each connected tracker. */
 export async function getTracking(title: Title, user?: UserRecord): Promise<Tracking> {
   const out: Tracking = {};
-  const [aniToken, malToken] = await Promise.all([anilistTokenFor(user), malTokenFor(user)]);
+  const [aniToken, malToken, kitsuToken] = await Promise.all([
+    anilistTokenFor(user), malTokenFor(user), kitsuTokenFor(user),
+  ]);
 
   if (aniToken) {
     try {
@@ -301,6 +383,38 @@ export async function getTracking(title: Title, user?: UserRecord): Promise<Trac
       };
     } catch (e) { log.warn("mal getTracking", String(e)); out.mal = null; }
   }
+
+  if (kitsuToken) {
+    try {
+      const [kid, uid] = await Promise.all([kitsuIdFor(title), kitsuUserId(kitsuToken)]);
+      if (!kid || !uid) throw new Error("no kitsu id for this title");
+      const url =
+        `${KITSU}/library-entries?filter%5BuserId%5D=${uid}&filter%5BanimeId%5D=${kid}` +
+        `&include=anime&fields%5Banime%5D=episodeCount`;
+      const res = await fetch(url, {
+        headers: { accept: KITSU_JSONAPI, authorization: `Bearer ${kitsuToken}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) throw new Error(`Kitsu ${res.status}`);
+      const j = (await res.json()) as {
+        data?: { attributes?: { status?: string; progress?: number; ratingTwenty?: number | null; reconsuming?: boolean } }[];
+        included?: { type?: string; attributes?: { episodeCount?: number | null } }[];
+      };
+      const a = j.data?.[0]?.attributes;
+      const total = j.included?.find((i) => i.type === "anime")?.attributes?.episodeCount ?? null;
+      out.kitsu = {
+        // reconsuming turns Kitsu's "current" back into our "rewatching",
+        // the only status the two vocabularies disagree on.
+        status: a?.status
+          ? (a.reconsuming && a.status === "current" ? "rewatching" : FROM_KITSU[a.status] ?? null)
+          : null,
+        progress: a?.progress ?? 0,
+        // ratingTwenty is a 2..20 scale; ours is 0..10.
+        score: a?.ratingTwenty ? a.ratingTwenty / 2 : 0,
+        total,
+      };
+    } catch (e) { log.warn("kitsu getTracking", String(e)); out.kitsu = null; }
+  }
   return out;
 }
 
@@ -311,7 +425,9 @@ export async function setTracking(
   patch: { status?: TrackStatus; progress?: number; score?: number },
 ): Promise<void> {
   const jobs: Promise<unknown>[] = [];
-  const [aniToken, malToken] = await Promise.all([anilistTokenFor(user), malTokenFor(user)]);
+  const [aniToken, malToken, kitsuToken] = await Promise.all([
+    anilistTokenFor(user), malTokenFor(user), kitsuTokenFor(user),
+  ]);
 
   if (aniToken) {
     const decls = ["$mediaId: Int"], fields = ["mediaId: $mediaId"];
@@ -336,7 +452,76 @@ export async function setTracking(
       }).then((r) => { if (!r.ok) throw new Error(`MAL ${r.status}`); }).catch((e) => log.warn("mal setTracking", String(e))),
     );
   }
+
+  if (kitsuToken) jobs.push(kitsuSetTracking(title, kitsuToken, patch).catch((e) => log.warn("kitsu setTracking", String(e))));
+
   await Promise.allSettled(jobs);
+}
+
+/**
+ * Kitsu writes are JSON:API, so a change is either a PATCH of an existing
+ * library entry or a POST creating one — there is no upsert. Both need the
+ * entry id, so the lookup comes first.
+ */
+async function kitsuSetTracking(
+  title: Title,
+  token: string,
+  patch: { status?: TrackStatus; progress?: number; score?: number },
+): Promise<void> {
+  const [kid, uid] = await Promise.all([kitsuIdFor(title), kitsuUserId(token)]);
+  if (!kid || !uid) throw new Error("no kitsu id for this title");
+
+  const attrs: Record<string, unknown> = {};
+  if (patch.status) {
+    attrs.status = TO_KITSU[patch.status];
+    // Kitsu has no "rewatching" status — it is `current` plus this flag. Set
+    // it explicitly either way, or a title stays flagged as a rewatch after
+    // being moved back to plain watching.
+    attrs.reconsuming = patch.status === "rewatching";
+  }
+  if (patch.progress != null) attrs.progress = Math.max(0, Math.floor(patch.progress));
+  if (patch.score != null) {
+    // 0..10 -> ratingTwenty 2..20. Zero means "no rating", which Kitsu wants
+    // as null rather than 0.
+    const twenty = Math.round(Math.max(0, Math.min(10, patch.score)) * 2);
+    attrs.ratingTwenty = twenty > 0 ? Math.max(2, twenty) : null;
+  }
+  if (!Object.keys(attrs).length) return;
+
+  const headers = {
+    accept: KITSU_JSONAPI,
+    "content-type": KITSU_JSONAPI,
+    authorization: `Bearer ${token}`,
+  };
+  const findUrl = `${KITSU}/library-entries?filter%5BuserId%5D=${uid}&filter%5BanimeId%5D=${kid}`;
+  const found = await fetch(findUrl, { headers, signal: AbortSignal.timeout(10_000) });
+  if (!found.ok) throw new Error(`Kitsu ${found.status}`);
+  const existing = ((await found.json()) as { data?: { id?: string }[] }).data?.[0]?.id ?? null;
+
+  const res = existing
+    ? await fetch(`${KITSU}/library-entries/${existing}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ data: { id: existing, type: "libraryEntries", attributes: attrs } }),
+        signal: AbortSignal.timeout(10_000),
+      })
+    : await fetch(`${KITSU}/library-entries`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          data: {
+            type: "libraryEntries",
+            // A new entry must say what it is about and whose it is.
+            attributes: { status: "current", ...attrs },
+            relationships: {
+              user: { data: { id: uid, type: "users" } },
+              anime: { data: { id: String(kid), type: "anime" } },
+            },
+          },
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+  if (!res.ok) throw new Error(`Kitsu ${res.status}`);
 }
 
 export async function importAll(user?: UserRecord): Promise<{ anilist: number; mal: number }> {

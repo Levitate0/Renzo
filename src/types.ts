@@ -28,6 +28,12 @@ export interface TorrentResult {
 export interface Title {
   id: number;             // AniList id
   malId?: number;         // MyAnimeList id (for MAL scrobbling)
+  /**
+   * Kitsu id, resolved lazily from `malId` through Kitsu's own public
+   * mappings endpoint and cached here. AniList does not return a Kitsu id, so
+   * unlike malId there is no free source for it — see tracker.kitsuIdFor.
+   */
+  kitsuId?: number;
   type: MediaType;
   format?: string;        // AniList format (TV, TV_SHORT, ONA, MOVIE, OVA, SPECIAL)
   romaji: string;
@@ -134,6 +140,9 @@ export interface UserRecord {
   malToken?: string;
   malRefresh?: string;
   malExpiresAt?: string;
+  kitsuToken?: string;
+  kitsuRefresh?: string;
+  kitsuExpiresAt?: string;
   resetToken?: string;             // active password-reset token (emailed)
   resetExpires?: number;           // epoch ms
   theme?: ThemeSettings;           // per-user appearance
