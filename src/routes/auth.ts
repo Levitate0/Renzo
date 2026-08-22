@@ -86,7 +86,7 @@ authRoutes.post("/setup", wrap(async (req, res) => {
   try {
     const user = await auth.createUser(String(req.body?.username ?? ""), String(req.body?.password ?? ""), "owner");
     log.info(`owner account created: ${user.username}`);
-    const token = await auth.createSession(user.id);
+    const token = await auth.createSession(user.id, deviceNameFromRequest(req));
     res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
     res.json({ user: publicUser(user) });
   } catch (e) {
@@ -117,7 +117,7 @@ authRoutes.post("/login", wrap(async (req, res) => {
   // TTL. Unchecked: a session cookie the browser drops when it closes. Recorded
   // on the session so a later rotation re-issues the same kind of cookie.
   const remember = req.body?.remember !== false;
-  const token = await auth.createSession(user.id, undefined, remember);
+  const token = await auth.createSession(user.id, deviceNameFromRequest(req), remember);
   const maxAge = remember ? config.sessionTtlDays * 24 * 3600 : null;
   res.setHeader("Set-Cookie", auth.sessionCookie(token, maxAge, req.secure));
   res.json({ user: publicUser(user) });
@@ -160,6 +160,27 @@ const TV_ERRORS: Record<tvpairing.PairError, { status: number; error: string }> 
 // simply not a value we accept.
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+// A best-effort label so "your devices" isn't a column of blanks. Direct port
+// of Shiori's AuthController.DeviceNameFromRequest (AuthController.cs:481-494),
+// same order and same strings, so a row means the same thing in both apps.
+//
+// Order matters: "Renzo" is tested first because the Hub's User-Agent also
+// contains "Android"/"Windows", and "Renzo app" is the more useful label. The
+// Hub has always sent an identifying User-Agent for exactly this purpose —
+// nothing on this side was reading it.
+function deviceNameFromRequest(req: Request): string | undefined {
+  const ua = str(req.headers["user-agent"]);
+  if (!ua.trim()) return undefined;
+  const has = (needle: string) => ua.toLowerCase().includes(needle.toLowerCase());
+  if (has("Renzo")) return "Renzo app";
+  if (has("Android")) return "Android";
+  if (has("iPhone") || has("iPad")) return "iOS";
+  if (has("Windows")) return "Windows";
+  if (has("Macintosh")) return "Mac";
+  if (has("Linux")) return "Linux";
+  return "Browser";
 }
 
 // Absolute, because the TV prints it verbatim. Prefer the configured public URL
@@ -260,7 +281,7 @@ authRoutes.post("/invite/accept", wrap(async (req, res) => {
   const user = await auth.createUser(username, String(req.body?.password ?? ""), inv.role, inv.email);
   inv.usedAt = new Date().toISOString();
   await db.save();
-  const token = await auth.createSession(user.id);
+  const token = await auth.createSession(user.id, deviceNameFromRequest(req));
   res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
   log.info(`invite accepted: ${user.username} (${inv.role})`);
   res.json({ user: publicUser(user) });
@@ -322,7 +343,7 @@ authRoutes.post("/reset", wrap(async (req, res) => {
   user.resetExpires = undefined;
   await db.removeSessionsForUser(user.id); // a reset invalidates every existing session
   await db.save();
-  const session = await auth.createSession(user.id);
+  const session = await auth.createSession(user.id, deviceNameFromRequest(req));
   res.setHeader("Set-Cookie", auth.sessionCookie(session, config.sessionTtlDays * 24 * 3600, req.secure));
   log.info(`password reset completed: ${user.username}`);
   res.json({ user: publicUser(user) });
