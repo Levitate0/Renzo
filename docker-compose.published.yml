@@ -1,0 +1,33 @@
+# =============================================================================
+#  Renzo — running the PUBLISHED image instead of building from source.
+#
+#    cp .env.example .env      # then edit it
+#    docker compose -f docker-compose.published.yml up -d
+#
+#  Pin a version in production. `:latest` moves under you on the next release,
+#  which is fine for a homelab and wrong for anything you care about.
+# =============================================================================
+services:
+  renzo:
+    image: ghcr.io/levitate0/renzo:latest
+    container_name: renzo
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      LIBRARY_DIR: /library
+      PORT: 8787
+      # Set this to the URL people actually reach Renzo on. It is what pairing
+      # codes and reset links are built from; a loopback value here prints a
+      # verification URL a television cannot open.
+      # PUBLIC_URL: https://renzo.example.com
+      #
+      # Behind a reverse proxy, name the hop you trust — NOT `true`, which
+      # takes the leftmost X-Forwarded-For header from anyone who sends one and
+      # hands your login lockout a knob to turn. See README "TRUST_PROXY".
+      # TRUST_PROXY: loopback
+    ports:
+      - "${PORT:-8787}:8787"
+    volumes:
+      - ./data:/data          # json db + state  (back this up: it IS your install)
+      - ./library:/library    # per-user downloads (u/<userId>/<folder>/…)

@@ -64,6 +64,28 @@ docker compose up -d --build
 Then open **http://<host>:8787** and create the owner account on first run.
 `docker-compose.yml` maps `./data` (json db + state) and `./library` (downloads).
 
+### Or run the published image
+
+A prebuilt multi-arch image (amd64 + arm64) is published to GHCR on each
+release, so you can skip the build entirely:
+
+```bash
+docker pull ghcr.io/levitate0/renzo:latest
+docker compose -f docker-compose.published.yml up -d
+```
+
+Tags: `:1.4.0` (exact), `:1.4`, `:1`, `:latest`, and `:sha-<commit>`. **Pin an
+exact version in production** — `:latest` moves under you on the next release.
+
+Image provenance is attested, so a digest can be traced back to the workflow
+that built it:
+
+```bash
+gh attestation verify oci://ghcr.io/levitate0/renzo:1.4.0 --repo Levitate0/Renzo
+```
+
+Release process and the publishing pipeline live in **DOCKER-PUBLISHING.md**.
+
 ### Example `docker-compose.yml`
 
 ```yaml
@@ -205,22 +227,25 @@ all confirmed findings from both are fixed and re-verified.
 **Trusted-LAN escape hatch:** `AUTH_DISABLED=true` skips login entirely. Never set this
 behind the public tunnel.
 
-### TV pairing (`TV_PAIRING`, off by default)
+### TV pairing (always on)
 
 A television shows a short code; you type it into `/tv` (or the app's approval screen) on a
-device you're already signed into, and the TV collects a session by polling. Because approving
-a code hands that TV a **full session for your account**, the flow is **opt-in per instance**:
+device you're already signed into, and the TV collects a session by polling.
 
-```yaml
-environment:
-  TV_PAIRING: "true"
-```
+There is no `TV_PAIRING` flag any more (removed 2026-08-18). It shipped opt-in while the
+brute-force controls were unfinished; those are done and verified, and nothing in the flow can
+grant anything without an approval from a signed-in user — `/tv/code` and `/tv/poll` are the
+only unauthenticated routes, and neither mints a session by itself.
 
-With it unset or false the five `/api/auth/tv/*` endpoints answer **404** — not 403 — so
-clients that feature-detect the flow simply don't offer it, and the server behaves like a build
-without the feature. The approval page and **Account → Devices** (where any paired TV is listed
-and can be revoked) work either way. Codes expire in 10 minutes, are single-use, lock after 5
-wrong attempts, and are rate-limited per client address (see `TRUST_PROXY` above).
+Codes expire in 10 minutes, are single-use, and are rate-limited per client address (see
+`TRUST_PROXY` above). A code locks after 5 wrong attempts **from at least two different
+addresses** — one caller cannot lock a code it can simply read off the screen, which would
+otherwise be a way to deny somebody else's pairing.
+
+A paired TV gets its **own session lifetime** (`TV_SESSION_TTL_DAYS`, default 365) rather than
+the browser `SESSION_TTL_DAYS`: there is nobody sitting at a television to sign it in again.
+It is listed as a TV in **Account → Devices**, is revocable instantly from there, and its
+token rotates daily like any other session.
 
 ## Ports & network footprint
 
