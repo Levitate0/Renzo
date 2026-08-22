@@ -113,10 +113,11 @@ authRoutes.post("/login", wrap(async (req, res) => {
   }
   auth.recordLoginSuccess(ip);
   log.info(`login ok: ${user.username} from ${ip}`);
-  const token = await auth.createSession(user.id);
   // "Remember me" (default on): a persistent cookie kept for the full session
-  // TTL. Unchecked: a session cookie the browser drops when it closes.
+  // TTL. Unchecked: a session cookie the browser drops when it closes. Recorded
+  // on the session so a later rotation re-issues the same kind of cookie.
   const remember = req.body?.remember !== false;
+  const token = await auth.createSession(user.id, undefined, remember);
   const maxAge = remember ? config.sessionTtlDays * 24 * 3600 : null;
   res.setHeader("Set-Cookie", auth.sessionCookie(token, maxAge, req.secure));
   res.json({ user: publicUser(user) });
@@ -142,16 +143,15 @@ const TV_ERRORS: Record<tvpairing.PairError, { status: number; error: string }> 
   throttled: { status: 429, error: "Too many attempts — try again in 15 minutes" },
 };
 
-// Opt-in per instance (TV_PAIRING). Off — the default — the five endpoints
-// below do not exist: 404, not 403, because clients feature-detect the flow and
-// hide the option when it 404s, so an instance that never asked for TV pairing
-// behaves exactly like a build without it. Mounted BEFORE the routes, so it
-// also runs ahead of requireAuth: a disabled endpoint must not answer 401
-// either (that would still confirm it exists).
-authRoutes.use("/tv", (_req, res, next) => {
-  if (!config.tvPairing) return res.status(404).json({ error: "not found" });
-  next();
-});
+// TV pairing is a permanent part of the API — there is no TV_PAIRING flag any
+// more (removed 2026-08-18). It used to ship opt-in while the controls in
+// RENZO-TV-PAIRING-REPLY.md §3 were unfinished; those are fixed and verified
+// (see RENZO-TV-PAIRING-REPLY-2.md), so the endpoints always exist.
+//
+// Note what this means for clients: they feature-detect the flow by looking for
+// a 404, so the option is now always offered. Nothing here can grant anything
+// without an approval from a signed-in user — /tv/code and /tv/poll are the
+// only unauthenticated routes, and neither mints a session on its own.
 
 // Bodies here are JSON from an UNAUTHENTICATED caller, so a field can be any
 // JSON value. `String(x)` is not safe on all of them: `{"deviceName":{"toString":1}}`
@@ -186,8 +186,16 @@ function verificationUrl(req: Request): string {
 // makes the resolved value unforgeable from the LAN — see services/netip.ts.
 authRoutes.post("/tv/code", wrap(async (req, res) => {
   const ip = clientIp(req);
-  const p = tvpairing.createRequest(str(req.body?.deviceName), ip);
-  if (!p) return res.status(429).json({ error: "Too many pairing requests — try again later" });
+  let refused: tvpairing.RefuseReason | undefined;
+  const p = tvpairing.createRequest(str(req.body?.deviceName), ip, (why) => { refused = why; });
+  if (!p) {
+    // 503 for a full instance, 429 for this caller asking too often — see
+    // RefuseReason. Clients hide the feature on an unexpected status, so a
+    // transient capacity limit must not look like "not supported".
+    return refused === "full"
+      ? res.status(503).json({ error: "Too many devices are pairing right now — try again in a minute" })
+      : res.status(429).json({ error: "Too many pairing requests — try again later" });
+  }
   // Log the device and where it came from, NEVER either code: the deviceCode is
   // a credential, and the userCode is enough for someone to approve a device.
   log.info(`tv pairing requested: "${p.deviceName}" from ${ip}`);
@@ -205,10 +213,12 @@ authRoutes.post("/tv/poll", wrap(async (req, res) => {
   if (r.status !== "approved") return res.json({ status: r.status });
   const user = db.getUser(r.userId);
   if (!user) return res.json({ status: "expired" }); // approver disappeared between approve and poll
-  // Exactly the session /login issues, with a persistent cookie (a TV can't be
-  // asked to sign in again when its browser process restarts).
-  const token = await auth.createSession(user.id, r.deviceName);
-  res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
+  // A TV session, not a browser one: same shape and the same instant
+  // revocation, but its own (longer) lifetime, because nobody is sitting at a
+  // television to sign it in again. Persistent cookie for the same reason — its
+  // browser process restarting must not end the pairing.
+  const token = await auth.createSession(user.id, r.deviceName, true, true);
+  res.setHeader("Set-Cookie", auth.sessionCookie(token, config.tvSessionTtlDays * 24 * 3600, req.secure));
   log.info(`tv paired: "${r.deviceName}" as ${user.username}`);
   res.json({ status: "approved", user: publicUser(user) });
 }));
@@ -335,10 +345,28 @@ accountRoutes.post("/password", wrap(async (req: AuthedRequest, res) => {
   // Revoke every other session, then reissue a fresh cookie for this caller so
   // a stolen/old session can't survive a password change.
   const currentToken = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
+  // Read the caller's own session BEFORE revoking, and carry its identity into
+  // the replacement. Minting a bare createSession(user.id) took the defaults
+  // (remember = true, tv = false), which silently DEMOTED a paired TV that
+  // changed its own password: it lost `tv`, lost its deviceName, and dropped
+  // from tvSessionTtlDays (365) to sessionTtlDays (30) — while an unchecked
+  // "remember me" was promoted to a persistent cookie, the exact swap the
+  // `remember` field exists to prevent. Match prevToken too: the caller may be
+  // on the token its session most recently replaced.
+  const mine = currentToken
+    ? db.getSession(currentToken) ?? db.getSessionByPrevToken(currentToken)
+    : undefined;
   await db.removeSessionsForUser(user.id, currentToken);
-  const fresh = await auth.createSession(user.id);
+  const wasTv = Boolean(mine?.tv);
+  const remember = mine?.remember !== false;
+  const fresh = await auth.createSession(user.id, mine?.deviceName, remember, wasTv);
   await db.removeSession(currentToken ?? "");
-  res.setHeader("Set-Cookie", auth.sessionCookie(fresh, config.sessionTtlDays * 24 * 3600, req.secure));
+  // Derive the cookie's lifetime from the session we actually minted rather
+  // than hardcoding sessionTtlDays, or a TV's 365-day session would sit behind
+  // a 30-day cookie.
+  const ttlDays = wasTv ? config.tvSessionTtlDays : config.sessionTtlDays;
+  const maxAge = remember ? ttlDays * 24 * 3600 : null;
+  res.setHeader("Set-Cookie", auth.sessionCookie(fresh, maxAge, req.secure));
   res.json({ ok: true });
 }));
 
@@ -356,11 +384,19 @@ accountRoutes.get("/sessions", wrap(async (req: AuthedRequest, res) => {
   res.json(
     mine
       .map((s) => ({
-        id: auth.sessionId(s.token),
+        id: auth.stableSessionId(s),
         deviceName: s.deviceName ?? null,
+        // A paired television, so the list can say so rather than showing it as
+        // an anonymous browser that has been signed in for a year.
+        tv: Boolean(s.tv),
         createdAt: s.createdAt,
+        expiresAt: s.expiresAt,
         lastSeenAt: auth.sessionLastSeen(s),
-        current: Boolean(current) && s.token === current,
+        // `current` must also match the token this session most recently
+        // replaced — a request can legitimately arrive on it during the
+        // rotation grace, and marking the wrong row "this device" would invite
+        // someone to revoke the one they are actually using.
+        current: Boolean(current) && (s.token === current || s.prevToken === current),
       }))
       .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt)),
   );
@@ -370,14 +406,19 @@ accountRoutes.delete("/sessions/:id", wrap(async (req: AuthedRequest, res) => {
   // Scoped to the caller's OWN sessions, so a handle from another account (or a
   // guessed one) can never revoke someone else's device.
   const target = db.sessions().find(
-    (s) => s.userId === req.user!.id && auth.sessionId(s.token) === req.params.id,
+    (s) => s.userId === req.user!.id && auth.stableSessionId(s) === req.params.id,
   );
   if (!target) return res.status(404).json({ error: "no such device" });
   const current = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
   await auth.destroySession(target.token);
   // Revoking the session you're using is effectively a logout — clear the cookie
   // too, or the browser keeps sending a token that no longer exists.
-  if (target.token === current) res.setHeader("Set-Cookie", auth.sessionCookie("", 0, req.secure));
+  // `current` may be the token this session most recently REPLACED — a request
+  // can legitimately arrive on it during the rotation grace — so match both, or
+  // revoking the device you're holding would leave its cookie in place.
+  if (target.token === current || (current && target.prevToken === current)) {
+    res.setHeader("Set-Cookie", auth.sessionCookie("", 0, req.secure));
+  }
   log.info(`session revoked for ${req.user!.username}${target.deviceName ? ` ("${target.deviceName}")` : ""}`);
   res.json({ ok: true });
 }));

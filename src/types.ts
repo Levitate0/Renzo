@@ -156,10 +156,34 @@ export interface AddDefaults {
 
 export interface SessionRecord {
   token: string;
+  /**
+   * Stable device identity, independent of the token. The token ROTATES (see
+   * services/auth.ts), and the device list and its revoke button must keep
+   * pointing at the same device across a rotation — deriving the id from the
+   * token would rename the device every time it rotated. Optional because rows
+   * written before rotation existed have none; one is assigned on first read.
+   */
+  id?: string;
+  /** Whether the browser was given a persistent cookie ("remember me"). Kept so
+   *  a rotation re-issues the SAME kind of cookie instead of silently promoting
+   *  a session cookie to a persistent one, or demoting the reverse. */
+  remember?: boolean;
+  /** The token this session's current token replaced. Honoured until prevUntil
+   *  so a client that never received the replacement isn't signed out. */
+  prevToken?: string;
+  prevUntil?: string;
+  rotatedAt?: string;
   userId: string;
   createdAt: string;
   expiresAt: string;
   deviceName?: string;            // set when a TV pairing created this session (shown in "your devices")
+  /**
+   * True when a TV pairing minted this session. A television is not a browser:
+   * nobody is there to sign it in again, and asking a living room to re-pair on
+   * the browser cadence is the failure this flow exists to remove — so these
+   * carry their own, longer lifetime (TV_SESSION_TTL_DAYS).
+   */
+  tv?: boolean;
   /**
    * Coarse last-use stamp. Persisted at most ~hourly per session (see
    * services/auth.ts): db.json is rewritten in FULL on every save, so writing

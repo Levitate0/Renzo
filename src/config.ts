@@ -171,15 +171,11 @@ export const config = {
   // Authentication
   authDisabled: bool(process.env.AUTH_DISABLED, false), // escape hatch for trusted LANs
   sessionTtlDays: Math.max(1, int(process.env.SESSION_TTL_DAYS, 30)),
-
-  // TV pairing (short code on a television, approved from a phone). OFF by
-  // default and opt-in per instance: approving a code mints a full session for
-  // the approver's account, so an instance that has no televisions should not
-  // expose the flow at all. Off, the five /api/auth/tv/* endpoints answer 404
-  // — not 403 — because clients feature-detect them and hide the option when
-  // they are absent, so an instance that has not opted in looks like a build
-  // without the feature.
-  tvPairing: bool(process.env.TV_PAIRING, false),
+  // Paired televisions get their own lifetime. A TV has no one sitting at it to
+  // re-enter a password, so the browser TTL is the wrong shape for it; the
+  // session is still revocable instantly from the devices list, and its token
+  // still rotates daily, which is what keeps a long life affordable.
+  tvSessionTtlDays: Math.max(1, int(process.env.TV_SESSION_TTL_DAYS, 365)),
 
   // Auto-downloader (watches auto-flagged titles / AniList CURRENT list)
   autoDownload: bool(process.env.AUTO_DOWNLOAD, false),

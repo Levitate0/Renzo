@@ -105,18 +105,70 @@ export function requireStaff(req: AuthedRequest, res: Response, next: NextFuncti
 // `deviceName` is only set for sessions minted by TV pairing — it labels the
 // device in "your devices". Everything else about the session is identical to a
 // typed login: nothing downstream can tell a paired TV apart from a browser.
-export async function createSession(userId: string, deviceName?: string): Promise<string> {
+export async function createSession(
+  userId: string,
+  deviceName?: string,
+  remember = true,
+  tv = false,
+): Promise<string> {
   const token = randomBytes(32).toString("base64url");
   const now = Date.now();
+  const ttlDays = tv ? config.tvSessionTtlDays : config.sessionTtlDays;
   await db.addSession({
     token,
+    id: randomUUID(),
+    remember,
     userId,
     createdAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + config.sessionTtlDays * 24 * 3600_000).toISOString(),
+    expiresAt: new Date(now + ttlDays * 24 * 3600_000).toISOString(),
     deviceName,
+    tv: tv || undefined,
     lastSeenAt: new Date(now).toISOString(),
+    rotatedAt: new Date(now).toISOString(),
   });
   return token;
+}
+
+// ---------------------------------------------------------------------------
+// Session-token rotation
+//
+// The cookie used to be fixed for the whole SESSION_TTL_DAYS, so a token that
+// leaked once — a shared machine, a backup of db.json, a proxy log — stayed
+// good until it expired. Rotating shrinks that to a day.
+//
+// Renzo is NOT adopting the JWT half of Shiori's refresh design, deliberately:
+// its sessions are opaque handles looked up on every request, so revoking one
+// takes effect instantly, and access tokens would reintroduce a window where a
+// revoked device keeps working. Rotation is applied to the opaque handle
+// instead, which keeps that property.
+//
+// The grace is Shiori's idea and its reasoning holds here (see
+// RefreshSessionService: a mobile handoff kills the response, not the request,
+// so the client keeps a token the server has already replaced and only the
+// server can forgive it). Shiori needs two windows — 90 seconds in memory to
+// replay the same replacement, and 24 hours on the row — because a JWT is
+// gone once issued. Here the replacement is simply the row's CURRENT token, so
+// one persisted window does both jobs: any request arriving on the previous
+// token is answered with the current one.
+// ---------------------------------------------------------------------------
+const ROTATE_EVERY_MS = 24 * 3600_000;
+const PREV_GRACE_MS = 24 * 3600_000;
+
+/** Stable per-device id, assigned lazily for rows predating rotation. */
+export function stableSessionId(s: SessionRecord): string {
+  if (!s.id) {
+    s.id = randomUUID();
+    void db.save();
+  }
+  return s.id;
+}
+
+/** Find a session by its current token, or by one it recently replaced. */
+function resolveSession(token: string): { s: SessionRecord; viaPrev: boolean } | undefined {
+  const cur = db.getSession(token);
+  if (cur) return { s: cur, viaPrev: false };
+  const prev = db.getSessionByPrevToken(token);
+  return prev ? { s: prev, viaPrev: true } : undefined;
 }
 
 /**
@@ -163,35 +215,129 @@ export function sessionLastSeen(s: SessionRecord): string {
 
 export function sessionUser(token: string | undefined): UserRecord | undefined {
   if (!token) return undefined;
-  const s = db.getSession(token);
-  if (!s) return undefined;
-  if (new Date(s.expiresAt).getTime() < Date.now()) return undefined;
-  touchSession(s);
-  return db.getUser(s.userId);
+  const hit = resolveSession(token);
+  if (!hit) return undefined;
+  if (new Date(hit.s.expiresAt).getTime() < Date.now()) return undefined;
+  touchSession(hit.s);
+  return db.getUser(hit.s.userId);
+}
+
+/**
+ * Post-authentication upkeep for a request that has already been accepted:
+ * rotate the token when it is due, and hand back the current token to a client
+ * that presented one we replaced. Returns the Set-Cookie value to send, or null
+ * when nothing needs to change. Never fails a request — a rotation that cannot
+ * be persisted leaves the existing token working.
+ */
+export function maintainSession(token: string | undefined, secure: boolean): string | null {
+  if (!token || config.authDisabled) return null;
+  const hit = resolveSession(token);
+  if (!hit) return null;
+  const { s, viaPrev } = hit;
+  const now = Date.now();
+  const maxAge = s.remember === false ? null : Math.max(1, Math.floor((new Date(s.expiresAt).getTime() - now) / 1000));
+
+  // Arrived on the replaced token: the response carrying the replacement was
+  // lost. Re-send the SAME replacement rather than rotating again, so the
+  // client ends up holding exactly what it should have received.
+  if (viaPrev) return sessionCookie(s.token, maxAge, secure);
+
+  const rotatedAt = s.rotatedAt ? new Date(s.rotatedAt).getTime() : new Date(s.createdAt).getTime();
+  if (now - rotatedAt < ROTATE_EVERY_MS) return null;
+
+  const next = randomBytes(32).toString("base64url");
+  s.prevToken = s.token;
+  s.prevUntil = new Date(now + PREV_GRACE_MS).toISOString();
+  s.token = next;
+  s.rotatedAt = new Date(now).toISOString();
+  // The in-memory last-seen map is keyed by token; move the stamp with it.
+  const seen = lastSeen.get(s.prevToken);
+  if (seen !== undefined) { lastSeen.delete(s.prevToken); lastSeen.set(next, seen); }
+  void db.save(); // fire-and-forget: never make a request wait on a disk write
+  return sessionCookie(next, maxAge, secure);
 }
 
 export async function destroySession(token: string | undefined): Promise<void> {
   if (!token) return;
+  // Resolve the row first: the caller may hold either the current token or the
+  // one it replaced, and the in-memory lastSeen map is keyed by token — dropping
+  // only the token we were handed would strand the sibling key for the lifetime
+  // of the process.
+  const s = db.getSession(token) ?? db.getSessionByPrevToken(token);
   lastSeen.delete(token);
+  if (s) {
+    lastSeen.delete(s.token);
+    if (s.prevToken) lastSeen.delete(s.prevToken);
+  }
   await db.removeSession(token);
 }
 
 // ---------------------------------------------------------------------------
 // Login rate limiting (per source IP: 5 failures -> 15 min lockout)
 // ---------------------------------------------------------------------------
-const attempts = new Map<string, { count: number; lockedUntil: number }>();
+interface Attempt { count: number; lockedUntil: number; at: number }
+const attempts = new Map<string, Attempt>();
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_MS = 15 * 60_000;
+
+// Separate throttle for password-reset requests (per IP): a real per-request
+// limiter so /forgot can't be used to spam reset emails or probe the endpoint.
+const forgotHits = new Map<string, number[]>();
+
+// Both maps are keyed on an address the CALLER supplies, so neither may grow
+// without bound: an attacker sourcing from an IPv6 /64 has 18 quintillion keys
+// to hand out, and nothing here ever deleted a key that didn't come back.
+// Entries expire once their window has passed, and the maps are capped
+// oldest-first as a backstop. Same policy the TV-pairing tables use.
+const MAX_TRACKED_SOURCES = 5_000;
+const SWEEP_EVERY_MS = 60_000;
+let sweptAt = 0;
+
+function evictOldest(m: Map<string, unknown>): void {
+  // JS Maps iterate in insertion order, and re-setting an existing key keeps
+  // its original position — so the front of the map is the least recently
+  // FIRST-SEEN source, which is the right one to drop.
+  while (m.size > MAX_TRACKED_SOURCES) {
+    const oldest = m.keys().next();
+    if (oldest.done) break;
+    m.delete(oldest.value);
+  }
+}
+
+function sweepLimiters(force = false): void {
+  const now = Date.now();
+  if (!force && now - sweptAt < SWEEP_EVERY_MS) return;
+  sweptAt = now;
+  for (const [ip, a] of attempts) {
+    // Dead once it is neither locked nor recently active.
+    if (a.lockedUntil < now && now - a.at >= LOCKOUT_MS) attempts.delete(ip);
+  }
+  for (const [ip, hits] of forgotHits) {
+    const live = hits.filter((t) => now - t < LOCKOUT_MS);
+    if (live.length) forgotHits.set(ip, live);
+    else forgotHits.delete(ip);
+  }
+  evictOldest(attempts);
+  evictOldest(forgotHits);
+}
 
 export function loginAllowed(ip: string): boolean {
   const a = attempts.get(ip);
   return !a || a.lockedUntil < Date.now();
 }
 export function recordLoginFailure(ip: string): void {
-  const a = attempts.get(ip) ?? { count: 0, lockedUntil: 0 };
+  sweepLimiters();
+  const now = Date.now();
+  const prev = attempts.get(ip);
+  // The count decays: it is "5 failures within the window", not five failures
+  // ever. Without this, four typos spread over months locked the account out
+  // on a fifth attempt years later.
+  const a: Attempt =
+    prev && now - prev.at < LOCKOUT_MS ? prev : { count: 0, lockedUntil: prev?.lockedUntil ?? 0, at: now };
   a.count += 1;
+  a.at = now;
   if (a.count >= MAX_ATTEMPTS) {
-    a.lockedUntil = Date.now() + LOCKOUT_MS;
+    a.lockedUntil = now + LOCKOUT_MS;
     a.count = 0;
     log.warn(`lockout for ${ip} (too many failed logins)`);
   }
@@ -201,15 +347,19 @@ export function recordLoginSuccess(ip: string): void {
   attempts.delete(ip);
 }
 
-// Separate throttle for password-reset requests (per IP): a real per-request
-// limiter so /forgot can't be used to spam reset emails or probe the endpoint.
-const forgotHits = new Map<string, number[]>();
 export function forgotAllowed(ip: string): boolean {
+  sweepLimiters();
   const now = Date.now();
   const hits = (forgotHits.get(ip) ?? []).filter((t) => now - t < LOCKOUT_MS);
   hits.push(now);
   forgotHits.set(ip, hits);
   return hits.length <= 3; // max 3 reset requests / 15 min / IP
+}
+
+/** Test/diagnostic: how many sources are tracked right now, after a sweep. */
+export function limiterSizes(): { attempts: number; forgot: number } {
+  sweepLimiters(true);
+  return { attempts: attempts.size, forgot: forgotHits.size };
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +420,11 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
     res.status(401).json({ error: setupRequired() ? "setup_required" : "unauthorized" });
     return;
   }
+  // Only ever ADDS a Set-Cookie; a route that sets its own (login, logout,
+  // pairing) has already written one by the time it responds and is not
+  // reached through here with a token to maintain.
+  const refreshed = maintainSession(token, req.secure);
+  if (refreshed) res.append("Set-Cookie", refreshed);
   req.user = user;
   next();
 }

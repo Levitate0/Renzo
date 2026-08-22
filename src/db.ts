@@ -131,6 +131,13 @@ class Store {
   getSession(token: string): SessionRecord | undefined {
     return this.data.sessions.find((s) => s.token === token);
   }
+  /** A session whose PREVIOUS token is this one, while its grace is still open. */
+  getSessionByPrevToken(token: string): SessionRecord | undefined {
+    const now = Date.now();
+    return this.data.sessions.find(
+      (s) => s.prevToken === token && !!s.prevUntil && new Date(s.prevUntil).getTime() > now,
+    );
+  }
   async addSession(s: SessionRecord): Promise<void> {
     // Opportunistic pruning of expired sessions.
     const now = Date.now();
@@ -138,13 +145,37 @@ class Store {
     this.data.sessions.push(s);
     await this.flush();
   }
+  /**
+   * Matches `prevToken` as well as `token`. A client can legitimately arrive on
+   * the token its session most recently REPLACED, during the rotation grace
+   * (see getSessionByPrevToken) — and a client that failed to persist the
+   * rotated cookie arrives that way on EVERY request. Matching only `token`
+   * meant such a client's logout deleted nothing: the row survived with its
+   * current token still valid for the full remaining TTL (30 days browser,
+   * 365 TV) and the device stayed listed in Account -> Devices.
+   *
+   * Every match on a session token in this file must consider both.
+   */
   async removeSession(token: string): Promise<void> {
-    this.data.sessions = this.data.sessions.filter((s) => s.token !== token);
+    this.data.sessions = this.data.sessions.filter(
+      (s) => s.token !== token && s.prevToken !== token,
+    );
     await this.flush();
   }
-  /** Revoke all of a user's sessions except (optionally) one to keep. */
+  /**
+   * Revoke all of a user's sessions except (optionally) one to keep.
+   *
+   * `keepToken` matches `prevToken` too, for the same reason removeSession
+   * does: a caller holding the pre-rotation token would otherwise fail to
+   * match its own row and revoke the very session it is using.
+   */
   async removeSessionsForUser(userId: string, keepToken?: string): Promise<void> {
-    this.data.sessions = this.data.sessions.filter((s) => s.userId !== userId || s.token === keepToken);
+    this.data.sessions = this.data.sessions.filter(
+      (s) =>
+        s.userId !== userId ||
+        s.token === keepToken ||
+        (keepToken !== undefined && s.prevToken === keepToken),
+    );
     await this.flush();
   }
 

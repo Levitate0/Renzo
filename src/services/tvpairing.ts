@@ -40,6 +40,12 @@ const CODE_LEN = 8;
 // attempts NAMING it, whatever state it is in, so a code that is being probed
 // dies rather than staying open for the rest of its 10 minutes.
 const MAX_CODE_ATTEMPTS = 5;
+// A code locks only when misses come from at least this many distinct sources,
+// so one caller who can read the code off a screen cannot deny the pairing.
+const MIN_LOCK_SOURCES = 2;
+// Cap on the set behind that rule — past the threshold it has served its
+// purpose, and a wide flood must not grow per-request state without bound.
+const MAX_CHARGING_SOURCES = 8;
 
 // Per-source budgets, keyed on the transport peer.
 //  - creating pending requests is a sliding window, so nobody can farm them;
@@ -87,6 +93,9 @@ interface Pending {
   status: Status;
   userId?: string;         // the approver — set only on approval
   attempts: number;        // failed attempts naming this code
+  /** Distinct sources that have missed on this code. A lock needs more than
+   *  one: a single caller must never be able to lock a code it can SEE. */
+  chargedBy: Set<string>;
   locked: boolean;
 }
 
@@ -328,14 +337,31 @@ function makeRoom(source: string): boolean {
 
 /** Start a pairing. Returns null when this source is over its rate, or when the
  *  instance is globally full of requests no lighter than this one's. */
-export function createRequest(deviceName: string, source: string): CreatedPairing | null {
+/**
+ * Why a pairing request was refused. The two are NOT the same to a client:
+ * "you personally are asking too often" is that caller's problem and 429, while
+ * "the instance is full" is transient, affects everyone, and is 503. Clients
+ * feature-detect pairing by watching for a 404 and treat other unexpected codes
+ * conservatively — the Hub's TvPairingClient shows a retry for 503 and HIDES
+ * the whole option otherwise, so collapsing a busy minute into 429 presented a
+ * self-clearing condition as a permanently missing feature.
+ */
+export type RefuseReason = "rate" | "full";
+
+export function createRequest(
+  deviceName: string,
+  source: string,
+  onRefuse?: (why: RefuseReason) => void,
+): CreatedPairing | null {
   sweep();
   if (!codeRequestAllowed(source)) {
     log.warn(`refusing pairing request from ${source}: over the per-source rate`);
+    onRefuse?.("rate");
     return null;
   }
   if (!makeRoom(source)) {
     log.warn(`refusing pairing request from ${source}: ${byUserCode.size} requests pending instance-wide`);
+    onRefuse?.("full");
     return null;
   }
   let userCode = randomCode();
@@ -352,6 +378,7 @@ export function createRequest(deviceName: string, source: string): CreatedPairin
     expiresAt: now + EXPIRY_MS,
     status: "pending",
     attempts: 0,
+    chargedBy: new Set<string>(),
     locked: false,
   };
   byUserCode.set(userCode, p);
@@ -434,24 +461,43 @@ function resolve(
     return { ok: false, error: "locked" };
   }
   if (throttled) {
-    chargeCode(p); // a throttled caller naming this code is an attempt on it
+    // Deliberately does NOT charge the code. A source that has already spent
+    // its budget is being refused anyway; letting it keep charging someone
+    // else's request is exactly the griefing path described on chargeCode.
     recordAttemptFailure(source);
     return { ok: false, error: "throttled" };
   }
   if (!allow.includes(p.status)) {
-    chargeCode(p);
+    chargeCode(p, source);
     recordAttemptFailure(source);
     return { ok: false, error: "used" };
   }
   return { ok: true, p };
 }
 
-/** Charge a failed attempt to the request it named, and lock it at the budget. */
-function chargeCode(p: Pending): void {
+/**
+ * Charge a failed attempt to the request it named, and lock it at the budget —
+ * but only once the misses come from MORE THAN ONE source.
+ *
+ * The per-code counter exists to stop a distributed guesser who has somehow
+ * obtained a live code from riding it. It must not become a way to DENY a
+ * pairing: anyone who can SEE a displayed code (a housemate, a shoulder-surfer,
+ * a phished screenshot) could otherwise name it until it locked and the real
+ * approver got nothing but errors. Locking on a single source's say-so turns a
+ * brute-force defence into a griefing tool, so a lock now needs corroboration.
+ * A genuine distributed attack has many sources by definition and still locks.
+ */
+function chargeCode(p: Pending, source: string): void {
   p.attempts += 1;
-  if (!p.locked && p.attempts >= MAX_CODE_ATTEMPTS) {
+  // Bounded: past the threshold the set has already made its point, and a wide
+  // flood must not be able to grow it without limit inside one request.
+  if (p.chargedBy.size < MAX_CHARGING_SOURCES) p.chargedBy.add(source);
+  if (!p.locked && p.attempts >= MAX_CODE_ATTEMPTS && p.chargedBy.size >= MIN_LOCK_SOURCES) {
     p.locked = true;
-    log.warn(`pairing request "${p.deviceName}" locked after ${p.attempts} failed attempts`);
+    log.warn(
+      `pairing request "${p.deviceName}" locked after ${p.attempts} failed attempts ` +
+      `from ${p.chargedBy.size} sources`,
+    );
   }
 }
 
