@@ -21,11 +21,25 @@ export interface MalCard {
 const cache = new Map<string, { at: number; data: MalCard[] }>();
 const TTL_MS = 10 * 60_000;
 
+// Jikan publishes 3 req/s and 60 req/min per IP — only twice AniList's budget,
+// so the fallback can become a second rate-limit problem if it is hammered
+// when AniList is already down. Nothing here respected a 429 before: it threw
+// a bare error, so the caller retried straight into the same wall.
+let jikanLimitedUntil = 0;
+
 async function jikan(path: string): Promise<{ data?: unknown[] }> {
+  if (Date.now() < jikanLimitedUntil) throw new Error("jikan_rate_limited");
   const res = await fetch(`${JIKAN}${path}`, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(8000),
   });
+  if (res.status === 429) {
+    await res.text().catch(() => {}); // drain so the socket can be reused
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const waitMs = retryAfter > 0 ? retryAfter * 1000 : 60_000;
+    jikanLimitedUntil = Date.now() + waitMs;
+    throw new Error("jikan_rate_limited");
+  }
   if (!res.ok) throw new Error(`Jikan ${res.status}`);
   return (await res.json()) as { data?: unknown[] };
 }

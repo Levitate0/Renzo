@@ -82,24 +82,67 @@ const inFlight = new Map<string, Promise<unknown>>();
 // occasionally 5xx. Retry with backoff so a burst of requests — e.g. walking a
 // season chain while the discovery rows also load — doesn't fail a hop and leave
 // the chain incomplete.
-async function gql<T>(query: string, variables: Record<string, unknown>, attempt = 0): Promise<T> {
+// A token bucket in FRONT of the request, so the server self-limits instead of
+// discovering the limit by being told. AniList allows 30/min; refilling one
+// slot every 2.2s averages ~27/min, leaving headroom for the burst capacity
+// below. Everything that talks to AniList goes through here — including the
+// authenticated tracker calls, which previously had their own fetch and so
+// spent quota this limiter could not see.
+const BUCKET_CAPACITY = 30;
+const BUCKET_REFILL_MS = 2_200;
+let bucket = BUCKET_CAPACITY;
+let bucketLastRefill = Date.now();
+
+function refillBucket(): void {
+  const gained = Math.floor((Date.now() - bucketLastRefill) / BUCKET_REFILL_MS);
+  if (gained > 0) {
+    bucket = Math.min(BUCKET_CAPACITY, bucket + gained);
+    bucketLastRefill += gained * BUCKET_REFILL_MS;
+  }
+}
+
+// Single-threaded: the check and the decrement happen in one tick, so several
+// waiters cannot take the same slot — the losers simply loop again.
+async function acquireSlot(): Promise<void> {
+  for (;;) {
+    refillBucket();
+    if (bucket > 0) { bucket--; return; }
+    const untilNext = BUCKET_REFILL_MS - ((Date.now() - bucketLastRefill) % BUCKET_REFILL_MS);
+    await sleep(Math.max(50, untilNext));
+  }
+}
+
+async function gql<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  attempt = 0,
+  token?: string,
+): Promise<T> {
   // attempt 0 is the entry hop: it refuses spent quota and coalesces. The
   // checks belong HERE and not on retries — a retry has already slept out the
   // window it was told to wait for, and re-checking would reject its own wait.
   if (attempt === 0) {
     const waiting = rateLimitedFor();
     if (waiting > 0) throw new AniListRateLimited(waiting);
-    const key = `${query}|${JSON.stringify(variables)}`;
+    // The token is part of the key ON PURPOSE: an authenticated query returns
+    // per-user data (mediaListEntry), so coalescing two users onto one request
+    // would hand one user the other's list state.
+    const key = `${token ?? "anon"}|${query}|${JSON.stringify(variables)}`;
     const running = inFlight.get(key) as Promise<T> | undefined;
     if (running) return running;
-    const p = gql<T>(query, variables, 1).finally(() => inFlight.delete(key));
+    const p = gql<T>(query, variables, 1, token).finally(() => inFlight.delete(key));
     inFlight.set(key, p);
     return p;
   }
 
+  await acquireSlot();
   const res = await fetch(ENDPOINT, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({ query, variables }),
   });
   if (res.status === 429) {
@@ -116,7 +159,7 @@ async function gql<T>(query: string, variables: Record<string, unknown>, attempt
     if (waitMs > MAX_RETRY_WAIT_MS) throw new AniListRateLimited(Math.ceil(waitMs / 1000));
     await sleep(waitMs);
     rateLimitedUntil = 0; // we waited it out; the window is open again
-    return gql<T>(query, variables, attempt + 1);
+    return gql<T>(query, variables, attempt + 1, token);
   }
   if (res.status >= 500 && attempt < 4) {
     // A 5xx is a different failure: short backoff, it isn't a quota problem.
@@ -124,7 +167,7 @@ async function gql<T>(query: string, variables: Record<string, unknown>, attempt
     const wait = Math.min(attempt * 800, 4000);
     log.warn(`AniList ${res.status}, retry ${attempt}/4 in ${wait}ms`);
     await sleep(wait);
-    return gql<T>(query, variables, attempt + 1);
+    return gql<T>(query, variables, attempt + 1, token);
   }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -133,6 +176,21 @@ async function gql<T>(query: string, variables: Record<string, unknown>, attempt
   const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
   if (json.errors?.length) throw new Error(`AniList: ${json.errors.map((e) => e.message).join("; ")}`);
   return json.data as T;
+}
+
+/**
+ * Authenticated AniList call, for the tracker. Routed through the same [gql]
+ * so it shares the rate-limit backoff, the retry policy, the coalescing and
+ * the token bucket — it used to have its own fetch, which meant a 429 there
+ * never registered as a rate limit and its requests were invisible to every
+ * budget decision made here.
+ */
+export async function gqlAuthed<T>(
+  token: string,
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<T> {
+  return gql<T>(query, variables, 0, token);
 }
 
 // AniList's SEARCH_MATCH ranks titles that START with the query, so a term that
@@ -157,7 +215,17 @@ function matchScore(m: AniListMedia, q: string): number {
 }
 
 /** Text search. `type` narrows to movies or series (everything non-MOVIE). */
+// Search was the one query a user could fire arbitrarily fast, completely
+// uncached — every keystroke burst past the debounce was an upstream request,
+// and going back to a previous query paid again. Results do not move in ten
+// minutes.
+const searchCache = new Map<string, { at: number; data: AniListMedia[] }>();
+const SEARCH_TTL = 10 * 60_000;
+
 export async function searchAnime(search: string, type?: MediaType): Promise<AniListMedia[]> {
+  const cacheKey = `${search.trim().toLowerCase()}|${type ?? "all"}`;
+  const cached = searchCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < SEARCH_TTL) return cached.data;
   const formats =
     type === "movie" ? ["MOVIE"] : type === "series" ? ["TV", "TV_SHORT", "ONA", "OVA", "SPECIAL"] : null;
   // AniList returns HTTP 500 on an explicit `format_in: null`, so only declare and
@@ -177,14 +245,20 @@ export async function searchAnime(search: string, type?: MediaType): Promise<Ani
   const vars: Record<string, unknown> = { search };
   if (formats) vars.formats = formats;
   const data = await gql<{ Page: { media: AniListMedia[] } }>(query, vars);
+  for (const m of data.Page.media) if (m.idMal) rememberMalId(m.idMal, m.id);
   const q = search.trim().toLowerCase();
-  if (!q) return data.Page.media.slice(0, 30);
-  // Stable sort: substring hits first, AniList's own ordering breaks ties.
-  return data.Page.media
-    .map((m, i) => ({ m, i, s: matchScore(m, q) }))
-    .sort((a, b) => b.s - a.s || a.i - b.i)
-    .map((x) => x.m)
-    .slice(0, 30);
+  // Cache the RANKED result, not the raw page: ranking is deterministic for a
+  // given query, so there is nothing to gain by re-running it.
+  const ranked = !q
+    ? data.Page.media.slice(0, 30)
+    // Stable sort: substring hits first, AniList's own ordering breaks ties.
+    : data.Page.media
+        .map((m, i) => ({ m, i, s: matchScore(m, q) }))
+        .sort((a, b) => b.s - a.s || a.i - b.i)
+        .map((x) => x.m)
+        .slice(0, 30);
+  if (ranked.length) searchCache.set(cacheKey, { at: Date.now(), data: ranked });
+  return ranked;
 }
 
 /** Trending anime for the landing page. */
@@ -269,10 +343,25 @@ export async function newSeasonAnime(): Promise<AniListMedia[]> {
   });
 }
 
+// Metadata for a FINISHED show is immutable in practice; a RELEASING one only
+// changes when an episode airs. refreshTitle re-fetched unconditionally, once
+// per airing target per autodl tick, which is a steady background drain.
+const byIdCache = new Map<number, { at: number; data: AniListMedia }>();
+const BY_ID_TTL_RELEASING = 6 * 60 * 60_000;
+const BY_ID_TTL_FINISHED = 7 * 24 * 60 * 60_000;
+const byIdTtl = (m: AniListMedia) =>
+  m.status === "FINISHED" ? BY_ID_TTL_FINISHED : BY_ID_TTL_RELEASING;
+
 export async function getById(id: number): Promise<AniListMedia | null> {
+  const hit = byIdCache.get(id);
+  if (hit && Date.now() - hit.at < byIdTtl(hit.data)) return hit.data;
   const query = `query ($id: Int) { Media(id: $id, type: ANIME) { ${MEDIA_FIELDS} } }`;
   try {
     const data = await gql<{ Media: AniListMedia }>(query, { id });
+    if (data.Media) {
+      byIdCache.set(id, { at: Date.now(), data: data.Media });
+      if (data.Media.idMal) rememberMalId(data.Media.idMal, data.Media.id);
+    }
     return data.Media;
   } catch (e) {
     log.warn("getById failed", id, String(e));
@@ -289,11 +378,69 @@ export function mediaType(m: AniListMedia): MediaType {
   return m.format === "MOVIE" ? "movie" : "series";
 }
 
+// malId -> anilistId. The mapping is immutable, so this never expires. It is
+// seeded from the local library at boot (see primeMalIds), which matters: the
+// MAL fallback exists precisely for when AniList is rate-limited, and resolving
+// a clicked MAL card USED to need an AniList request — so the fallback
+// dead-ended exactly when it was needed.
+const malToAniList = new Map<number, number>();
+
+export function rememberMalId(malId: number, anilistId: number): void {
+  if (malId > 0 && anilistId > 0) malToAniList.set(malId, anilistId);
+}
+
+/** Seed the map from titles already on disk — every one carries its malId. */
+export function primeMalIds(pairs: Iterable<{ id: number; malId?: number }>): void {
+  let n = 0;
+  for (const t of pairs) if (t.malId) { rememberMalId(t.malId, t.id); n++; }
+  if (n) log.info(`anilist: primed ${n} MAL id mappings from the library`);
+}
+
+/**
+ * Local-only batch lookup — never touches the network, so it is safe to call
+ * on the rate-limited fallback path.
+ */
+export function knownAniListIds(malIds: number[]): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const m of malIds) {
+    const id = malToAniList.get(m);
+    if (id) out.set(m, id);
+  }
+  return out;
+}
+
+/** Resolve a batch of MAL ids in ONE request, so a MAL row is pre-resolved. */
+export async function idsFromMal(malIds: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  const missing: number[] = [];
+  for (const m of malIds) {
+    const known = malToAniList.get(m);
+    if (known) out.set(m, known);
+    else missing.push(m);
+  }
+  if (!missing.length) return out;
+  const query = `query ($ids: [Int]) { Page(perPage: 50) { media(idMal_in: $ids, type: ANIME) { id idMal } } }`;
+  for (let i = 0; i < missing.length; i += 50) {
+    const slice = missing.slice(i, i + 50);
+    try {
+      const data = await gql<{ Page: { media: { id: number; idMal: number | null }[] } }>(query, { ids: slice });
+      for (const m of data.Page.media) if (m.idMal) { rememberMalId(m.idMal, m.id); out.set(m.idMal, m.id); }
+    } catch (e) {
+      log.warn("idsFromMal failed", String(e));
+      break; // rate-limited: return what we have rather than spending more
+    }
+  }
+  return out;
+}
+
 /** Map a MyAnimeList id to its AniList id (for MAL-sourced browse cards). */
 export async function idFromMal(malId: number): Promise<number | null> {
+  const known = malToAniList.get(malId);
+  if (known) return known;
   const query = `query ($m: Int) { Media(idMal: $m, type: ANIME) { id } }`;
   try {
     const data = await gql<{ Media: { id: number } | null }>(query, { m: malId });
+    if (data.Media?.id) rememberMalId(malId, data.Media.id);
     return data.Media?.id ?? null;
   } catch (e) {
     log.warn("idFromMal failed", malId, String(e));
@@ -460,7 +607,28 @@ async function relationsOf(id: number): Promise<RelInfo> {
 // present no matter which one we start from. AniList only exposes DIRECT
 // neighbours, so from S3 you'd otherwise never see S1 (it's two hops away) — the
 // old code numbered by array index and mislabelled every later season.
+// A franchise chain is SYMMETRIC: start from S1 or from S4 and the walk
+// converges on the same set. The per-node relCache did not help with that —
+// every caller still re-ran the BFS and paid a request per hop on any node it
+// had not seen. So cache the assembled chain and, when the walk completed,
+// store it under EVERY node id: one walk then answers for the whole franchise.
+//
+// This is where the requests actually were. /updates walks up to 20 titles and
+// each walk is a hop per season, so a cold cache could spend 100+ requests on a
+// single poll — far more than the browse rows the older comment blames.
+interface ChainEntry { at: number; nodes: Map<number, SeasonNode>; complete: boolean }
+const chainCache = new Map<number, ChainEntry>();
+const CHAIN_TTL = 60 * 60_000;
+// An incomplete walk (a hop 429'd) is cached briefly so a burst of callers does
+// not re-walk it, but not for the full hour — it is missing seasons and should
+// heal as soon as the quota reopens.
+const CHAIN_TTL_INCOMPLETE = 2 * 60_000;
+
 async function buildSeasonChain(startId: number): Promise<{ nodes: Map<number, SeasonNode>; complete: boolean }> {
+  const cached = chainCache.get(startId);
+  if (cached && Date.now() - cached.at < (cached.complete ? CHAIN_TTL : CHAIN_TTL_INCOMPLETE)) {
+    return { nodes: cached.nodes, complete: cached.complete };
+  }
   const found = new Map<number, SeasonNode>();
   const visited = new Set<number>();
   const queue: number[] = [startId];
@@ -479,6 +647,13 @@ async function buildSeasonChain(startId: number): Promise<{ nodes: Map<number, S
       if (!visited.has(nb.node.id)) queue.push(nb.node.id);
     }
   }
+  const entry: ChainEntry = { at: Date.now(), nodes: found, complete };
+  // Only fan the entry out across the franchise when the walk finished. An
+  // incomplete chain is only valid for the node it was started from — seeding
+  // it everywhere would persist a half-discovered franchise to seasons that
+  // could still resolve it fully themselves.
+  if (complete) for (const id of found.keys()) chainCache.set(id, entry);
+  else chainCache.set(startId, entry);
   return { nodes: found, complete };
 }
 

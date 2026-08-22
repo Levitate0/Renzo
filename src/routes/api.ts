@@ -412,7 +412,22 @@ async function browseRow(
     return (await anilistFn()).map(cardFromMedia);
   } catch (e) {
     log.warn("anilist browse failed, MAL fallback:", String(e));
-    return malFn();
+    const cards = await malFn();
+    // Attach the AniList id wherever it is ALREADY known locally. Without
+    // this the fallback dead-ends exactly when it is needed: the row appears,
+    // and clicking a card called /titles/resolve, which is itself an AniList
+    // request — during the rate limit that produced the fallback. Resolving
+    // from the in-memory map costs nothing and covers everything the library
+    // has ever seen.
+    const withMal = cards as { malId?: number; id?: number }[];
+    const known = anilist.knownAniListIds(
+      withMal.map((c) => c.malId).filter((m): m is number => !!m),
+    );
+    for (const c of withMal) {
+      const id = c.malId ? known.get(c.malId) : undefined;
+      if (id) c.id = id;
+    }
+    return cards;
   }
 }
 

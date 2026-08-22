@@ -8,6 +8,7 @@ import { db } from "./db.js";
 import { api } from "./routes/api.js";
 import { authRoutes, accountRoutes, userAdminRoutes, inviteRoutes, smtpRoutes } from "./routes/auth.js";
 import { requireAuth, requireStaff, requireOwner, downloadAuth, type AuthedRequest } from "./services/auth.js";
+import * as anilist from "./services/anilist.js";
 import * as captions from "./services/captions.js";
 import { queue } from "./services/downloader.js";
 import { jellyfinPluginRoutes } from "./routes/jellyfin.js";
@@ -71,6 +72,11 @@ async function main() {
   await fs.mkdir(config.dataDir, { recursive: true });
   await fs.mkdir(config.libraryDir, { recursive: true });
   await db.init();
+  // Every Title on disk already carries its malId, so the MAL -> AniList map
+  // can be rebuilt for free at boot. Without it a restart loses the mapping and
+  // the MAL fallback has to spend AniList requests to resolve a click — during
+  // the rate limit that caused the fallback in the first place.
+  anilist.primeMalIds(db.titles());
   await apikeys.ensureAllApiKeys(); // every account gets a per-user API key
   await autodl.migrateAutoFlags();  // legacy title-level auto-flags -> per-user autoTitles
   await queue.resume();

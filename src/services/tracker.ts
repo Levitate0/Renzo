@@ -6,7 +6,6 @@ import * as authsite from "./authsite.js";
 import type { Title, UserRecord } from "../types.js";
 
 const log = logger("tracker");
-const ANILIST = "https://graphql.anilist.co";
 const MAL = "https://api.myanimelist.net/v2";
 
 // Token resolution, highest priority first:
@@ -62,19 +61,12 @@ export async function malConnected(user?: UserRecord): Promise<boolean> {
 // ---------------------------------------------------------------------------
 // AniList
 // ---------------------------------------------------------------------------
+// Delegates to anilist.gqlAuthed rather than fetching directly. The old local
+// fetch bypassed the rate-limit state, the retry policy and the token bucket:
+// a 429 here threw a JSON parse error (AniList's 429 body is not JSON), so it
+// was reported as a generic failure and never marked the quota as spent.
 async function aniGql<T>(token: string, query: string, variables: Record<string, unknown>): Promise<T> {
-  const res = await fetch(ANILIST, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
-  if (json.errors?.length) throw new Error(json.errors.map((e) => e.message).join("; "));
-  return json.data as T;
+  return anilist.gqlAuthed<T>(token, query, variables);
 }
 
 const LIST_FIELDS = `
