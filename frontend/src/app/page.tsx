@@ -115,7 +115,7 @@ function DiscoverView() {
       {active ? (
         <div id="searchWrap">
           <BackHeading heading={`Results for “${q}”`} onBack={clearSearch} />
-          <MediaGrid items={search.data} loading={search.isPending} empty="Nothing here yet." />
+          <MediaGrid items={search.data} loading={search.isPending} empty="Nothing here yet." hiddenNote />
         </div>
       ) : category ? (
         <div id="searchWrap">

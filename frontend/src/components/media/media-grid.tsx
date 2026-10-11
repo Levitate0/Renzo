@@ -16,7 +16,7 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import React from "react";
 
-import { isHidden, useContentLevel } from "@/components/media/content-filter";
+import { isHidden, levelToShow, useContentLevel } from "@/components/media/content-filter";
 import { useCardSize } from "@/components/media/card-size";
 import { PosterCard } from "@/components/media/poster-card";
 import type { CardItem } from "@/lib/types";
@@ -43,21 +43,48 @@ interface MediaGridProps {
   empty?: React.ReactNode;
   loading?: boolean;
   className?: string;
+  /** Say how many items the 18+ filter is hiding, with a link to show them
+   *  (Library and Search — owner, 2026-10-11: a saved series that vanished
+   *  without a word looked like a bug). */
+  hiddenNote?: boolean;
+}
+
+/**
+ * "2 titles hidden by the 18+ filter — Show": raises the level just far
+ * enough to show them. Hub twin: Common.kt HiddenByFilterNote.
+ */
+export function HiddenNote({ hidden }: { hidden: CardItem[] }) {
+  const [, setLevel] = useContentLevel();
+  if (!hidden.length) return null;
+  const next = levelToShow(hidden);
+  return (
+    <p className="mb-3 mt-3 text-xs text-muted-foreground">
+      {hidden.length} title{hidden.length === 1 ? "" : "s"} hidden by the 18+ filter ·{" "}
+      <button type="button" className="font-medium text-primary hover:underline" onClick={() => setLevel(next)}>
+        Show {next === "ecchi" ? "up to Ecchi" : next === "erotica" ? "up to Erotica" : "all"}
+      </button>
+    </p>
+  );
 }
 
 /** Wrapping cover grid with content filtering + empty state (old renderGrid). */
-export function MediaGrid({ items, empty = "Nothing here yet.", loading, className }: MediaGridProps) {
+export function MediaGrid({ items, empty = "Nothing here yet.", loading, className, hiddenNote }: MediaGridProps) {
   const [level] = useContentLevel();
   const size = useCardSize();
   if (loading && !items) return <GridSkeleton className={className} />;
   const vis = (items || []).filter((it) => !isHidden(it, level));
-  if (!vis.length) return <EmptyState>{empty}</EmptyState>;
+  const hidden = hiddenNote ? (items || []).filter((it) => isHidden(it, level)) : [];
+  if (!vis.length)
+    return hidden.length ? <HiddenNote hidden={hidden} /> : <EmptyState>{empty}</EmptyState>;
   return (
-    <div className={cn("mt-4", GRID_COLS, className)} style={gridStyle(size.px)}>
-      {vis.map((it, i) => (
-        <PosterCard key={`${it.id ?? it.malId ?? it.title}-${it.updKind ?? ""}-${i}`} item={it} />
-      ))}
-    </div>
+    <>
+      <HiddenNote hidden={hidden} />
+      <div className={cn("mt-4", GRID_COLS, className)} style={gridStyle(size.px)}>
+        {vis.map((it, i) => (
+          <PosterCard key={`${it.id ?? it.malId ?? it.title}-${it.updKind ?? ""}-${i}`} item={it} />
+        ))}
+      </div>
+    </>
   );
 }
 

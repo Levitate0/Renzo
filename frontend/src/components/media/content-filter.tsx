@@ -110,6 +110,14 @@ export function isHidden(item: ContentTagged, level: ContentLevel): boolean {
   return itemRank > levelRank(level);
 }
 
+/** The lowest level that shows every item in `items` — what the "hidden by
+ *  the 18+ filter — show" link switches to. */
+export function levelToShow(items: ContentTagged[]): ContentLevel {
+  let rank = 0;
+  for (const it of items) for (const c of contentCatsOf(it)) rank = Math.max(rank, CAT_RANK[c] || 0);
+  return CONTENT_LADDER[rank] ?? "hentai";
+}
+
 // --- the segmented chip ladder (old renderContentChips) --------------------
 
 /**
