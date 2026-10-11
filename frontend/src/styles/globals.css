@@ -4596,7 +4596,7 @@ body.tv-nav .title-page .season-card:focus {
   padding: 4px 6px;
   opacity: 0.92;
 }
-.pc-btn:hover { opacity: 1; }
+.pc-btn:hover { opacity: 1; color: hsl(var(--primary)); }
 .pc-btn.on { color: hsl(var(--primary)); }
 .pc-time {
   color: #fff;
@@ -4612,9 +4612,12 @@ body.tv-nav .title-page .season-card:focus {
   appearance: none;
   height: 5px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.28);
+  /* played part in the accent, the rest at white/28 (Crunchyroll's bar) */
+  background: linear-gradient(to right, hsl(var(--primary)) var(--pc-fill, 0%), rgba(255, 255, 255, 0.28) var(--pc-fill, 0%));
   cursor: pointer;
+  transition: height 0.12s;
 }
+.pc-seek:hover { height: 7px; }
 .pc-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 14px;
@@ -4651,32 +4654,38 @@ body.tv-nav .title-page .season-card:focus {
   font-weight: 600;
 }
 
-/* hover volume slider (vertical, pops above the mute button) */
+/* hover volume slider: slides out to the right of the speaker (Crunchyroll) */
 .pc-vol-slider {
-  position: absolute;
-  left: 50%;
-  bottom: 40px;
-  transform: translateX(-50%);
-  -webkit-appearance: slider-vertical;
-  appearance: slider-vertical;
-  writing-mode: vertical-lr;
-  direction: rtl;
-  width: 30px;
-  height: 96px;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0;
+  height: 4px;
   margin: 0;
-  padding: 10px 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #fff var(--pc-fill, 0%), rgba(255, 255, 255, 0.3) var(--pc-fill, 0%));
   cursor: pointer;
-  background: hsl(var(--popover) / 0.97);
-  border: 1px solid hsl(var(--border));
-  border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-  accent-color: hsl(var(--primary));
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s;
+  transition: width 0.15s, opacity 0.15s, margin 0.15s;
+}
+.pc-vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+}
+.pc-vol-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
 }
 .pc-vol:hover .pc-vol-slider,
 .pc-vol-slider:focus {
+  width: 84px;
+  margin: 0 6px 0 2px;
   opacity: 1;
   pointer-events: auto;
 }

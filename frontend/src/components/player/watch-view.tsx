@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { useQueryClient } from "@tanstack/react-query";
+import { Bookmark, Check, Link, ListVideo, Play, RotateCcw } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -52,6 +53,10 @@ interface PlayResolve {
 
 interface WatchDetail extends WatchDetailLike {
   description?: string;
+  isAdult?: boolean;
+  content?: string[];
+  watchedThrough?: number;
+  lists?: string[];
   banner?: string;
   poster?: string;
   nextUp?: SeasonRef | null;
@@ -116,6 +121,8 @@ interface ResumeRun {
 }
 
 const RESUME_SAVE_MS = 10_000;
+/** Player setting (gear menu): count down into the next episode. Per browser. */
+const AUTOPLAY_KEY = "renzo-autoplay";
 /** One retry for the initial read: a single blip on mobile wifi shouldn't cost
  *  the session its position (and with it the ability to save at all). */
 const RESUME_RETRY_MS = 2_000;
@@ -188,6 +195,35 @@ export function WatchView() {
   const [cc, setCc] = useState<CcState>({ tracks: [], active: -1 });
   const [ccMenuOpen, setCcMenuOpen] = useState(false);
   const [autoNext, setAutoNext] = useState<AutoNextInfo | null>(null);
+  const [autoplay, setAutoplayState] = useState(true);
+  const autoplayRef = useRef(true);
+  const [watchedThrough, setWatchedThrough] = useState(0);
+  const [lists, setLists] = useState<string[]>([]);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [descOpen, setDescOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      const on = localStorage.getItem(AUTOPLAY_KEY) !== "0";
+      autoplayRef.current = on;
+      setAutoplayState(on);
+    } catch {
+      /* storage unavailable — autoplay stays on */
+    }
+  }, []);
+  const setAutoplay = useCallback((on: boolean) => {
+    autoplayRef.current = on;
+    setAutoplayState(on);
+    try {
+      localStorage.setItem(AUTOPLAY_KEY, on ? "1" : "0");
+    } catch {
+      /* per-session only */
+    }
+  }, []);
+  useEffect(() => {
+    setWatchedThrough(detail?.watchedThrough ?? 0);
+    setLists(detail?.lists ?? []);
+  }, [detail]);
 
   useTvBodyState({ watching: true });
 
@@ -736,8 +772,9 @@ export function WatchView() {
       }
       const cur = watchRef.current;
       if (!cur || cur.titleId !== titleId || cur.ep !== endedEp) return; // exited or moved on
+      setWatchedThrough((w) => Math.max(w, endedEp));
       const max = airedCount(d);
-      if (d.type !== "movie" && endedEp < max) {
+      if (d.type !== "movie" && endedEp < max && autoplayRef.current) {
         const nextEp = endedEp + 1;
         const meta = (d.episodeList || []).find((e) => e.number === nextEp);
         setAutoNext({
@@ -901,6 +938,76 @@ export function WatchView() {
           true,
         );
 
+  const offlineSession = !!watchRef.current?.offlineSession;
+  const epName = (n: number) => {
+    const m = d?.episodeList?.find((e) => e.number === n);
+    return `E${n} – ${m?.epTitle || `Episode ${n}`}`;
+  };
+  // Crunchyroll's side card: the next episode, else the series chain's next
+  // entry, else the previous episode.
+  const points = d && resumeRef.current?.titleId === d.id ? resumeRef.current.points : {};
+  const side = (() => {
+    if (!d || ep == null) return null;
+    const card = (heading: string, n: number) => {
+      const m = d.episodeList.find((e) => e.number === n);
+      const pt = points[String(n)];
+      const watched = n <= watchedThrough;
+      const left = !watched && pt && pt.durationMs > 0 ? Math.max(1, Math.round((pt.durationMs - pt.positionMs) / 60_000)) : null;
+      return {
+        heading,
+        title: epName(n),
+        sub: cc.tracks.length ? "Subtitled" : epNo,
+        thumb: m?.thumbnail || "",
+        watched,
+        badge: watched ? "Watched" : left ? `${left}m left` : d.duration ? `${d.duration}m` : null,
+        progress: watched ? 1 : pt && pt.durationMs > 0 ? Math.min(1, pt.positionMs / pt.durationMs) : null,
+        onClick: () => void goToEp(n),
+      };
+    };
+    if (!isMovie && ep < max) return card("NEXT EPISODE", ep + 1);
+    if (d.nextUp) {
+      const nu = d.nextUp;
+      return {
+        heading: "UP NEXT",
+        title: nu.title,
+        sub: seasonChip(nu, 0, true),
+        thumb: nu.poster || "",
+        watched: false,
+        badge: null,
+        progress: null,
+        onClick: () => void startWatch(router, nu.id, 1),
+      };
+    }
+    if (!isMovie && ep > 1) return card("PREVIOUS EPISODE", ep - 1);
+    return null;
+  })();
+
+  const toggleWatchlist = async () => {
+    if (!d) return;
+    const on = !lists.includes("watchlist");
+    try {
+      const r = await api<{ lists: string[] }>(`/titles/${d.id}/lists`, {
+        method: "POST",
+        body: JSON.stringify({ list: "watchlist", on }),
+      });
+      setLists(r.lists);
+      void queryClient.invalidateQueries({ queryKey: ["library"] });
+      toast(on ? "Added to watchlist" : "Removed from watchlist");
+    } catch (e) {
+      toast((e as Error).message || String(e));
+    }
+  };
+  const copyLink = async () => {
+    try {
+      // The address bar IS the watch link (goToEp keeps ?ep= current).
+      await navigator.clipboard.writeText(window.location.href);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2500);
+    } catch {
+      toast("Couldn't copy the link");
+    }
+  };
+
   return (
     <div className="flex min-h-dvh flex-col">
       <Topbar />
@@ -952,6 +1059,8 @@ export function WatchView() {
                 saveCcLang(idx < 0 ? "off" : ccRef.current.tracks[idx]?.lang || "en");
               }}
               onFullscreen={enterVideoFullscreen}
+              autoplay={autoplay}
+              onAutoplay={setAutoplay}
             />
             {autoNext && (
               <AutoNextCard
@@ -966,122 +1075,212 @@ export function WatchView() {
             )}
           </div>
 
-          {/* ------- info below the stage ------- */}
-          <div className="watch-info mx-auto w-full max-w-[1100px] px-4 pb-16 pt-5 sm:px-6">
-            <div className="watch-head flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div className="watch-headmeta min-w-0">
-                <a
-                  id="watchSeriesLink"
-                  href={d ? `/title/?id=${d.id}` : "#"}
-                  className="watch-series-link text-sm font-semibold text-primary hover:underline"
-                  title="Back to series"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    const tid = watchRef.current?.titleId;
-                    if (!tid) return;
-                    // Old app.js:1566-1573: pop back to the series page (no
-                    // duplicate entry) only when it is the entry behind us,
-                    // else navigate (grid/deep-link case with no series page
-                    // in history).
-                    if (cameFromTitle(tid) && window.history.length > 1) router.back();
-                    else router.push(`/title/?id=${tid}`);
-                  }}
-                >
-                  {d ? d.english || d.romaji : ""}
-                </a>
-                <h1 className="watch-title m-0 truncate text-2xl font-semibold">{title}</h1>
-                <div className="watch-epno mb-1 text-[13px] text-muted-foreground">{epNo}</div>
+          {/* ------- info below the stage: Crunchyroll's layout ------- */}
+          <div className="watch-info mx-auto w-full max-w-[1200px] px-4 pb-16 pt-6 sm:px-6">
+            <div className="watch-head flex flex-col gap-7 lg:flex-row lg:gap-12">
+              <div className="watch-headmeta min-w-0 flex-1">
+                <div className="flex items-start gap-4">
+                  <div className="min-w-0 flex-1">
+                    <a
+                      id="watchSeriesLink"
+                      href={d ? `/title/?id=${d.id}` : "#"}
+                      className="watch-series-link text-sm font-semibold text-primary hover:underline"
+                      title="Back to series"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        const tid = watchRef.current?.titleId;
+                        if (!tid) return;
+                        // Old app.js:1566-1573: pop back to the series page (no
+                        // duplicate entry) only when it is the entry behind us,
+                        // else navigate (grid/deep-link case with no series page
+                        // in history).
+                        if (cameFromTitle(tid) && window.history.length > 1) router.back();
+                        else router.push(`/title/?id=${tid}`);
+                      }}
+                    >
+                      {d ? d.english || d.romaji : ""}
+                    </a>
+                    <h1 className="watch-title m-0 mt-1.5 line-clamp-2 text-2xl font-bold">{title}</h1>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {(d?.isAdult || (d?.content?.length ?? 0) > 0) && (
+                        <span className="rounded-[3px] bg-muted px-1.5 text-[11px] font-bold italic">18+</span>
+                      )}
+                      <span className="watch-epno text-[13px] text-muted-foreground">
+                        {[epNo, cc.tracks.length ? "Subtitled" : ""].filter(Boolean).join("  •  ")}
+                      </span>
+                      <span
+                        id="watchSource"
+                        className={cn(
+                          "source-badge rounded-full border px-2.5 py-0.5 text-[11px]",
+                          badge.cls === "local" && "local border-emerald-400 bg-emerald-400/10 text-emerald-400",
+                          badge.cls === "rd" && "rd border-sky-400 bg-sky-400/10 text-sky-400",
+                          badge.cls === "" && "border-border text-muted-foreground",
+                        )}
+                      >
+                        {badge.text}
+                      </span>
+                    </div>
+                  </div>
+                  {/* Crunchyroll keeps the bookmark beside the title, the link under it. */}
+                  {d && !offlineSession && (
+                    <div className="flex shrink-0 flex-col items-center gap-1.5">
+                      <button
+                        type="button"
+                        className={cn(
+                          "grid h-10 w-10 place-items-center rounded-full hover:bg-secondary",
+                          lists.includes("watchlist") ? "text-primary" : "text-foreground hover:text-primary",
+                        )}
+                        title={lists.includes("watchlist") ? "Remove from Watchlist" : "Add to Watchlist"}
+                        onClick={() => void toggleWatchlist()}
+                      >
+                        <Bookmark className="h-6 w-6" fill={lists.includes("watchlist") ? "currentColor" : "none"} />
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "grid h-10 w-10 place-items-center rounded-full hover:bg-secondary",
+                          linkCopied ? "text-primary" : "text-foreground hover:text-primary",
+                        )}
+                        title={linkCopied ? "Link copied" : "Copy link to this episode"}
+                        onClick={() => void copyLink()}
+                      >
+                        {linkCopied ? <Check className="h-6 w-6" /> : <Link className="h-6 w-6" />}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {d?.description ? (
+                  <>
+                    <p
+                      className={cn(
+                        "watch-desc mb-0 mt-4 max-w-[760px] text-sm leading-relaxed text-muted-foreground",
+                        !descOpen && "line-clamp-3",
+                      )}
+                    >
+                      {d.description}
+                    </p>
+                    <button
+                      type="button"
+                      className="mt-2 text-xs font-bold tracking-wide text-primary"
+                      onClick={() => setDescOpen((o) => !o)}
+                    >
+                      {descOpen ? "FEWER DETAILS" : "MORE DETAILS"}
+                    </button>
+                  </>
+                ) : null}
+
+                <div className="watch-nav mt-4 flex flex-wrap items-center gap-2.5">
+                  {!denied && (
+                    <button
+                      id="watchDownload"
+                      type="button"
+                      className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-60"
+                      disabled={dlBtn.disabled}
+                      onClick={() => void downloadToLibrary()}
+                    >
+                      {dlBtn.label}
+                    </button>
+                  )}
+                  {note && (
+                    <span id="watchNote" className="note text-[13px] text-muted-foreground">
+                      {note}
+                    </span>
+                  )}
+                </div>
               </div>
-              <span
-                id="watchSource"
-                className={cn(
-                  "source-badge shrink-0 self-start rounded-full border px-2.5 py-1 text-[11px]",
-                  badge.cls === "local" && "local border-emerald-400 bg-emerald-400/10 text-emerald-400",
-                  badge.cls === "rd" && "rd border-sky-400 bg-sky-400/10 text-sky-400",
-                  badge.cls === "" && "border-border text-muted-foreground",
-                )}
-              >
-                {badge.text}
-              </span>
-            </div>
 
-            <div className="watch-nav my-3.5 flex flex-wrap items-center gap-2.5">
-              {!isMovie && (
-                <>
-                  <button
-                    id="watchPrev"
-                    type="button"
-                    className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-                    disabled={(ep ?? 1) <= 1}
-                    onClick={() => {
-                      if (watchRef.current?.ep) void goToEp(watchRef.current.ep - 1);
-                    }}
-                  >
-                    ‹ Prev
-                  </button>
-                  <button
-                    id="watchNext"
-                    type="button"
-                    className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-                    disabled={(ep ?? 1) >= max}
-                    onClick={() => {
-                      if (watchRef.current?.ep) void goToEp(watchRef.current.ep + 1);
-                    }}
-                  >
-                    Next ›
-                  </button>
-                </>
-              )}
-              {seasons.length > 1 && (
-                <select
-                  id="watchSeason"
-                  className="watch-season w-full rounded-lg border border-border bg-card px-2.5 py-2 text-sm sm:w-auto"
-                  value={d?.id}
-                  onChange={(e) => void startWatch(router, Number(e.target.value), 1)}
-                  aria-label="Season"
-                >
-                  {seasons.map((s, i) => (
-                    <option key={s.id} value={s.id}>
-                      {seasonChip(s, i, true)}
-                      {s.year ? ` · ${s.year}` : ""}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {!denied && (
-                <button
-                  id="watchDownload"
-                  type="button"
-                  className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-60"
-                  disabled={dlBtn.disabled}
-                  onClick={() => void downloadToLibrary()}
-                >
-                  {dlBtn.label}
-                </button>
-              )}
-              {note && (
-                <span id="watchNote" className="note text-[13px] text-muted-foreground">
-                  {note}
-                </span>
+              {/* right column: the next (or previous) episode + See more episodes */}
+              {d && (
+                <div className="flex w-full flex-col gap-3.5 lg:w-[340px] lg:flex-none">
+                  {side && (
+                    <>
+                      <div className="text-sm font-bold tracking-wide">{side.heading}</div>
+                      <button
+                        type="button"
+                        className="group flex gap-3 text-left"
+                        onClick={side.onClick}
+                      >
+                        <span className="relative aspect-video w-[152px] flex-none overflow-hidden rounded bg-muted">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img className="h-full w-full object-cover" src={side.thumb || fallbackThumb} alt="" />
+                          <span
+                            className={cn(
+                              "absolute inset-0 grid place-items-center bg-black/45 text-white",
+                              side.watched ? "" : "opacity-0 group-hover:opacity-100",
+                            )}
+                          >
+                            {side.watched ? <RotateCcw className="h-8 w-8" /> : <Play className="h-8 w-8" fill="currentColor" />}
+                          </span>
+                          {side.badge && (
+                            <span className="absolute bottom-1.5 right-1.5 bg-black/75 px-1.5 text-xs font-bold text-white">
+                              {side.badge}
+                            </span>
+                          )}
+                          {side.progress != null && (
+                            <span className="absolute inset-x-0 bottom-0 h-[3px] bg-white/25">
+                              <span className="block h-full bg-primary" style={{ width: `${side.progress * 100}%` }} />
+                            </span>
+                          )}
+                        </span>
+                        <span className="flex min-w-0 flex-col gap-1.5 pt-0.5">
+                          <span className="line-clamp-3 text-sm font-bold group-hover:text-primary">{side.title}</span>
+                          <span className="text-[13px] text-muted-foreground">{side.sub}</span>
+                        </span>
+                      </button>
+                    </>
+                  )}
+                  {!isMovie && (d.episodeList || []).length > 1 && (
+                    <button
+                      type="button"
+                      className="flex w-fit items-center gap-2.5 border-2 border-muted-foreground/70 px-4 py-2 text-sm font-bold tracking-wide hover:border-primary hover:bg-primary/10 hover:text-primary"
+                      onClick={() =>
+                        document.getElementById("watchEpList")?.scrollIntoView({ behavior: "smooth", block: "start" })
+                      }
+                    >
+                      <ListVideo className="h-5 w-5" />
+                      SEE MORE EPISODES
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-
-            <p className="watch-desc max-w-[760px] leading-relaxed text-muted-foreground">
-              {d?.description || ""}
-            </p>
 
             {/* Old renderWatchShell built #watchEpList for every title type —
                 movies keep the pinned "Up next" chain row (S1 -> movie -> S2)
                 and their own single E1 row when episodeList is non-empty. */}
             {d && (
-              <EpisodeList
-                episodes={d.episodeList || []}
-                fallbackThumb={fallbackThumb}
-                currentEp={ep}
-                nextUp={d.nextUp || null}
-                onSelect={(n) => void goToEp(n)}
-                onPlayTitle={(id) => void startWatch(router, id, 1)}
-              />
+              <>
+                <div className="mt-10 flex flex-wrap items-center gap-3">
+                  <h2 className="m-0 flex-1 text-xl font-bold">Episodes</h2>
+                  {seasons.length > 1 && (
+                    <select
+                      id="watchSeason"
+                      className="watch-season w-full rounded-lg border border-border bg-card px-2.5 py-2 text-sm sm:w-auto"
+                      value={d?.id}
+                      onChange={(e) => void startWatch(router, Number(e.target.value), 1)}
+                      aria-label="Season"
+                    >
+                      {seasons.map((s, i) => (
+                        <option key={s.id} value={s.id}>
+                          {seasonChip(s, i, true)}
+                          {s.year ? ` · ${s.year}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                <EpisodeList
+                  episodes={d.episodeList || []}
+                  fallbackThumb={fallbackThumb}
+                  currentEp={ep}
+                  nextUp={d.nextUp || null}
+                  watchedThrough={watchedThrough}
+                  resume={resumeRef.current?.titleId === d.id ? resumeRef.current.points : {}}
+                  onSelect={(n) => void goToEp(n)}
+                  onPlayTitle={(id) => void startWatch(router, id, 1)}
+                />
+              </>
             )}
           </div>
         </div>

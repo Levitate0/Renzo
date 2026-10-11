@@ -10,7 +10,7 @@ import { toast } from "sonner";
 
 import { seasonChip } from "@/components/player/season-utils";
 import { cn } from "@/lib/utils";
-import type { SeasonRef } from "@/lib/types";
+import type { ResumeMap, SeasonRef } from "@/lib/types";
 
 export interface WatchEpisode {
   number: number;
@@ -25,6 +25,8 @@ export function EpisodeList({
   fallbackThumb,
   currentEp,
   nextUp,
+  watchedThrough = 0,
+  resume = {},
   onSelect,
   onPlayTitle,
 }: {
@@ -33,6 +35,10 @@ export function EpisodeList({
   currentEp: number | null;
   /** Cross-chain "Up next" entry (detail.nextUp) — pinned above the episodes. */
   nextUp?: SeasonRef | null;
+  /** Last episode marked watched — a full progress line under its thumb. */
+  watchedThrough?: number;
+  /** Saved positions — a partial progress line (Crunchyroll). */
+  resume?: ResumeMap;
   onSelect: (ep: number) => void;
   /** Play another title in the chain (the up-next row). */
   onPlayTitle: (id: number) => void;
@@ -50,10 +56,10 @@ export function EpisodeList({
     "wep-thumb h-[54px] w-24 flex-none rounded-lg bg-muted object-cover sm:h-[72px] sm:w-32";
 
   return (
-    <div id="watchEpList" ref={listRef} className="watch-eplist mt-6 flex flex-col gap-2">
+    <div id="watchEpList" ref={listRef} className="watch-eplist mt-4 grid scroll-mt-4 grid-cols-1 gap-2 lg:grid-cols-2 lg:gap-x-3">
       {nextUp ? (
         <div
-          className="wep upnext flex cursor-pointer items-center gap-3 rounded-[10px] border border-primary/70 bg-primary/5 p-2 hover:bg-primary/10"
+          className="wep upnext flex cursor-pointer items-center gap-3 rounded-[10px] border border-primary/70 bg-primary/5 p-2 hover:bg-primary/10 lg:col-span-2"
           role="button"
           tabIndex={0}
           onClick={() => onPlayTitle(nextUp.id)}
@@ -87,6 +93,9 @@ export function EpisodeList({
       {episodes.map((ep) => {
         const unaired = ep.aired === false;
         const playing = currentEp === ep.number;
+        const watched = ep.number <= watchedThrough;
+        const pt = resume[String(ep.number)];
+        const frac = watched ? 1 : pt && pt.durationMs > 0 ? Math.min(1, pt.positionMs / pt.durationMs) : 0;
         return (
           <div
             key={ep.number}
@@ -107,20 +116,27 @@ export function EpisodeList({
               else onSelect(ep.number);
             }}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              className={thumbCls}
-              loading="lazy"
-              src={ep.thumbnail || fallbackThumb}
-              onError={(e) => {
-                (e.target as HTMLImageElement).src = fallbackThumb;
-              }}
-              alt=""
-            />
+            <span className="relative flex-none overflow-hidden rounded-lg">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                className={thumbCls}
+                loading="lazy"
+                src={ep.thumbnail || fallbackThumb}
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = fallbackThumb;
+                }}
+                alt=""
+              />
+              {frac > 0 && (
+                <span className="absolute bottom-0 left-0 h-[3px] bg-primary" style={{ width: `${frac * 100}%` }} />
+              )}
+            </span>
             <div className="wep-main min-w-0 flex-1">
-              <div className="wep-no truncate font-semibold">
-                E{ep.number}
-                {ep.epTitle ? ` · ${ep.epTitle}` : ""}
+              <div className="wep-no line-clamp-2 text-sm font-semibold">
+                E{ep.number} – {ep.epTitle || `Episode ${ep.number}`}
+              </div>
+              <div className={cn("text-xs", playing ? "font-semibold text-primary" : "text-muted-foreground")}>
+                {playing ? "Now playing" : unaired ? "Soon" : watched ? "Watched" : ""}
               </div>
             </div>
             {ep.hasFile ? (
