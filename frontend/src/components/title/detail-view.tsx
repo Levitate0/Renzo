@@ -25,12 +25,14 @@ import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError, emitAppEvent, OPEN_DOWNLOADS_EVENT } from "@/lib/api";
 import { useOffline } from "@/lib/offline-react";
 import { useTvBodyState } from "@/lib/tv";
+import { cn } from "@/lib/utils";
 import type { ProgressResult, TitleDetail, WatchStart } from "@/lib/types";
 
 import { modelFromOffline, modelFromOnline } from "./detail-model";
 import { EpisodeGrid, type EpJobOverlay } from "./episode-grid";
 import { TitleHero } from "./hero";
 import { DownloadSettings } from "./download-settings";
+import { CoverLightbox } from "./cover-lightbox";
 import { SeasonRow } from "./season-row";
 
 export function TitleDetailView({ id }: { id: number }) {
@@ -315,8 +317,10 @@ export function TitleDetailView({ id }: { id: number }) {
 
   // Shiori's series page (app/library/series/page.tsx): the ribbon's
   // "‹ Back" + centred title, the full-bleed hero, then the centred max-w-7xl
-  // two-column body — the left rail (seasons, download settings; Shiori's
-  // sources + downloads) and the episode list, which leads on mobile.
+  // body — a left rail with the download settings (Shiori's downloads panel)
+  // and, leading on mobile, Renzo's season strip over Renzo's episode grid
+  // (owner, 2026-10-11).
+  const showRail = !offlineMode && !denied && d.type === "series";
   return (
     <div className="title-page">
       <RibbonSlot>
@@ -343,12 +347,14 @@ export function TitleDetailView({ id }: { id: number }) {
       />
 
       <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:py-6">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(320px,380px)_1fr] lg:gap-8">
-          <div className="order-2 min-w-0 space-y-8 lg:order-1">
+        <div className={cn("grid grid-cols-1 gap-6 lg:gap-8", showRail && "lg:grid-cols-[minmax(280px,320px)_1fr]")}>
+          {showRail && (
+            <div className="order-2 min-w-0 space-y-8 lg:order-1">
+              <DownloadSettings d={d} />
+            </div>
+          )}
+          <div className="detail-episodes order-1 min-w-0 space-y-4 lg:order-2">
             <SeasonRow d={d} />
-            {!offlineMode && !denied && d.type === "series" && <DownloadSettings d={d} />}
-          </div>
-          <div className="detail-episodes order-1 min-w-0 lg:order-2">
             <EpisodeGrid
               d={d}
               offline={offlineMode}
@@ -367,27 +373,8 @@ export function TitleDetailView({ id }: { id: number }) {
         </div>
       </div>
 
-      {/* Cover lightbox — click the poster to expand it (old #imgLightbox). */}
-      {lightbox && (
-        <div
-          id="imgLightbox"
-          className="img-lightbox"
-          onClick={(e) => {
-            if (!(e.target as HTMLElement).closest(".img-lightbox-img")) setLightbox(null);
-          }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="img-lightbox-img" src={lightbox} alt="" />
-          <button
-            type="button"
-            className="img-lightbox-close"
-            aria-label="Close"
-            onClick={() => setLightbox(null)}
-          >
-            ×
-          </button>
-        </div>
-      )}
+      {/* Shiori's cover lightbox — click the poster to expand it. */}
+      {lightbox && <CoverLightbox src={lightbox} alt={d.english || d.romaji || ""} onClose={() => setLightbox(null)} />}
     </div>
   );
 }
