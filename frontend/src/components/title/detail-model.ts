@@ -32,6 +32,12 @@ export interface DetailModel {
   folder: string;
   folders: string[];
   provider: string | null;
+  /** Shiori-style hero: library state, AniList airing status, 18+ flag and
+   *  the next entry in the chain (the seasons rail marks it "Up next"). */
+  inLibrary: boolean;
+  airingStatus: string | null;
+  isAdult: boolean;
+  nextUpId: number | null;
 }
 
 export function modelFromOnline(d: TitleDetail): DetailModel {
@@ -59,6 +65,10 @@ export function modelFromOnline(d: TitleDetail): DetailModel {
     folder: d.folder || "",
     folders: d.folders || [],
     provider: d.provider ?? null,
+    inLibrary: !!d.inLibrary,
+    airingStatus: d.airingStatus ?? null,
+    isAdult: !!d.isAdult,
+    nextUpId: d.nextUp?.id ?? null,
   };
 }
 
@@ -95,5 +105,9 @@ export function modelFromOffline(d: OfflineTitleDetail): DetailModel {
     folder: "",
     folders: [],
     provider: null,
+    inLibrary: false,
+    airingStatus: null,
+    isAdult: false,
+    nextUpId: null,
   };
 }

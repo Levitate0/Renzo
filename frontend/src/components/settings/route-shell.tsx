@@ -13,21 +13,22 @@
 // these pages is open, tvnav treats it as the blocking root and scopes D-pad
 // focus inside the page — the topbar/tabs are reached by pressing Back out.
 
-import { X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import React, { useCallback, useEffect } from "react";
 
 import { useThemeSeed } from "@/components/settings/theme-seed";
-import { Button } from "@/components/ui/button";
 
 export function SettingsRouteShell({
   title,
   description,
   children,
+  wide = false,
 }: {
   title: string;
   description?: React.ReactNode;
   children: React.ReactNode;
+  /** Full-width page (Shiori's Users and Appearance pages), not the 4xl column. */
+  wide?: boolean;
 }) {
   const router = useRouter();
   useThemeSeed(); // seed local theme from server user.theme on a fresh device
@@ -59,27 +60,13 @@ export function SettingsRouteShell({
 
   return (
     // `view active` = tvnav page root (CONTRACTS); `modal` = TV Back marker.
-    <div className="view active modal mx-auto w-full max-w-5xl">
-      <div className="mb-6 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-          {/* PageHeading subtitle is bodySmall (12sp) in the clients. */}
-          {description ? (
-            <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-          ) : null}
-        </div>
-        {/* Old modal's ✕ close (public/index.html:273), now the clients' close
-            affordance: the glyph inside a 1px ring, filling with --card rather
-            than --accent on hover (Hub 3f40d1f). */}
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={`Close ${title.toLowerCase()}`}
-          onClick={close}
-          className="shrink-0 rounded-full border border-border text-muted-foreground hover:bg-card hover:text-foreground"
-        >
-          <X className="h-5 w-5" />
-        </Button>
+    // Shiori's settings-page header (account/page.tsx): `mx-auto max-w-4xl
+    // space-y-6`, an h1 and a muted one-liner — no ✕. Leaving the page is
+    // the command bar above it, Back, or Escape (handled above).
+    <div className={`view active modal mx-auto w-full ${wide ? "" : "max-w-4xl"} space-y-6`}>
+      <div className="min-w-0">
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
       </div>
       {children}
     </div>

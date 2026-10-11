@@ -17,6 +17,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import React from "react";
 
 import { isHidden, useContentLevel } from "@/components/media/content-filter";
+import { useCardSize } from "@/components/media/card-size";
 import { PosterCard } from "@/components/media/poster-card";
 import type { CardItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -29,8 +30,12 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
   );
 }
 
-const GRID_COLS =
-  "grid grid-cols-2 gap-3 min-[420px]:grid-cols-[repeat(auto-fill,minmax(148px,1fr))] sm:gap-[18px] sm:grid-cols-[repeat(auto-fill,minmax(158px,1fr))]";
+// Shiori's library grid: columns of the shared card size, gap-2 on a phone
+// and gap-4 from sm.
+const GRID_COLS = "grid gap-2 sm:gap-4";
+const gridStyle = (px: number): React.CSSProperties => ({
+  gridTemplateColumns: `repeat(auto-fill, minmax(${px}px, 1fr))`,
+});
 
 interface MediaGridProps {
   items: CardItem[] | undefined;
@@ -43,11 +48,12 @@ interface MediaGridProps {
 /** Wrapping cover grid with content filtering + empty state (old renderGrid). */
 export function MediaGrid({ items, empty = "Nothing here yet.", loading, className }: MediaGridProps) {
   const [level] = useContentLevel();
+  const size = useCardSize();
   if (loading && !items) return <GridSkeleton className={className} />;
   const vis = (items || []).filter((it) => !isHidden(it, level));
   if (!vis.length) return <EmptyState>{empty}</EmptyState>;
   return (
-    <div className={cn("mt-4", GRID_COLS, className)}>
+    <div className={cn("mt-4", GRID_COLS, className)} style={gridStyle(size.px)}>
       {vis.map((it, i) => (
         <PosterCard key={`${it.id ?? it.malId ?? it.title}-${it.updKind ?? ""}-${i}`} item={it} />
       ))}
@@ -57,15 +63,13 @@ export function MediaGrid({ items, empty = "Nothing here yet.", loading, classNa
 
 /** Pulse placeholders while a grid's first fetch is in flight. */
 export function GridSkeleton({ count = 12, className }: { count?: number; className?: string }) {
+  const size = useCardSize();
   return (
-    <div className={cn("mt-4", GRID_COLS, className)}>
+    <div className={cn("mt-4", GRID_COLS, className)} style={gridStyle(size.px)}>
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className="overflow-hidden rounded-xl border border-border bg-card">
-          <div className="aspect-[2/3] w-full animate-pulse bg-muted" />
-          <div className="space-y-2 p-3">
-            <div className="h-3 w-4/5 animate-pulse rounded bg-muted" />
-            <div className="h-2.5 w-1/2 animate-pulse rounded bg-muted" />
-          </div>
+        // Shiori's skeleton: a 4:6 shimmering cover.
+        <div key={i} className="overflow-hidden rounded-md" style={{ aspectRatio: "4/6" }}>
+          <div className="h-full w-full animate-pulse rounded-md bg-muted" />
         </div>
       ))}
     </div>
@@ -103,6 +107,7 @@ interface BrowseRowProps {
  */
 export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps) {
   const [level] = useContentLevel();
+  const size = useCardSize();
   const vis = (items || []).filter((it) => !isHidden(it, level));
   const scrollerRef = React.useRef<HTMLDivElement>(null);
   const [canLeft, setCanLeft] = React.useState(false);
@@ -133,7 +138,7 @@ export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps)
   return (
     <div className="browse-row mb-6 md:mb-8">
       <div className="row-head mb-3 flex items-baseline justify-between gap-2.5">
-        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+        <h2 className="text-base font-semibold">{title}</h2>
         <button
           type="button"
           className="row-more whitespace-nowrap text-[13px] font-semibold text-primary hover:underline"
@@ -160,7 +165,7 @@ export function BrowseRowGrid({ title, items, loading, onMore }: BrowseRowProps)
           )}
           <div ref={scrollerRef} onScroll={syncArrows} className="browse-scroll gap-3 md:gap-[18px]">
             {vis.map((it, i) => (
-              <PosterCard key={`${it.id ?? it.malId ?? it.title}-${i}`} item={it} />
+              <PosterCard key={`${it.id ?? it.malId ?? it.title}-${i}`} item={it} width={size.px} />
             ))}
             <MoreTile onMore={onMore} />
           </div>

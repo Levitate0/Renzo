@@ -11,7 +11,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React from "react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
 import { api, openSettings } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -27,11 +26,10 @@ export function useAutodlQuery() {
   });
 }
 
-export function AutodlBar({ retrySlot }: { retrySlot?: React.ReactNode }) {
-  const { data: s } = useAutodlQuery();
+/** Start an auto-download pass now (owner-only server-side). */
+export function useAutodlRun() {
   const queryClient = useQueryClient();
-
-  const run = useMutation({
+  return useMutation({
     mutationFn: () => api<AutodlRunResult>("/autodl/run", { method: "POST" }),
     onMutate: () => toast("Auto-download pass started…"),
     onSuccess: (r) => {
@@ -41,22 +39,27 @@ export function AutodlBar({ retrySlot }: { retrySlot?: React.ReactNode }) {
     onError: (e) => toast((e as Error).message),
     onSettled: () => void queryClient.invalidateQueries({ queryKey: ["autodl"] }),
   });
+}
 
+/**
+ * The auto-downloader's status as one muted line under the Downloads header —
+ * where Shiori's queue shows its scan progress — plus the amber self-check
+ * warnings (the credentials ones open that Account section).
+ */
+export function AutodlBar() {
+  const { data: s } = useAutodlQuery();
   const you = s?.scope === "you";
   const checks = s?.checks || [];
 
   return (
-    <div
-      id="autodlBar"
-      className="autodl flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/50 px-3.5 py-2.5"
-    >
-      <span id="autodlText" className="min-w-0 flex-1 text-[13px] text-muted-foreground">
+    <div id="autodlBar" className="autodl space-y-1.5 px-1">
+      <p id="autodlText" className="text-xs text-muted-foreground">
         {!s ? (
           "Auto-downloader…"
         ) : s.enabled ? (
           <>
-            <span className="on-dot text-emerald-400">●</span> Auto-downloader on — every{" "}
-            {s.intervalMin}m, {s.trackedTitles} {you ? "tracked for you" : "tracked"}
+            <span className="on-dot text-emerald-400">●</span> Auto-download on — every {s.intervalMin}m,{" "}
+            {s.trackedTitles} {you ? "tracked for you" : "tracked"}
             {" · "}
             {s.lastRun
               ? `last run ${new Date(s.lastRun).toLocaleTimeString()} (queued ${s.lastQueued}${you ? " for you" : ""})`
@@ -64,31 +67,18 @@ export function AutodlBar({ retrySlot }: { retrySlot?: React.ReactNode }) {
             {s.lastError ? <span className="text-amber-400"> · ⚠ {s.lastError}</span> : null}
           </>
         ) : (
-          "○ Auto-downloader off — set AUTO_DOWNLOAD=true in .env"
+          "○ Auto-download off — set AUTO_DOWNLOAD=true in .env"
         )}
-      </span>
-      {retrySlot}
-      {s?.canRun ? (
-        <Button
-          id="autodlRun"
-          variant="outline"
-          size="sm"
-          disabled={s.running || run.isPending}
-          onClick={() => run.mutate()}
-        >
-          Run now
-        </Button>
-      ) : null}
-
+      </p>
       {checks.length > 0 && (
-        <div id="autodlChecks" className="autodl-checks mt-1 flex basis-full flex-col gap-1">
+        <div id="autodlChecks" className="autodl-checks flex flex-col gap-1">
           {checks.map((c, i) => {
             const clickable = c.action === "settings:credentials";
             return (
               <div
                 key={`${c.code}-${c.user ?? ""}-${i}`}
                 className={cn(
-                  "autodl-check rounded-lg border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-[12.5px] text-amber-300",
+                  "autodl-check rounded-lg border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-xs text-amber-300",
                   clickable && "clickable cursor-pointer hover:bg-amber-400/20",
                 )}
                 role={clickable ? "button" : undefined}

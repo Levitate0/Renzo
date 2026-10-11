@@ -4237,13 +4237,10 @@ body.tv-nav .mode-pill { cursor: default; pointer-events: none; }
    Child sizing needs descendant selectors, hence CSS instead of utilities. ─────────────────────────────── */
 /* Applies at EVERY width — desktop Discover uses the same horizontal rows as
    mobile (user request 2026-08-01); cards grow a little on wide screens. */
-/* Chrome above the Discover rows — topbar, chip row and the page's own top and
-   bottom padding. One constant: it sets both the height the rows divide up and
-   the card width derived from it, so the two can't drift apart. */
-:root {
-  --browse-chrome: 200px;
-}
-
+/* Discover rows (Shiori-style since 2026-10-11): one horizontal snap-scroll
+   per row, cards at the shared card size (set inline by PosterCard's width),
+   and the page scrolls as one column like Shiori's Browse. The old
+   fit-three-rows-in-the-window sizing went with the old caption cards. */
 .browse-scroll {
   display: flex;
   overflow-x: auto;
@@ -4255,67 +4252,12 @@ body.tv-nav .mode-pill { cursor: default; pointer-events: none; }
   display: none;
 }
 .browse-scroll > .card {
-  flex: 0 0 150px;
   scroll-snap-align: start;
 }
 .browse-scroll > .more-tile {
   display: flex;
   flex: 0 0 96px;
   scroll-snap-align: start;
-}
-
-/* Card sizing, ported from the Hub (components/Common.kt tileWidthFor +
-   tileWidthTier). Two rules, not one fixed width:
-     1. a WIDTH TIER that grows with the viewport — 150 / 172 / 190 / 210;
-     2. a HEIGHT CAP, because a tile is a 2:3 poster plus ~96px of caption and
-        the Hub's desktop Discover fits its three rows in the window, so the
-        card can never be taller than a third of it. Hence
-        min(tier, (row height - caption) * 2/3), floored at 64px.
-   The web only ever implemented the bottom two tiers and no cap, so its rows
-   ran wider-carded and sparser than the Hub's at the same window size.
-   Phones keep the flat 150px tier — the Hub bounds nothing there either. */
-@media (min-width: 768px) {
-  .browse-scroll {
-    --browse-tier: 172px;
-    /* Height of ONE row's card area: the three rows split what's left under
-       the chrome, minus the row's own heading and margin. Same arithmetic the
-       Hub's MediaRow hands to tileWidthFor as its BoxWithConstraints height. */
-    --browse-row-h: calc((100dvh - var(--browse-chrome)) / 3 - 40px);
-  }
-  .browse-scroll > .card {
-    flex-basis: clamp(64px, calc((var(--browse-row-h) - 96px) * 2 / 3), var(--browse-tier));
-  }
-
-  /* Browse mode fills the window, as the Hub's desktop Discover does: three
-     rows share the height and the page itself doesn't scroll (HomeScreen.kt —
-     "the three rows split the window height evenly and the page never scrolls
-     vertically"). Search and category views keep their scrolling grids. */
-  #browseWrap {
-    display: flex;
-    flex-direction: column;
-    height: calc(100dvh - var(--browse-chrome));
-  }
-  #browseWrap > .browse-row {
-    display: flex;
-    flex: 1 1 0;
-    min-height: 0;
-    flex-direction: column;
-    margin-bottom: 0;
-  }
-  #browseWrap .row-body {
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-}
-@media (min-width: 1100px) {
-  .browse-scroll {
-    --browse-tier: 190px;
-  }
-}
-@media (min-width: 1400px) {
-  .browse-scroll {
-    --browse-tier: 210px;
-  }
 }
 
 /* ─── Title page (detail agent) ──────────────────────────────────────────────
@@ -4343,169 +4285,8 @@ body.tv-nav .mode-pill { cursor: default; pointer-events: none; }
 .tp-ghost:disabled { opacity: .5; cursor: default; }
 
 .title-page { position: relative; }
-.title-page .page-back {
-  display: inline-flex; align-items: center; gap: 4px; margin-bottom: 12px;
-  background: hsl(var(--background) / 0.62); color: hsl(var(--foreground));
-  border: 1px solid hsl(var(--border)); border-radius: 999px;
-  padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
-  backdrop-filter: blur(6px);
-}
-.title-page .page-back:hover { background: hsl(var(--secondary)); }
-
-/* Hero */
-.title-page .title-hero {
-  position: relative; min-height: min(58dvh, 560px); display: flex;
-  align-items: flex-end; border-radius: var(--radius-xl); overflow: hidden;
-  border: 1px solid hsl(var(--border));
-}
-.title-page .title-hero-bg { position: absolute; inset: 0; background-size: cover; background-position: center 20%; }
-.title-page .title-hero-scrim {
-  position: absolute; inset: 0;
-  background:
-    linear-gradient(180deg, rgba(0,0,0,.28) 0%, rgba(0,0,0,.06) 32%, hsl(var(--background)) 100%),
-    linear-gradient(90deg, rgba(0,0,0,.78) 0%, rgba(0,0,0,.36) 46%, rgba(0,0,0,0) 76%);
-}
-.title-page .title-hero-inner {
-  position: relative; z-index: 2; display: flex; gap: 26px; align-items: flex-end;
-  width: min(1180px, 100%); margin: 0 auto; padding: 96px 32px 30px;
-}
-.title-page .title-hero-poster {
-  width: 158px; aspect-ratio: 2/3; object-fit: cover; border-radius: var(--radius-lg);
-  flex: none; box-shadow: 0 12px 40px rgba(0,0,0,.55); background: hsl(var(--secondary));
-  cursor: zoom-in; transition: transform .12s ease;
-}
-.title-page .title-hero-poster:hover { transform: scale(1.02); }
-.title-page .title-hero-meta { min-width: 0; max-width: 740px; align-self: flex-end; }
-.title-page .title-hero-name {
-  font-size: clamp(26px, 4vw, 46px); margin: 0 0 10px; line-height: 1.05;
-  font-weight: 800; text-shadow: 0 2px 20px rgba(0,0,0,.6);
-}
-.title-page .metaline {
-  color: hsl(var(--muted-foreground)); font-size: 13px; display: flex;
-  flex-wrap: wrap; gap: 8px; align-items: center;
-}
-.title-page .metaline .sep { opacity: .4; }
-.title-page .metaline .type-tag {
-  color: hsl(var(--primary)); font-weight: 700; text-transform: uppercase;
-  letter-spacing: .4px; font-size: 11px;
-}
-.title-page .desc { margin: 8px 0 0; font-size: 14px; line-height: 1.55; color: hsl(var(--foreground) / 0.9); }
-.title-page .desc.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.title-page .more-link {
-  background: none; border: 0; color: hsl(var(--primary)); font-weight: 600;
-  cursor: pointer; padding: 4px 0; font-size: 13px; display: inline-block; margin: 2px 0 6px;
-}
-.title-page .detail-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
-.title-page .icon-pill {
-  width: 42px; height: 42px; border-radius: 50%; font-size: 17px;
-  background: hsl(var(--secondary)); color: hsl(var(--foreground));
-  border: 1px solid hsl(var(--border)); cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: border-color .15s, transform .12s;
-}
-.title-page .icon-pill:hover { border-color: hsl(var(--primary) / 0.6); transform: translateY(-1px); }
-.title-page .icon-pill.on { color: hsl(var(--primary)); border-color: hsl(var(--primary)); background: hsl(var(--primary) / 0.12); }
-.title-page .icon-pill:disabled { opacity: .55; cursor: default; transform: none; }
-.title-page .detail-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
-.title-page .folder-pick {
-  display: inline-flex; align-items: center; gap: 6px; background: hsl(var(--secondary));
-  border: 1px solid hsl(var(--border)); border-radius: var(--radius-sm);
-  padding: 0 6px 0 11px; color: hsl(var(--muted-foreground)); font-size: 13px;
-  max-width: 100%;
-}
-.title-page .folder-pick select {
-  background: transparent; border: 0; color: hsl(var(--foreground));
-  padding: 8px 6px; outline: none; font: inherit; cursor: pointer;
-  min-width: 0; max-width: 220px; text-overflow: ellipsis;
-}
-.title-page .folder-pick select option { background: hsl(var(--secondary)); color: hsl(var(--foreground)); }
-
-/* Tracking row */
-.title-page .track-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-.title-page .track-label { color: hsl(var(--muted-foreground)); font-size: 13px; }
-.title-page .track-sel, .title-page .track-num {
-  background: hsl(var(--secondary)); border: 1px solid hsl(var(--border));
-  color: hsl(var(--foreground)); border-radius: var(--radius-sm); padding: 7px 9px;
-  outline: none; font-size: 13px;
-}
-.title-page .track-sel:focus, .title-page .track-num:focus { border-color: hsl(var(--primary)); }
-.title-page .track-sel option { background: hsl(var(--secondary)); color: hsl(var(--foreground)); }
-.title-page .track-num { width: 62px; }
-.title-page .track-total { color: hsl(var(--muted-foreground)); font-size: 13px; }
-.title-page .track-row [disabled] { opacity: .5; }
-.title-page .track-note { color: hsl(var(--muted-foreground)); font-size: 12px; }
-
-/* Body below the hero */
-.title-page .title-body { width: min(1180px, 100%); margin: 0 auto; padding: 18px 0 40px; }
-
-/* Season row */
-.title-page .seasons-row { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; margin: 4px 0 18px; }
-.title-page .season-card { flex: none; width: 118px; cursor: pointer; }
-.title-page .season-card img {
-  width: 118px; aspect-ratio: 2/3; object-fit: cover; border-radius: 10px;
-  border: 2px solid transparent; background: hsl(var(--secondary));
-  transition: border-color .15s, transform .12s; display: block;
-}
-.title-page .season-card:hover img { border-color: hsl(var(--border)); transform: translateY(-2px); }
-.title-page .season-card.current { cursor: default; }
-.title-page .season-card.current img { border-color: hsl(var(--primary)); transform: none; }
-.title-page .season-card .lbl { font-size: 11.5px; margin-top: 6px; line-height: 1.25; color: hsl(var(--muted-foreground)); }
-.title-page .season-card.current .lbl { color: hsl(var(--foreground)); font-weight: 600; }
-
-/* Season header */
-.title-page .season-header {
-  font-size: 15px; font-weight: 650; color: hsl(var(--foreground)); margin: 6px 0 14px;
-  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
-}
-.title-page .season-header .cnt { color: hsl(var(--muted-foreground)); font-weight: 400; font-size: 13px; margin-left: 8px; }
-.title-page .season-header-actions { display: inline-flex; gap: 8px; flex-wrap: wrap; }
-
-/* Episode grid — landscape cards, columns auto-fit and wrap */
-.title-page .ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 22px 18px; }
-.title-page .ep-card { cursor: pointer; min-width: 0; }
-.title-page .ep-card .ep-thumb-wrap { position: relative; width: 100%; border-radius: 10px; overflow: hidden; background: #05060a; }
-.title-page .ep-card .ep-thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; }
-.title-page .ep-card .ep-ov {
-  position: absolute; inset: 0; display: grid; place-items: center; font-size: 34px; color: #fff;
-  background: rgba(6,7,11,.28); opacity: 0; transition: opacity .15s; text-shadow: 0 2px 12px rgba(0,0,0,.65);
-}
-.title-page .ep-card:hover .ep-ov { opacity: 1; }
-.title-page .ep-card.watched .ep-ov { opacity: 1; background: rgba(6,7,11,.5); } /* replay stays on watched */
-.title-page .ep-badge {
-  position: absolute; right: 8px; bottom: 8px; font-size: 11px; font-weight: 700; color: #fff;
-  background: rgba(6,7,11,.85); padding: 3px 8px; border-radius: 6px;
-}
-.title-page .ep-badge.saved { color: #34d399; }
-.title-page .ep-thumb-wrap .ep-prog { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: hsl(var(--primary)); }
-.title-page .ep-off {
-  position: absolute; left: 8px; top: 8px; font-size: 10.5px; font-weight: 700; color: #fff;
-  background: rgba(46,160,120,.92); padding: 2px 7px; border-radius: 6px; letter-spacing: .02em;
-}
-.title-page .ep-series {
-  color: hsl(var(--muted-foreground)); font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: .03em; margin-top: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.title-page .ep-title { font-weight: 650; font-size: 14px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.title-page .ep-foot { position: relative; display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
-.title-page .ep-sub { color: hsl(var(--muted-foreground)); font-size: 12.5px; }
-.title-page .ep-kebab {
-  background: none; border: 0; color: hsl(var(--muted-foreground)); font-size: 18px; cursor: pointer;
-  padding: 0 6px; line-height: 1; border-radius: 6px;
-}
-.title-page .ep-kebab:hover { color: hsl(var(--foreground)); background: hsl(var(--secondary)); }
-.title-page .ep-menu {
-  position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; background: hsl(var(--secondary));
-  border: 1px solid hsl(var(--border)); border-radius: 10px; padding: 6px; min-width: 160px;
-  box-shadow: 0 12px 40px rgba(0,0,0,.5);
-}
-.title-page .ep-menu button {
-  display: block; width: 100%; text-align: left; background: none; border: 0;
-  color: hsl(var(--foreground)); padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px;
-}
-.title-page .ep-menu button:hover { background: hsl(var(--muted)); }
-.title-page .ep-card.unaired { opacity: .5; cursor: default; }
-.title-page .ep-card.unaired .ep-ov { display: none; }
-.title-page .movie-play { margin-top: 6px; }
+/* The title page itself is Tailwind now (Shiori's series layout, 2026-10-11);
+   the old hero / season strip / episode grid rules went with their markup. */
 
 /* Full-size cover lightbox (old #imgLightbox) */
 .img-lightbox {
@@ -4520,14 +4301,6 @@ body.tv-nav .mode-pill { cursor: default; pointer-events: none; }
 }
 .img-lightbox-close:hover { background: rgba(40,40,50,.9); }
 @keyframes tp-lb-fade { from { opacity: 0; } to { opacity: 1; } }
-
-/* Mobile: stack poster over meta, centered (old ~styles.css:743) */
-@media (max-width: 640px) {
-  .title-page .title-hero-inner { flex-direction: column; align-items: center; text-align: center; gap: 14px; padding: 72px 16px 18px; }
-  .title-page .title-hero-poster { width: 132px; }
-  .title-page .detail-actions, .title-page .detail-controls, .title-page .track-row { justify-content: center; }
-  .title-page .season-header { justify-content: center; text-align: center; }
-}
 
 /* TV focus ring for the detail tiles (old body.tv-nav focus block intent) */
 body.tv-nav .title-page .ep-card:focus,

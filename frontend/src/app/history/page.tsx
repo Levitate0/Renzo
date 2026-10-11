@@ -7,9 +7,10 @@
 // ---------------------------------------------------------------------------
 
 import { useQuery } from "@tanstack/react-query";
+import { History as HistoryIcon } from "lucide-react";
 import React from "react";
 
-import { MediaGrid } from "@/components/media/media-grid";
+import { type FeedEntry, FeedPage, relativeTime } from "@/components/media/feed";
 import { AppShell } from "@/components/shell/app-shell";
 import { useAuth } from "@/contexts/auth-context";
 import { api } from "@/lib/api";
@@ -23,18 +24,23 @@ function HistoryView() {
     enabled: !!user,
   });
 
+  // Shiori's History feed, bucketed Today / Yesterday / This week / Earlier.
+  const entries: FeedEntry[] | undefined = history.data?.map((h) => ({
+    item: h,
+    icon: HistoryIcon,
+    label: `Watched E${h.ep}${h.upNext ? ` · up next E${h.upNext}` : ""}`,
+    trailing: relativeTime(h.at),
+    at: h.at,
+  }));
+
   return (
-    <section id="view-history" className="view active">
-      <h2 className="text-xl font-semibold tracking-tight">Watch history</h2>
-      <p className="view-sub mt-0.5 text-[13px] text-muted-foreground">
-        Recently watched — most recent first.
-      </p>
-      <MediaGrid
-        items={history.data}
-        loading={history.isPending}
-        empty="Nothing watched yet — mark episodes watched or finish one in the player."
-      />
-    </section>
+    <FeedPage
+      id="view-history"
+      title="History"
+      entries={entries}
+      loading={history.isPending}
+      empty="Nothing watched yet — mark episodes watched or finish one in the player."
+    />
   );
 }
 

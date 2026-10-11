@@ -14,17 +14,23 @@
 // <button>s that tvnav's D-pad discovery picks up.
 // ---------------------------------------------------------------------------
 
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { Eye, EyeOff, Play } from "lucide-react";
+import { useRouter } from "next/navigation";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { ContentChips } from "@/components/media/content-filter";
+import { type ContentLevel, isHidden, useContentLevel } from "@/components/media/content-filter";
 import { BrowseRowGrid, MediaGrid } from "@/components/media/media-grid";
+import { SpotlightHero, type SpotlightItem } from "@/components/media/spotlight-hero";
 import { AppShell } from "@/components/shell/app-shell";
+import { RibbonSlot } from "@/components/shell/ribbon";
+import { TvSelect } from "@/components/ui/tv-select";
 import { useAuth } from "@/contexts/auth-context";
 import { useSearch } from "@/contexts/search-context";
 import { api, ApiError } from "@/lib/api";
-import type { CardItem } from "@/lib/types";
+import type { CardItem, TitleDetail } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 type CatKey = "trending" | "recommended" | "newSeason";
 
@@ -100,30 +106,25 @@ function DiscoverView() {
     toast("Search failed: " + err.message);
   }, [search.error]);
 
+  // Shiori's Browse: the ribbon, the spotlight over the first picks, then the
+  // catalogue (here the three rows, scrolling as one page).
   return (
     <section id="view-discover" className="view active">
-      <ContentChips />
+      <ContentRibbon />
 
       {active ? (
         <div id="searchWrap">
           <BackHeading heading={`Results for “${q}”`} onBack={clearSearch} />
-          <MediaGrid
-            items={search.data}
-            loading={search.isPending}
-            empty="Nothing here yet."
-          />
+          <MediaGrid items={search.data} loading={search.isPending} empty="Nothing here yet." />
         </div>
       ) : category ? (
         <div id="searchWrap">
           <BackHeading heading={CAT_LABELS[category]} onBack={() => setCategory(null)} />
-          <MediaGrid
-            items={rows[category].data}
-            loading={rows[category].isPending}
-            empty="Nothing here yet."
-          />
+          <MediaGrid items={rows[category].data} loading={rows[category].isPending} empty="Nothing here yet." />
         </div>
       ) : (
-        <div id="browseWrap" className="mt-2">
+        <div id="browseWrap">
+          <DiscoverSpotlight items={trending.data} />
           {(Object.keys(CAT_LABELS) as CatKey[]).map((key) => (
             <BrowseRowGrid
               key={key}
@@ -139,6 +140,95 @@ function DiscoverView() {
         </div>
       )}
     </section>
+  );
+}
+
+const AIRING: Record<string, { label: string; color: string; ongoing?: boolean }> = {
+  RELEASING: { label: "Airing", color: "#22c55e", ongoing: true },
+  FINISHED: { label: "Finished", color: "#3b82f6" },
+  NOT_YET_RELEASED: { label: "Upcoming", color: "#eab308" },
+};
+
+/**
+ * Shiori's spotlight over the trending picks. Discover cards carry no
+ * description or airing status; the title endpoint does (the server caches
+ * it), so each slide fills in as its detail arrives.
+ */
+function DiscoverSpotlight({ items }: { items: CardItem[] | undefined }) {
+  const router = useRouter();
+  const [level] = useContentLevel();
+  const picks = (items || []).filter((it) => it.id != null && !isHidden(it, level)).slice(0, 7);
+  const details = useQueries({
+    queries: picks.map((p) => ({
+      queryKey: ["title", p.id],
+      queryFn: () => api<TitleDetail>(`/titles/${p.id}`),
+      staleTime: 1_800_000,
+      retry: false,
+    })),
+  });
+  if (!picks.length) return null;
+  const slides: SpotlightItem[] = picks.map((p, i) => {
+    const d = details[i]?.data;
+    const st = d?.airingStatus ? AIRING[d.airingStatus.toUpperCase()] : undefined;
+    const eps = d?.episodesTotal || d?.episodeCount;
+    return {
+      id: p.id!,
+      title: p.title,
+      author: p.year ? String(p.year) : undefined,
+      description: d?.description ? d.description.replace(/<[^>]+>/g, " ").replace(/\s{2,}/g, " ").trim() : null,
+      thumbnailUrl: p.poster,
+      statusLabel: st?.label ?? (p.type === "movie" ? "Movie" : "Series"),
+      statusColor: st?.color ?? "#71717a",
+      ongoing: st?.ongoing,
+      genres: p.genres?.length ? p.genres : d?.genres,
+      meta: [p.year, eps ? `${eps} episodes` : null].filter(Boolean).join(" · ") || undefined,
+    };
+  });
+  return (
+    <div className="mb-8">
+      <SpotlightHero
+        items={slides}
+        eyebrow="TRENDING · THIS SEASON ON ANILIST"
+        ctaLabel="View title"
+        ctaIcon={Play}
+        onCtaClick={(s) => router.push(`/title/?id=${s.id}`)}
+        variant="browse"
+      />
+    </div>
+  );
+}
+
+/** Shiori's library ribbon, Discover's share of it: the 18+ control. */
+function ContentRibbon() {
+  const [level, setLevel] = useContentLevel();
+  const shown = level !== "none";
+  return (
+    <RibbonSlot>
+      <div className="flex w-full items-center gap-2">
+        <div
+          className={cn(
+            "flex shrink-0 items-center gap-1.5",
+            shown && "[&_button]:border-amber-500/50 [&_button]:bg-amber-500/10 [&_button]:text-amber-400 [&_select]:border-amber-500/50 [&_select]:text-amber-400",
+          )}
+        >
+          {shown ? <Eye className="h-4 w-4 text-amber-400" /> : <EyeOff className="h-4 w-4 text-muted-foreground" />}
+          <div className="w-40">
+            <TvSelect
+              aria-label="18+ content"
+              className="h-8 w-full !pr-2 text-xs sm:text-sm"
+              value={level}
+              onValueChange={(v) => setLevel(v as ContentLevel)}
+              options={[
+                { value: "none", label: "18+ Hidden" },
+                { value: "ecchi", label: "18+ up to Ecchi" },
+                { value: "erotica", label: "18+ up to Erotica" },
+                { value: "hentai", label: "18+ up to Hentai" },
+              ]}
+            />
+          </div>
+        </div>
+      </div>
+    </RibbonSlot>
   );
 }
 

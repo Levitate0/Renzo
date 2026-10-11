@@ -8,9 +8,10 @@
 // Shares the ["updates"] query with the topbar badge (shell queries).
 // ---------------------------------------------------------------------------
 
+import { Clock, Film, LibraryBig, Play } from "lucide-react";
 import React from "react";
 
-import { MediaGrid } from "@/components/media/media-grid";
+import { type FeedEntry, FeedPage } from "@/components/media/feed";
 import { AppShell } from "@/components/shell/app-shell";
 import { useUpdatesQuery } from "@/components/shell/queries";
 import type { CardItem, MediaType } from "@/lib/types";
@@ -35,18 +36,27 @@ function UpdatesView() {
     season: u.season,
   }));
 
+  // Shiori's Updates feed. The feed carries no time, so it is one list
+  // rather than Shiori's Today / Yesterday buckets.
+  const entries: FeedEntry[] | undefined = cards?.map((c) => {
+    const sTag = c.season ? `S${c.season} ` : "";
+    if (c.updKind === "episode") return { item: c, icon: Play, label: `New episode · ${sTag}E${c.ep}`, accent: true, trailing: c.year ? String(c.year) : null };
+    if (c.updKind === "season")
+      return c.upcoming
+        ? { item: c, icon: Clock, label: `Coming soon${c.season ? ` · Season ${c.season}` : ""}` }
+        : { item: c, icon: LibraryBig, label: `New season${c.season ? ` · Season ${c.season}` : ""}`, accent: true };
+    if (c.updKind === "movie") return { item: c, icon: Film, label: "Movie available", accent: true };
+    return { item: c, icon: LibraryBig, label: "Update" };
+  });
+
   return (
-    <section id="view-updates" className="view active">
-      <h2 className="text-xl font-semibold tracking-tight">Updates</h2>
-      <p className="view-sub mt-0.5 text-[13px] text-muted-foreground">
-        New episodes &amp; seasons for the anime and movies in your library.
-      </p>
-      <MediaGrid
-        items={cards}
-        loading={updates.isPending}
-        empty="You're all caught up — no new episodes or seasons."
-      />
-    </section>
+    <FeedPage
+      id="view-updates"
+      title="Updates"
+      entries={entries}
+      loading={updates.isPending}
+      empty="You're all caught up — new episodes and seasons for your library show up here."
+    />
   );
 }
 

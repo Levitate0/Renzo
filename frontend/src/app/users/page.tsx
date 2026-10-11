@@ -21,6 +21,7 @@ export default function UsersPage() {
     <AppShell>
       <SettingsRouteShell
         title="Users"
+        wide
         description="Manage user accounts, invite new users, and control downloads."
       >
         {isStaff ? <UsersPane /> : <NotAuthorized needs="managers and the owner" />}

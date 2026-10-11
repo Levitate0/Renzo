@@ -12,12 +12,15 @@
 //     dispatches Escape while body.detailing — useTvBodyState keeps that set)
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { markWatchFromTitle } from "@/components/player/play";
 import { useJobsQuery } from "@/components/shell/queries";
+import { RibbonSlot } from "@/components/shell/ribbon";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError, emitAppEvent, OPEN_DOWNLOADS_EVENT } from "@/lib/api";
 import { useOffline } from "@/lib/offline-react";
@@ -27,6 +30,7 @@ import type { ProgressResult, TitleDetail, WatchStart } from "@/lib/types";
 import { modelFromOffline, modelFromOnline } from "./detail-model";
 import { EpisodeGrid, type EpJobOverlay } from "./episode-grid";
 import { TitleHero } from "./hero";
+import { DownloadSettings } from "./download-settings";
 import { SeasonRow } from "./season-row";
 
 export function TitleDetailView({ id }: { id: number }) {
@@ -35,7 +39,6 @@ export function TitleDetailView({ id }: { id: number }) {
   const { user, loading: authLoading, gate } = useAuth();
   const offline = useOffline();
   const [lightbox, setLightbox] = useState<string | null>(null);
-  const [openMenu, setOpenMenu] = useState<number | null>(null);
 
   // tvnav contract: Back → Escape cascade while the title page is open.
   useTvBodyState({ detailing: true });
@@ -68,7 +71,6 @@ export function TitleDetailView({ id }: { id: number }) {
   // Reset transient UI + scroll to top when switching titles (old enterDetail).
   useEffect(() => {
     setLightbox(null);
-    setOpenMenu(null);
     window.scrollTo(0, 0);
   }, [id]);
 
@@ -125,18 +127,23 @@ export function TitleDetailView({ id }: { id: number }) {
     else router.push("/");
   }, [offlineMode, router]);
 
-  // Escape cascade: lightbox → episode menu → back (old app.js:1913).
+  // Escape cascade: lightbox → open dialog/menu (Radix closes itself) → back
+  // (old app.js:1913).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.defaultPrevented) return;
       if (lightbox) return setLightbox(null);
-      if (openMenu !== null) return setOpenMenu(null);
-      if (document.querySelector(".modal:not(.hidden), .auth-gate:not(.hidden)")) return;
+      if (
+        document.querySelector(
+          '.modal:not(.hidden), .auth-gate:not(.hidden), [role="dialog"][data-state="open"], [data-radix-popper-content-wrapper]',
+        )
+      )
+        return;
       goBack();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [lightbox, openMenu, goBack]);
+  }, [lightbox, goBack]);
 
   // --- actions ------------------------------------------------------------
   const play = useCallback(
@@ -260,6 +267,22 @@ export function TitleDetailView({ id }: { id: number }) {
     toast(`Saved ${ok} offline${notLib ? ` · ${notLib} not in library yet` : ""}`);
   }, [d, offline]);
 
+  // Queue every missing aired episode on the server (was the hero's ⬇ pill).
+  const downloadSeason = useCallback(async () => {
+    toast("Queueing season…");
+    try {
+      const r = await api<{ queued: number }>(`/titles/${id}/download-season`, { method: "POST" });
+      toast(
+        r.queued
+          ? `Queued ${r.queued} episode${r.queued === 1 ? "" : "s"}`
+          : "Nothing missing — season already downloaded",
+      );
+      void qc.invalidateQueries({ queryKey: ["jobs"] });
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    }
+  }, [id, qc]);
+
   // --- render -------------------------------------------------------------
   if (!id) {
     return (
@@ -290,11 +313,27 @@ export function TitleDetailView({ id }: { id: number }) {
 
   const denied = !!user?.downloadsDenied;
 
+  // Shiori's series page (app/library/series/page.tsx): the ribbon's
+  // "‹ Back" + centred title, the full-bleed hero, then the centred max-w-7xl
+  // two-column body — the left rail (seasons, download settings; Shiori's
+  // sources + downloads) and the episode list, which leads on mobile.
   return (
     <div className="title-page">
-      <button type="button" className="page-back" onClick={goBack}>
-        ‹ Back
-      </button>
+      <RibbonSlot>
+        <div className="relative flex w-full items-center gap-3">
+          <Button onClick={goBack} variant="ghost" size="sm" className="-ml-1 h-8 gap-1.5 px-2">
+            <ChevronLeft className="h-4 w-4" />
+            <span className="hidden sm:inline">Back</span>
+          </Button>
+          <div className="pointer-events-none absolute left-1/2 hidden min-w-0 max-w-[60vw] -translate-x-1/2 lg:flex">
+            <span className="pointer-events-auto truncate text-sm font-medium text-foreground/80" title={d.english || d.romaji}>
+              {d.english || d.romaji}
+            </span>
+          </div>
+          <div className="flex-1 lg:hidden" />
+        </div>
+      </RibbonSlot>
+
       <TitleHero
         d={d}
         offline={offlineMode}
@@ -302,24 +341,29 @@ export function TitleDetailView({ id }: { id: number }) {
         onPlay={(ep) => void play(ep)}
         onOpenLightbox={(src) => src && setLightbox(src)}
       />
-      <div className="title-body">
-        <div className="detail-episodes">
-          <SeasonRow d={d} />
-          <EpisodeGrid
-            d={d}
-            offline={offlineMode}
-            denied={denied}
-            offlineSupported={offline.ready && offline.supported}
-            offlineHas={offline.has}
-            jobByEp={jobByEp}
-            openMenu={openMenu}
-            setOpenMenu={setOpenMenu}
-            onPlay={(ep) => void play(ep)}
-            onSetProgress={(ep) => void setProgress(ep)}
-            onDownload={(ep, now) => void downloadEp(ep, now)}
-            onToggleOffline={(ep, saved, label) => void toggleOffline(ep, saved, label)}
-            onSaveSeason={() => void saveSeasonOffline()}
-          />
+
+      <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:py-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(320px,380px)_1fr] lg:gap-8">
+          <div className="order-2 min-w-0 space-y-8 lg:order-1">
+            <SeasonRow d={d} />
+            {!offlineMode && !denied && d.type === "series" && <DownloadSettings d={d} />}
+          </div>
+          <div className="detail-episodes order-1 min-w-0 lg:order-2">
+            <EpisodeGrid
+              d={d}
+              offline={offlineMode}
+              denied={denied}
+              offlineSupported={offline.ready && offline.supported}
+              offlineHas={offline.has}
+              jobByEp={jobByEp}
+              onPlay={(ep) => void play(ep)}
+              onSetProgress={(ep) => void setProgress(ep)}
+              onDownload={(ep, now) => void downloadEp(ep, now)}
+              onToggleOffline={(ep, saved, label) => void toggleOffline(ep, saved, label)}
+              onSaveSeason={() => void saveSeasonOffline()}
+              onDownloadSeason={() => void downloadSeason()}
+            />
+          </div>
         </div>
       </div>
 

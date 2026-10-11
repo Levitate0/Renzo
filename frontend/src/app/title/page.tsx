@@ -18,7 +18,7 @@ function TitlePageInner() {
 
 export default function TitlePage() {
   return (
-    <AppShell>
+    <AppShell bleed>
       <div className="view active">
         <Suspense fallback={null}>
           <TitlePageInner />

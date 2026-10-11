@@ -16,6 +16,7 @@ export default function AppearancePage() {
     <AppShell>
       <SettingsRouteShell
         title="Appearance"
+        wide
         description="Personalize how Renzo looks — saved to your account, so it follows you on every device."
       >
         <AppearancePane />

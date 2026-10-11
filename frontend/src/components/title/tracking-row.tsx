@@ -6,6 +6,8 @@
 // connected. Never rendered offline (parent hides it).
 
 import { useQuery } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -79,52 +81,66 @@ export function TrackingRow({ id }: { id: number }) {
 
   const disabled = !connected;
 
+  // Shiori's tracker dialog form (series-tracking-button.tsx): status, then
+  // progress + score side by side, then Sync. Rendered inside the hero's
+  // Track dialog. The select stays native — tvnav drives native selects.
+  const field =
+    "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
   return (
-    <div className="track-row">
-      <span className="track-label">Track</span>
-      <select
-        className="track-sel"
-        value={connected ? status : ""}
-        disabled={disabled}
-        onChange={(e) => setStatus(e.target.value)}
-        aria-label="Tracking status"
-      >
-        {STATUS_OPTIONS.map(([v, label]) => (
-          <option key={v} value={v}>
-            {label}
-          </option>
-        ))}
-      </select>
-      <input
-        className="track-num"
-        type="number"
-        min={0}
-        title="Episodes watched"
-        value={connected ? progress : ""}
-        disabled={disabled}
-        onChange={(e) => setProgress(e.target.value)}
-      />
-      <span className="track-total">{connected && total ? `/ ${total}` : ""}</span>
-      <input
-        className="track-num"
-        type="number"
-        min={0}
-        max={10}
-        placeholder="/10"
-        title="Score out of 10"
-        value={connected ? score : ""}
-        disabled={disabled}
-        onChange={(e) => setScore(e.target.value)}
-      />
-      <button
-        type="button"
-        className="tp-ghost"
-        disabled={disabled || saving}
-        onClick={() => void sync()}
-      >
-        Sync
-      </button>
-      <span className="track-note">{note}</span>
+    <div className="track-row grid grid-cols-1 gap-4">
+      <div className="space-y-2">
+        <Label htmlFor="trackStatus">Status</Label>
+        <select
+          id="trackStatus"
+          className={`track-sel ${field} [&>option]:bg-popover`}
+          value={connected ? status : ""}
+          disabled={disabled}
+          onChange={(e) => setStatus(e.target.value)}
+          aria-label="Tracking status"
+        >
+          {STATUS_OPTIONS.map(([v, label]) => (
+            <option key={v} value={v}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <Label htmlFor="trackProgress">Progress{connected && total ? ` (of ${total})` : ""}</Label>
+          <input
+            id="trackProgress"
+            className={`track-num ${field}`}
+            type="number"
+            min={0}
+            title="Episodes watched"
+            value={connected ? progress : ""}
+            disabled={disabled}
+            onChange={(e) => setProgress(e.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="trackScore">Score</Label>
+          <input
+            id="trackScore"
+            className={`track-num ${field}`}
+            type="number"
+            min={0}
+            max={10}
+            placeholder="/10"
+            title="Score out of 10"
+            value={connected ? score : ""}
+            disabled={disabled}
+            onChange={(e) => setScore(e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button disabled={disabled || saving} onClick={() => void sync()}>
+          {saving ? "Syncing…" : "Sync"}
+        </Button>
+        <span className="track-note text-xs text-muted-foreground">{note}</span>
+      </div>
     </div>
   );
 }

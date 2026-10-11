@@ -1,18 +1,30 @@
 "use client";
 
-// Title hero — port of the top half of paintDetail (public/app.js:835-875) +
-// the bound controls that follow it: banner, poster (click → lightbox), meta
-// line, clamped description with "More details", Play E<next>, watchlist /
-// favorite toggles, season download (gated downloadsDenied), Auto toggle,
-// folder select + move, provider (release group) select and the tracking row.
-// Server-only affordances are hidden when painting the offline detail page.
+// Title hero — Shiori's series hero (RenzoFrontend components/comp/series/
+// detail/series-hero.tsx), the owner's direction (2026-10-11) being that Renzo
+// look exactly like Shiori: blurred-cover backdrop with the gradient and pink
+// tint, the 210×315 cover (click → lightbox), status pill, title, romaji
+// byline, inline meta row, genre pills, description with Read more, and the
+// action toolbar. Renzo's actions fill the toolbar: Play/Continue, Watchlist,
+// Favourite, Library, Track (dialog) and Auto-download. Server-only
+// affordances are hidden on the offline page. The banner-style hero this
+// replaces is on branch backup/pre-shiori-restyle.
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import { Heart, LibraryBig, Play, RefreshCw, Rss, Star } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { api } from "@/lib/api";
-import type { ProviderOption, TitleDetail } from "@/lib/types";
+import type { TitleDetail } from "@/lib/types";
 
 import type { DetailModel } from "./detail-model";
 import { TrackingRow } from "./tracking-row";
@@ -25,10 +37,19 @@ interface HeroProps {
   onOpenLightbox: (src: string) => void;
 }
 
+/** Shiori's status pill config, from AniList's airing status. */
+const STATUS: Record<string, { label: string; cls: string; dot: string; pulse?: boolean }> = {
+  RELEASING: { label: "Ongoing", cls: "bg-green-500/10 border-green-500/25 text-green-400", dot: "bg-green-500", pulse: true },
+  FINISHED: { label: "Completed", cls: "bg-blue-500/10 border-blue-500/25 text-blue-400", dot: "bg-blue-500" },
+  NOT_YET_RELEASED: { label: "Upcoming", cls: "bg-yellow-500/10 border-yellow-500/25 text-yellow-400", dot: "bg-yellow-500" },
+  HIATUS: { label: "On Hiatus", cls: "bg-yellow-500/10 border-yellow-500/25 text-yellow-400", dot: "bg-yellow-500" },
+  CANCELLED: { label: "Cancelled", cls: "bg-red-500/10 border-red-500/25 text-red-400", dot: "bg-red-500" },
+};
+
 export function TitleHero({ d, offline, denied, onPlay, onOpenLightbox }: HeroProps) {
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState(false);
-  const [seasonBusy, setSeasonBusy] = useState(false);
+  const [trackOpen, setTrackOpen] = useState(false);
 
   // Description clamp resets when navigating between seasons.
   useEffect(() => setExpanded(false), [d.id]);
@@ -38,10 +59,11 @@ export function TitleHero({ d, offline, denied, onPlay, onOpenLightbox }: HeroPr
   };
 
   const isSeries = d.type === "series";
-  // Hero Play → first not-downloaded aired episode (or E1 / movie).
-  const firstEp =
-    d.episodeList.find((e) => e.aired !== false && !e.hasFile) ||
-    d.episodeList.find((e) => e.aired !== false) || { number: 1 };
+  const title = d.english || d.romaji || "";
+  // Play → the next episode after what you've watched, else the first aired.
+  const aired = d.episodeList.filter((e) => e.aired !== false);
+  const next = aired.find((e) => e.number > (d.watchedThrough || 0)) || aired[0] || { number: 1 };
+  const continuing = isSeries && (d.watchedThrough || 0) > 0 && next.number > 1;
 
   const inW = d.lists.includes("watchlist");
   const inF = d.lists.includes("favorites");
@@ -49,11 +71,11 @@ export function TitleHero({ d, offline, denied, onPlay, onOpenLightbox }: HeroPr
   const toggleList = async (listName: string) => {
     const on = !d.lists.includes(listName);
     try {
-      const r = await api<{ lists: string[] }>(`/titles/${d.id}/lists`, {
+      const r = await api<{ lists: string[]; inLibrary?: boolean }>(`/titles/${d.id}/lists`, {
         method: "POST",
         body: JSON.stringify({ list: listName, on }),
       });
-      patch({ lists: r.lists });
+      patch({ lists: r.lists, ...(r.inLibrary !== undefined ? { inLibrary: r.inLibrary } : {}) });
       void qc.invalidateQueries({ queryKey: ["library"] });
       toast(on ? `Added to ${listName}` : `Removed from ${listName}`);
     } catch (e) {
@@ -61,23 +83,20 @@ export function TitleHero({ d, offline, denied, onPlay, onOpenLightbox }: HeroPr
     }
   };
 
-  const downloadSeason = async () => {
-    setSeasonBusy(true);
-    toast("Queueing season…");
+  const toggleLibrary = async () => {
     try {
-      const r = await api<{ queued: number }>(`/titles/${d.id}/download-season`, {
-        method: "POST",
-      });
-      toast(
-        r.queued
-          ? `Queued ${r.queued} episode${r.queued === 1 ? "" : "s"}`
-          : "Nothing missing — season already downloaded",
-      );
-      void qc.invalidateQueries({ queryKey: ["jobs"] });
+      if (d.inLibrary) {
+        await api(`/library/${d.id}`, { method: "DELETE" });
+        patch({ inLibrary: false });
+        toast("Removed from your library");
+      } else {
+        await api(`/library`, { method: "POST", body: JSON.stringify({ anilistId: d.id }) });
+        patch({ inLibrary: true });
+        toast("Added to your library");
+      }
+      void qc.invalidateQueries({ queryKey: ["library"] });
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSeasonBusy(false);
     }
   };
 
@@ -88,227 +107,197 @@ export function TitleHero({ d, offline, denied, onPlay, onOpenLightbox }: HeroPr
         body: JSON.stringify({ enabled: !d.autoDownload }),
       });
       patch({ autoDownload: r.autoDownload });
-      toast(
-        r.autoDownload
-          ? "Auto-download on — new episodes grab automatically"
-          : "Auto-download off",
-      );
+      toast(r.autoDownload ? "Auto-download on — new episodes grab automatically" : "Auto-download off");
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e));
     }
   };
 
-  const meta: React.ReactNode[] = [
-    <span key="type" className="type-tag">
-      {d.type === "movie" ? "Movie" : "Series"}
-    </span>,
-  ];
-  if (d.year) meta.push(<span key="year">{d.year}</span>);
-  meta.push(<span key="eps">{`${d.episodesTotal || 1} ep`}</span>);
-  d.genres.slice(0, 3).forEach((g, i) => meta.push(<span key={`g${i}`}>{g}</span>));
+  const status = d.airingStatus ? STATUS[d.airingStatus.toUpperCase()] : undefined;
+  const seasonWord =
+    d.seasonKind === "extra"
+      ? ({ MOVIE: "Movie", OVA: "OVA" } as Record<string, string>)[(d.seasonFormat || "").toUpperCase()] || "Special"
+      : `Season ${d.seasonNum || 1}${d.seasonPart && d.seasonPart > 1 ? ` Part ${d.seasonPart}` : ""}`;
+  const meta = [
+    d.type === "movie" ? "Movie" : seasonWord,
+    d.year ? String(d.year) : null,
+    d.episodesTotal ? `${d.episodesTotal} episode${d.episodesTotal === 1 ? "" : "s"}` : null,
+    d.duration ? `${d.duration}m` : null,
+  ].filter(Boolean) as string[];
 
   return (
-    <div className="title-hero">
+    <section className="relative isolate overflow-hidden border-b border-border/60">
+      {/* Blurred banner layer */}
       <div
-        className="title-hero-bg"
-        style={{ backgroundImage: `url(${d.banner || d.poster || ""})` }}
+        aria-hidden
+        className="absolute inset-0 -z-10 scale-110 bg-cover bg-center will-change-transform"
+        style={{
+          backgroundImage: `url(${d.poster || d.banner || ""})`,
+          filter: "blur(28px) brightness(0.4) saturate(1.4)",
+        }}
       />
-      <div className="title-hero-scrim" />
-      <div className="title-hero-inner">
-        {d.poster ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            className="title-hero-poster"
-            src={d.poster}
-            alt=""
-            onClick={() => onOpenLightbox(d.poster)}
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
-            }}
-          />
-        ) : null}
-        <div className="title-hero-meta">
-          <h1 className="title-hero-name">{d.english || d.romaji}</h1>
-          <div className="metaline">
-            {meta.map((m, i) => (
-              <React.Fragment key={i}>
-                {i ? <span className="sep">•</span> : null}
-                {m}
-              </React.Fragment>
-            ))}
-          </div>
-          <p className={`desc${expanded ? "" : " clamp"}`}>{d.description}</p>
-          {d.description.length > 200 && (
-            <button type="button" className="more-link" onClick={() => setExpanded((v) => !v)}>
-              {expanded ? "Less" : "More details"}
-            </button>
-          )}
-          <div className="detail-actions">
-            <button
-              type="button"
-              className="tp-primary play-btn"
-              onClick={() => onPlay(isSeries ? firstEp.number : 1)}
-            >
-              {isSeries ? `▶ Play E${firstEp.number}` : "▶ Play"}
-            </button>
-            {!offline && (
-              <>
-                <button
-                  type="button"
-                  className={`icon-pill${inW ? " on" : ""}`}
-                  title={inW ? "In watchlist" : "Add to watchlist"}
-                  onClick={() => void toggleList("watchlist")}
-                >
-                  {inW ? "★" : "☆"}
-                </button>
-                <button
-                  type="button"
-                  className={`icon-pill${inF ? " on" : ""}`}
-                  title={inF ? "Favorited" : "Add to favorites"}
-                  onClick={() => void toggleList("favorites")}
-                >
-                  {inF ? "♥" : "♡"}
-                </button>
-                {isSeries && !denied && (
-                  <button
-                    type="button"
-                    className="icon-pill"
-                    title="Download season"
-                    disabled={seasonBusy}
-                    onClick={() => void downloadSeason()}
-                  >
-                    ⬇
-                  </button>
-                )}
-              </>
+      {/* Gradient overlay */}
+      <div aria-hidden className="absolute inset-0 -z-10 bg-gradient-to-b from-background/30 via-background/70 to-background" />
+      {/* Subtle pink tint */}
+      <div
+        aria-hidden
+        className="absolute inset-0 -z-10 bg-[radial-gradient(80%_60%_at_50%_0%,hsl(var(--primary)/0.10),transparent_70%)]"
+      />
+
+      <div className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">
+        <div className="flex flex-col gap-6 sm:flex-row sm:gap-8">
+          {/* Cover — click to expand */}
+          <div className="mx-auto shrink-0 sm:mx-0">
+            {d.poster ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={d.poster}
+                alt={title}
+                loading="eager"
+                style={{ aspectRatio: "4/6" }}
+                onClick={() => onOpenLightbox(d.poster)}
+                title="Click to expand"
+                className="h-[225px] w-[150px] cursor-zoom-in rounded-xl object-cover shadow-[0_30px_60px_-15px_rgba(0,0,0,0.7),0_0_80px_-20px_hsl(var(--primary)/0.25)] ring-1 ring-white/[0.06] transition-transform hover:scale-[1.02] sm:h-[315px] sm:w-[210px]"
+              />
+            ) : (
+              <div className="h-[225px] w-[150px] rounded-xl bg-card ring-1 ring-white/[0.06] sm:h-[315px] sm:w-[210px]" />
             )}
           </div>
-          {!offline && (
-            <div className="detail-controls">
-              {isSeries && !denied && (
-                <button
-                  type="button"
-                  className={`tp-ghost${d.autoDownload ? " on" : ""}`}
-                  onClick={() => void toggleAuto()}
+
+          {/* Info column */}
+          <div className="min-w-0 flex-1 space-y-3 sm:space-y-4">
+            {status && (
+              <div>
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium uppercase tracking-wide ${status.cls}`}
                 >
-                  {d.autoDownload ? "Auto: on" : "Auto: off"}
-                </button>
-              )}
-              <FolderPick d={d} patch={patch} />
-              <ProviderPick d={d} patch={patch} />
+                  <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${status.dot} ${status.pulse ? "animate-pulse" : ""}`} />
+                  {status.label}
+                </span>
+              </div>
+            )}
+
+            <h1 className="line-clamp-3 text-2xl font-bold leading-[1.15] tracking-tight text-foreground sm:text-3xl md:text-[34px]">
+              {title}
+            </h1>
+
+            {d.romaji && d.romaji !== title && <p className="text-sm text-muted-foreground">{d.romaji}</p>}
+
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground sm:text-sm">
+              {meta.map((m, i) => (
+                <React.Fragment key={i}>
+                  {i > 0 && <span className="opacity-40">·</span>}
+                  <span>{m}</span>
+                </React.Fragment>
+              ))}
             </div>
-          )}
-          {!offline && <TrackingRow id={d.id} />}
+
+            {(d.genres.length > 0 || d.isAdult) && (
+              <div className="flex flex-wrap gap-1.5">
+                {d.isAdult && (
+                  <span className="inline-flex items-center rounded-full border border-red-500/35 bg-red-500/10 px-2 py-0.5 text-[11px] font-semibold text-red-400">
+                    18+
+                  </span>
+                )}
+                {d.genres.map((g) => (
+                  <span
+                    key={g}
+                    className="inline-flex items-center rounded-full border border-border/40 bg-foreground/[0.06] px-2 py-0.5 text-[11px] text-foreground/80"
+                  >
+                    {g}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {d.description && (
+              <div className="max-w-[70ch]">
+                <p className={`whitespace-pre-line text-sm text-muted-foreground ${expanded ? "" : "line-clamp-3"}`}>
+                  {d.description}
+                </p>
+                {d.description.length > 240 && (
+                  <button
+                    type="button"
+                    onClick={() => setExpanded((v) => !v)}
+                    className="mt-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    {expanded ? "Show less" : "Read more"}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Action toolbar */}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <Button className="play-btn px-0 w-9 sm:w-auto sm:px-4" onClick={() => onPlay(isSeries ? next.number : 1)}>
+                <Play className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">
+                  {isSeries ? `${continuing ? "Continue" : "Play"} E${next.number}` : "Play"}
+                </span>
+              </Button>
+              {!offline && (
+                <>
+                  <Button
+                    variant="outline"
+                    aria-pressed={inW}
+                    onClick={() => void toggleList("watchlist")}
+                    className={`px-0 w-9 sm:w-auto sm:px-4 ${inW ? "border-primary/50 text-primary" : ""}`}
+                  >
+                    <Star className={`h-4 w-4 sm:mr-2 ${inW ? "fill-current" : ""}`} />
+                    <span className="hidden sm:inline">{inW ? "On watchlist" : "Watchlist"}</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    aria-pressed={inF}
+                    onClick={() => void toggleList("favorites")}
+                    className={`px-0 w-9 sm:w-auto sm:px-4 ${inF ? "border-pink-500/60 bg-pink-500/15 text-pink-500 hover:bg-pink-500/20 hover:text-pink-500" : ""}`}
+                  >
+                    <Heart className={`h-4 w-4 sm:mr-2 ${inF ? "fill-current" : ""}`} />
+                    <span className="hidden sm:inline">{inF ? "Favourited" : "Favourite"}</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    aria-pressed={d.inLibrary}
+                    onClick={() => void toggleLibrary()}
+                    className={`px-0 w-9 sm:w-auto sm:px-4 ${d.inLibrary ? "border-primary/50 text-primary" : ""}`}
+                  >
+                    <LibraryBig className="h-4 w-4 sm:mr-2" />
+                    <span className="hidden sm:inline">{d.inLibrary ? "In library" : "Add to library"}</span>
+                  </Button>
+                  <Button variant="outline" onClick={() => setTrackOpen(true)} className="px-0 w-9 sm:w-auto sm:px-4">
+                    <Rss className="h-4 w-4 sm:mr-2" />
+                    <span className="hidden sm:inline">Track</span>
+                  </Button>
+                  {/* A saved per-title setting, so an on/off control with
+                      visible state — Shiori's Hide Decimals / Prioritize Free. */}
+                  {isSeries && !denied && (
+                    <Button
+                      variant={d.autoDownload ? "default" : "outline"}
+                      aria-pressed={d.autoDownload}
+                      onClick={() => void toggleAuto()}
+                      className="px-0 w-9 sm:w-auto sm:px-4"
+                    >
+                      <RefreshCw className={`h-4 w-4 sm:mr-2 ${d.autoDownload ? "" : "opacity-70"}`} />
+                      <span className="hidden sm:inline">{d.autoDownload ? "Auto-download on" : "Auto-download"}</span>
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
 
-// --- Folder select (populateFolderSelect + its change handler, app.js:1025) --
-function FolderPick({
-  d,
-  patch,
-}: {
-  d: DetailModel;
-  patch: (p: Partial<TitleDetail>) => void;
-}) {
-  const qc = useQueryClient();
-  // Guarantee a real folder is always the resting selection (never "+ New…").
-  const names = [...new Set([...(d.folders || []), d.folder].filter(Boolean))];
-  if (!names.length) names.push("Library");
-  const cur = d.folder && names.includes(d.folder) ? d.folder : names[0]!;
-
-  const move = async (folder: string) => {
-    if (folder === "__new__") {
-      folder = (window.prompt("New folder name") || "").trim();
-      if (!folder) return; // controlled select snaps back to `cur`
-    }
-    try {
-      const r = await api<{ folder: string }>(`/titles/${d.id}/folder`, {
-        method: "POST",
-        body: JSON.stringify({ folder }),
-      });
-      const folders = (d.folders || []).includes(r.folder)
-        ? d.folders
-        : [...(d.folders || []), r.folder];
-      patch({ folder: r.folder, folders });
-      void qc.invalidateQueries({ queryKey: ["library"] });
-      toast(`Moved to “${r.folder}”`);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  return (
-    <label className="folder-pick" title="Folder">
-      📁{" "}
-      <select value={cur} onChange={(e) => void move(e.target.value)} aria-label="Folder">
-        {names.map((n) => (
-          <option key={n} value={n}>
-            {n}
-          </option>
-        ))}
-        <option value="__new__">+ New folder…</option>
-      </select>
-    </label>
-  );
-}
-
-// --- Release-group provider picker (loadProviders, app.js:950) --------------
-function ProviderPick({
-  d,
-  patch,
-}: {
-  d: DetailModel;
-  patch: (p: Partial<TitleDetail>) => void;
-}) {
-  const q = useQuery({
-    queryKey: ["title", d.id, "providers"],
-    queryFn: () => api<ProviderOption[]>(`/titles/${d.id}/providers`),
-    retry: false,
-    staleTime: 60_000,
-  });
-  const providers = q.data || [];
-  // If the user's saved provider isn't in the list, add it so it stays selected.
-  const extra =
-    d.provider && !providers.some((p) => p.group.toLowerCase() === d.provider!.toLowerCase())
-      ? d.provider
-      : null;
-
-  const set = async (group: string) => {
-    try {
-      const r = await api<{ provider: string | null }>(`/titles/${d.id}/provider`, {
-        method: "POST",
-        body: JSON.stringify({ group }),
-      });
-      patch({ provider: r.provider });
-      toast(r.provider ? `Provider set: ${r.provider}` : "Provider: Auto (best)");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  return (
-    <label className="folder-pick" title="Preferred release group (all episodes)">
-      ▤{" "}
-      <select
-        value={d.provider || ""}
-        onChange={(e) => void set(e.target.value)}
-        aria-label="Preferred release group"
-      >
-        <option value="">Auto (best)</option>
-        {q.isLoading && <option disabled>loading…</option>}
-        {providers.map((p) => {
-          const res = [...(p.resolutions || [])].sort((a, b) => b - a)[0];
-          return (
-            <option key={p.group} value={p.group}>
-              {`${p.group}${res ? ` · ${res}p` : ""} (${p.count})`}
-            </option>
-          );
-        })}
-        {extra && <option value={extra}>{extra}</option>}
-      </select>
-    </label>
+      {/* Shiori's tracker control is a dialog behind the Track button. */}
+      <Dialog open={trackOpen} onOpenChange={setTrackOpen}>
+        <DialogContent className="w-[95vw] max-w-lg sm:w-full">
+          <DialogHeader>
+            <DialogTitle>Track</DialogTitle>
+            <DialogDescription>Status, progress and score on your connected trackers.</DialogDescription>
+          </DialogHeader>
+          <TrackingRow id={d.id} />
+        </DialogContent>
+      </Dialog>
+    </section>
   );
 }

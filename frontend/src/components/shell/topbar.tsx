@@ -13,6 +13,7 @@ import { usePathname } from "next/navigation";
 import React, { useEffect, useState } from "react";
 
 import { AccountMenu } from "@/components/shell/account-menu";
+import { useRibbonMount } from "@/components/shell/ribbon";
 import { DrawerTabs, NavTabs } from "@/components/shell/nav-tabs";
 import { ModePill, OfflineBar, PurgePrompt } from "@/components/shell/offline-status";
 import { useHealthQuery } from "@/components/shell/queries";
@@ -64,6 +65,7 @@ function StatusLine() {
 export function Topbar() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
+  const { setTarget: setRibbonTarget, active: ribbonActive } = useRibbonMount();
 
   // Close the drawer on navigation (Shiori's command-bar behavior).
   useEffect(() => {
@@ -136,6 +138,15 @@ export function Topbar() {
           <ModePill />
           <StatusLine />
           <AccountMenu />
+        </div>
+        {/* Shiori's contextual ribbon (command-bar.tsx): pages portal their
+            controls here via <RibbonSlot>; the row only shows while one is
+            mounted. Inside the header, so it is part of the tvnav chrome. */}
+        <div className={ribbonActive ? "border-t border-border/60 bg-background/60" : "hidden"}>
+          <div
+            ref={setRibbonTarget}
+            className="flex h-12 items-center gap-2 overflow-x-auto px-3 [scrollbar-width:none] lg:px-5"
+          />
         </div>
       </header>
       <PurgePrompt />

@@ -7,10 +7,10 @@
 // query (4s poll, paused in background tabs), which also powers the tab badge.
 
 import { useQueryClient } from "@tanstack/react-query";
+import { ArrowUp, RotateCw } from "lucide-react";
 import React, { useState } from "react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -20,185 +20,138 @@ export function canRetryJob(j: Job, downloadsDenied: boolean): boolean {
   return j.status === "failed" && j.mine !== false && !downloadsDenied;
 }
 
-function ProgressTrack({ job }: { job: Job }) {
-  const pct = job.status === "downloaded" ? 100 : Math.round((job.progress || 0) * 100);
+const DOT: Record<string, string> = {
+  downloaded: "bg-[#31C46B]",
+  failed: "bg-[#D84343]",
+  downloading: "bg-[#3B8FEE]",
+  searching: "bg-[#3B8FEE]",
+  queued: "bg-[#EEA51F]",
+};
+
+const RANK: Record<string, number> = { downloading: 0, searching: 0, queued: 1, failed: 2, downloaded: 3 };
+
+/** Shiori's queue filter labels, Renzo's job states. */
+export const DL_FILTERS = ["All", "Downloading", "Queued", "Completed", "Failed"] as const;
+
+function matches(j: Job, filter: number): boolean {
+  switch (filter) {
+    case 1:
+      return j.status === "downloading" || j.status === "searching";
+    case 2:
+      return j.status === "queued";
+    case 3:
+      return j.status === "downloaded";
+    case 4:
+      return j.status === "failed";
+    default:
+      return true;
+  }
+}
+
+/** Shiori's 28px icon action. */
+function RowIcon({
+  icon: Icon,
+  label,
+  disabled,
+  onClick,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
   return (
-    <div className="track mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-foreground/10">
-      <div
-        className={cn(
-          "fill h-full rounded-full transition-[width]",
-          job.status === "failed" ? "bg-destructive" : "bg-primary",
-        )}
-        style={{ width: `${pct}%` }}
-      />
-    </div>
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="retry-btn ml-1 grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-50"
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </button>
   );
 }
 
+/** Shiori's QueueRow, for one episode job. */
 function JobRow({ job }: { job: Job }) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
-  const pct = Math.round((job.progress || 0) * 100);
   const denied = !!user?.downloadsDenied;
+  const pct = Math.round((job.progress || 0) * 100);
+  const downloading = job.status === "downloading" || job.status === "searching";
 
-  const refetchJobs = () => void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-
-  const prioritize = async () => {
+  const act = async (path: string, ok: string) => {
     setBusy(true);
     try {
-      await api(`/jobs/${job.id}/prioritize`, { method: "POST" });
-      toast("Moved to the front");
-      refetchJobs();
+      await api(path, { method: "POST" });
+      toast(ok);
     } catch (e) {
-      toast((e as Error).message);
+      toast(e instanceof Error ? e.message : "Failed");
+    } finally {
       setBusy(false);
-    }
-  };
-
-  const retry = async () => {
-    setBusy(true);
-    try {
-      await api(`/titles/${job.titleId}/retry/${job.episode}`, { method: "POST" });
-      toast("Retrying…");
-      refetchJobs();
-    } catch (e) {
-      toast((e as Error).message);
-      setBusy(false);
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     }
   };
 
   return (
-    <div className={cn("job px-3 py-2", job.status)}>
-      <div className="row flex items-center justify-between gap-2">
-        <span className="name text-sm font-medium">E{job.episode}</span>
-        <span className="st shrink-0 text-xs capitalize text-muted-foreground">
-          {job.status}
-          {job.status === "downloading" ? ` ${pct}%` : ""}
+    <div className="job relative">
+      <div className="flex items-center px-3 py-3">
+        <span className={cn("h-[7px] w-[7px] shrink-0 rounded-full", DOT[job.status] ?? "bg-muted-foreground")} />
+        <div className="ml-3 mr-2 min-w-0 flex-1">
+          <div className="flex min-w-0 items-center">
+            <span className="truncate text-sm font-semibold text-foreground">{job.title}</span>
+            <span className="ml-2 shrink-0 text-[13px] text-muted-foreground">E{job.episode}</span>
+            {job.mine === false && <span className="ml-1 shrink-0 text-xs text-muted-foreground/70">· another user</span>}
+          </div>
+          {job.message && <div className="mt-0.5 truncate text-xs text-muted-foreground">{job.message}</div>}
+        </div>
+        <span className={cn("st shrink-0 text-xs capitalize", downloading ? "text-[#83B9F5]" : "text-muted-foreground")}>
+          {job.status === "downloading" && pct > 0 ? `${pct}%` : job.status}
         </span>
+        {job.status === "queued" && job.mine !== false && (
+          <RowIcon icon={ArrowUp} label="Download now" disabled={busy} onClick={() => void act(`/jobs/${job.id}/prioritize`, "Moved to the front")} />
+        )}
+        {canRetryJob(job, denied) && (
+          <RowIcon
+            icon={RotateCw}
+            label="Retry download"
+            disabled={busy}
+            onClick={() => void act(`/titles/${job.titleId}/retry/${job.episode}`, "Retrying…")}
+          />
+        )}
       </div>
-      {job.message ? (
-        <div className="row">
-          <span className="st text-xs text-muted-foreground">{job.message}</span>
-        </div>
-      ) : null}
-      <ProgressTrack job={job} />
-      {(job.status === "queued" && job.mine !== false) || canRetryJob(job, denied) ? (
-        <div className="job-actions mt-1.5 flex flex-wrap gap-2">
-          {job.status === "queued" && job.mine !== false && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="retry-btn h-7 px-2 text-xs"
-              disabled={busy}
-              onClick={() => void prioritize()}
-            >
-              ↑ Download now
-            </Button>
-          )}
-          {canRetryJob(job, denied) && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="retry-btn h-7 px-2 text-xs"
-              disabled={busy}
-              onClick={() => void retry()}
-            >
-              ↻ Retry
-            </Button>
-          )}
-        </div>
-      ) : null}
+      {downloading && (
+        <div className="absolute bottom-0 left-0 h-0.5 bg-[#3B8FEE]" style={{ width: `${pct}%` }} />
+      )}
     </div>
   );
 }
 
-export function JobsList({ jobs }: { jobs: Job[] }) {
-  const { user } = useAuth();
-  const queryClient = useQueryClient();
-  const denied = !!user?.downloadsDenied;
-
-  if (!jobs.length) {
+/** The flat queue (Shiori's queue page body), filtered and ordered. */
+export function JobsList({ jobs, filter }: { jobs: Job[]; filter: number }) {
+  const rows = jobs
+    .filter((j) => matches(j, filter))
+    .sort(
+      (a, b) =>
+        (RANK[a.status] ?? 9) - (RANK[b.status] ?? 9) || a.title.localeCompare(b.title) || a.episode - b.episode,
+    );
+  if (!rows.length) {
     return (
-      <div className="empty rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-        No downloads.
-      </div>
+      <p className="px-8 py-16 text-center text-xs text-muted-foreground">
+        {filter === 0
+          ? "No downloads. Episodes you download, or auto-download picks up, appear here."
+          : `Nothing to show for “${DL_FILTERS[filter]}”.`}
+      </p>
     );
   }
-
-  // Group by series so a season batch shows as one collapsible group.
-  const groups = new Map<number, Job[]>();
-  jobs.forEach((j) => {
-    (groups.get(j.titleId) ?? groups.set(j.titleId, []).get(j.titleId)!).push(j);
-  });
-
-  const retryGroup = async (gjobs: Job[]) => {
-    for (const j of gjobs.filter((x) => canRetryJob(x, denied))) {
-      try {
-        await api(`/titles/${j.titleId}/retry/${j.episode}`, { method: "POST" });
-      } catch {
-        /* keep going; one bad job shouldn't stop the rest */
-      }
-    }
-    void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-  };
-
   return (
-    <div id="jobsList" className="jobs grid grid-cols-1 gap-3">
-      {[...groups.entries()].map(([titleId, gjobs]) => {
-        const dl = gjobs.filter((j) => j.status === "downloading" || j.status === "searching").length;
-        const q = gjobs.filter((j) => j.status === "queued").length;
-        const failed = gjobs.filter((j) => j.status === "failed").length;
-        const done = gjobs.filter((j) => j.status === "downloaded").length;
-        const parts = [
-          dl && `${dl} active`,
-          q && `${q} queued`,
-          failed && `${failed} failed`,
-          done && `${done} done`,
-        ].filter(Boolean) as string[];
-        return (
-          <div key={titleId} className="job-group overflow-hidden rounded-lg border border-border bg-card/50">
-            <div className="job-group-head flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
-              <span className="jg-title min-w-0 flex-1 truncate text-sm font-semibold">
-                {gjobs[0]!.title}
-              </span>
-              <span className="jg-sum shrink-0 text-xs text-muted-foreground">
-                {gjobs.length} ep{gjobs.length === 1 ? "" : "s"}
-                {parts.length ? ` · ${parts.join(" · ")}` : ""}
-              </span>
-              {gjobs.some((j) => canRetryJob(j, denied)) && (
-                <RetryGroupButton onRetry={() => retryGroup(gjobs)} />
-              )}
-            </div>
-            <div className="divide-y divide-border/60">
-              {gjobs
-                .slice()
-                .sort((a, b) => a.episode - b.episode)
-                .map((j) => (
-                  <JobRow key={j.id} job={j} />
-                ))}
-            </div>
-          </div>
-        );
-      })}
+    <div id="jobsList" className="jobs divide-y divide-foreground/[0.04]">
+      {rows.map((j) => (
+        <JobRow key={j.id} job={j} />
+      ))}
     </div>
-  );
-}
-
-function RetryGroupButton({ onRetry }: { onRetry: () => Promise<void> }) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      className="retry-btn h-7 shrink-0 px-2 text-xs"
-      disabled={busy}
-      onClick={() => {
-        setBusy(true);
-        void onRetry().finally(() => setBusy(false));
-      }}
-    >
-      ↻ Retry failed
-    </Button>
   );
 }

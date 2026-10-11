@@ -28,6 +28,8 @@ import { api, ApiError } from "@/lib/api";
 import type { CardItem, ResolveResponse, WatchStart } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { useCardSize } from "./card-size";
+
 /** Router-ish surface both next/navigation and tests can satisfy. */
 interface PushRouter {
   push(href: string): void;
@@ -55,98 +57,107 @@ export async function playTitle(router: PushRouter, id: number, ep?: number): Pr
 const BLANK_POSTER =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
-function Ribbon({ item }: { item: CardItem }) {
-  // Updates ribbons: dark pill with the ep/season text in the THEME ACCENT
-  // (follows the user's preset/custom accent via --primary) — user request.
-  const base =
-    "upd-ribbon absolute left-2 top-2 z-10 rounded-full border border-white/10 bg-black/70 px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.4px] text-primary backdrop-blur-sm";
-  if (item.updKind === "episode") {
-    const sTag = item.season ? `S${item.season} ` : "";
-    return (
-      <span className={base}>
-        New · {sTag}E{item.ep}
-      </span>
-    );
+/**
+ * What clicking a card does (exactly the old makeCard listener): MAL fallback
+ * cards resolve their AniList id first; an updates card for an episode/movie
+ * goes straight into playback; anything else opens the title page. Shared by
+ * the poster cards and the Updates/History feed rows.
+ */
+export async function openCard(router: PushRouter, item: CardItem): Promise<void> {
+  if (item.source === "mal") {
+    try {
+      const r = await api<ResolveResponse>(`/titles/resolve?mal=${item.malId}`);
+      router.push(`/title/?id=${r.id}`);
+    } catch {
+      toast("Details unavailable right now — try again in a moment");
+    }
+    return;
   }
-  if (item.updKind === "season") {
-    return (
-      <span className={cn(base, "season")}>
-        {item.upcoming ? "Soon" : "New season"}
-        {item.season ? ` · S${item.season}` : ""}
-      </span>
-    );
+  if (item.id == null) return;
+  if (item.updKind === "episode" || item.updKind === "movie") {
+    await playTitle(router, item.id, item.ep || 1);
+    return;
   }
-  if (item.updKind === "movie") {
-    return <span className={base}>Available</span>;
-  }
-  return (
-    <span className="pill absolute left-2 top-2 z-10 rounded-full border border-white/10 bg-black/70 px-2 py-[3px] text-[10px] font-semibold uppercase tracking-[0.4px] text-foreground backdrop-blur-sm">
-      {item.type === "movie" ? "Movie" : "Series"}
-    </span>
-  );
+  router.push(`/title/?id=${item.id}`);
 }
 
-export function PosterCard({ item, className }: { item: CardItem; className?: string }) {
+/**
+ * The top-left badge (Shiori's provider-badge slot): the updates feed's
+ * "New · S2 E5" / "New season" / "Soon" / "Available" on the accent, else
+ * "Movie" for films. Series carry no badge — it was on every card.
+ */
+function badgeOf(item: CardItem): { text: string; accent: boolean } | null {
+  if (item.updKind === "episode") {
+    const sTag = item.season ? `S${item.season} ` : "";
+    return { text: `New · ${sTag}E${item.ep}`, accent: true };
+  }
+  if (item.updKind === "season") {
+    return { text: `${item.upcoming ? "Soon" : "New season"}${item.season ? ` · S${item.season}` : ""}`, accent: true };
+  }
+  if (item.updKind === "movie") return { text: "Available", accent: true };
+  return item.type === "movie" ? { text: "Movie", accent: false } : null;
+}
+
+/**
+ * PosterCard — Shiori's library card (RenzoFrontend components/comp/series/
+ * list-series/index.tsx): a 4:6 cover that scales on hover, a 2px status
+ * strip across the top (green = episodes on your server), the badge top-left
+ * on black/70, the up-next episode top-right on the accent, and the centred
+ * semibold title on a black/60 bar. Sized by the shared card size; a row may
+ * pass a fixed width. The literal `card` class is the tvnav contract.
+ */
+export function PosterCard({ item, className, width }: { item: CardItem; className?: string; width?: number }) {
   const router = useRouter();
+  const size = useCardSize();
 
-  const open = async () => {
-    if (item.source === "mal") {
-      // AniList-down fallback card — resolve the id first (old makeCard).
-      try {
-        const r = await api<ResolveResponse>(`/titles/resolve?mal=${item.malId}`);
-        router.push(`/title/?id=${r.id}`);
-      } catch {
-        toast("Details unavailable right now — try again in a moment");
-      }
-      return;
-    }
-    if (item.id == null) return;
-    if (item.updKind === "episode" || item.updKind === "movie") {
-      await playTitle(router, item.id, item.ep || 1);
-      return;
-    }
-    router.push(`/title/?id=${item.id}`);
-  };
+  const open = () => openCard(router, item);
 
-  const meta = [
-    item.year,
-    (item.genres || [])[0],
-    (item.seasonCount ?? 0) > 1 ? `${item.seasonCount} seasons` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
+  const badge = badgeOf(item);
   return (
     <div
-      className={cn(
-        "card group relative cursor-pointer overflow-hidden rounded-xl border border-border bg-card transition-all duration-150 hover:-translate-y-1 hover:border-ring hover:shadow-lg",
-        className,
-      )}
+      className={cn("card group relative cursor-pointer rounded-md", className)}
+      style={width ? { width, flex: "none" } : undefined}
       role="button"
       aria-label={item.title}
       onClick={() => void open()}
     >
-      <Ribbon item={item} />
-      {item.downloaded ? (
-        <span
-          className="dot absolute right-2 top-2 z-10 h-[9px] w-[9px] rounded-full bg-emerald-400 shadow-[0_0_0_3px_rgba(61,220,132,0.2)]"
-          title="downloaded episodes"
+      <div
+        className="relative w-full overflow-hidden rounded-md bg-muted shadow transition-transform duration-200 group-hover:scale-105"
+        style={{ aspectRatio: "4/6" }}
+      >
+        <LazyImage
+          src={item.poster || BLANK_POSTER}
+          fallbackSrc={BLANK_POSTER}
+          alt=""
+          className="poster absolute inset-0 h-full w-full rounded-md object-cover"
         />
-      ) : null}
-      <LazyImage
-        src={item.poster || BLANK_POSTER}
-        fallbackSrc={BLANK_POSTER}
-        alt=""
-        className="poster block aspect-[2/3] w-full bg-black/40 object-cover"
-      />
-      <div className="cap px-3 pb-3 pt-2">
-        <div className="t line-clamp-2 text-[13px] font-semibold leading-[1.3]">{item.title}</div>
-        {meta ? <div className="m mt-[3px] text-[11px] text-muted-foreground">{meta}</div> : null}
+        {item.downloaded ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-green-500" title="Episodes on your server" />
+        ) : null}
+        {badge && (
+          <div
+            className={cn(
+              "absolute left-1 top-1 z-10 max-w-[70%] truncate rounded px-2 py-0.5 font-semibold text-white shadow",
+              badge.accent ? "bg-primary" : "bg-black/70",
+              size.badge,
+            )}
+          >
+            {badge.text}
+          </div>
+        )}
         {item.upNext ? (
-          <div className="upnext mt-1 text-[11px] font-semibold text-primary">
-            ▶ Up next · E{item.upNext}
+          <div className={cn("absolute right-1 top-1 z-10 rounded bg-primary px-2 py-0.5 font-semibold text-white shadow", size.badge)}>
+            E{item.upNext}
           </div>
         ) : null}
+        <div
+          className={cn(
+            "absolute bottom-0 left-0 flex w-full items-center justify-center rounded-b-md bg-black/60 px-2 py-1 text-center font-semibold leading-tight text-white",
+            size.text,
+          )}
+        >
+          <span className="line-clamp-2">{item.title}</span>
+        </div>
       </div>
     </div>
   );
