@@ -16,7 +16,7 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import React from "react";
 
-import { isHidden, levelToShow, useContentLevel } from "@/components/media/content-filter";
+import { isHidden, useContentLevel, useHideAdult } from "@/components/media/content-filter";
 import { useCardSize } from "@/components/media/card-size";
 import { PosterCard } from "@/components/media/poster-card";
 import type { CardItem } from "@/lib/types";
@@ -50,18 +50,17 @@ interface MediaGridProps {
 }
 
 /**
- * "2 titles hidden by the 18+ filter — Show": raises the level just far
- * enough to show them. Hub twin: Common.kt HiddenByFilterNote.
+ * "2 titles hidden by the 18+ filter · Show 18+" — one click turns adult
+ * titles on. Hub twin: Common.kt HiddenByFilterNote.
  */
 export function HiddenNote({ hidden }: { hidden: CardItem[] }) {
-  const [, setLevel] = useContentLevel();
+  const [, toggle] = useHideAdult();
   if (!hidden.length) return null;
-  const next = levelToShow(hidden);
   return (
     <p className="mb-3 mt-3 text-xs text-muted-foreground">
       {hidden.length} title{hidden.length === 1 ? "" : "s"} hidden by the 18+ filter ·{" "}
-      <button type="button" className="font-medium text-primary hover:underline" onClick={() => setLevel(next)}>
-        Show {next === "ecchi" ? "up to Ecchi" : next === "erotica" ? "up to Erotica" : "all"}
+      <button type="button" className="font-medium text-primary hover:underline" onClick={toggle}>
+        Show 18+
       </button>
     </p>
   );

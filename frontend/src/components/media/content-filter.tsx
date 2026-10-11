@@ -1,42 +1,36 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// Graduated "show up to" content filter — port of public/app.js:556-611.
-// none < ecchi < erotica < hentai (cumulative): picking "erotica" shows ecchi
-// + erotica but hides hentai. Persisted under the OLD localStorage key so an
-// upgraded install keeps the user's choice; default "none" — a FRESH user sees
-// no adult content until they opt in. That default is a store-listing
-// commitment as much as a taste call: the Play content-rating questionnaire
-// asks what a user can reach, and "hidden until opted into" is the answer the
-// listing is rated on. Filtering is client-side over the
-// card's `content` tags (server-computed), falling back to genres for MAL
-// fallback cards (old contentCatsOf).
-// The chip ladder renders on every platform, including TV: old
-// renderContentChips (app.js:583) has no TV branch, and the chips are plain
-// <button>s so tvnav's D-pad focus discovery picks them up.
+// 18+ filter — Shiori's single switch (RenzoFrontend lib/utils/adult-filter.ts
+// useHideAdult): adult titles are Hidden or Shown, and "adult" is everything
+// the server tags ecchi, erotica or hentai. Owner direction 2026-10-11: the
+// old four-step ladder (none < ecchi < erotica < hentai) is gone — erotica
+// already includes pornographic titles, so the steps meant nothing.
+//
+// Stored under the OLD key so an upgraded install keeps its choice: "none" is
+// Hidden, anything else (incl. a saved "ecchi"/"erotica" step) is Shown, and
+// Shown is written as "hentai" so an older build reading the key shows all.
+// Default Hidden — a FRESH user sees no adult content until they opt in. That
+// default is a store-listing commitment as much as a taste call: the Play
+// content-rating questionnaire asks what a user can reach, and "hidden until
+// opted into" is the answer the listing is rated on. Filtering is client-side
+// over the card's `content` tags (server-computed), falling back to genres
+// for MAL fallback cards (old contentCatsOf). Hub twin: Common.kt isHidden /
+// ContentChips.
 // ---------------------------------------------------------------------------
 
+import { Eye, EyeOff } from "lucide-react";
 import React, { useCallback, useSyncExternalStore } from "react";
+
+import { Button } from "@/components/ui/button";
 
 import { cn } from "@/lib/utils";
 
 const CONTENT_LEVEL_KEY = "renzo:contentLevel"; // same key as the old app
 
-export const CONTENT_LADDER = ["none", "ecchi", "erotica", "hentai"] as const;
-export type ContentLevel = (typeof CONTENT_LADDER)[number];
+/** "none" = 18+ Hidden, "hentai" = 18+ Shown (the old key's top step). */
+export type ContentLevel = "none" | "hentai";
 
-const CONTENT_LABELS: Record<ContentLevel, string> = {
-  none: "Off",
-  ecchi: "Ecchi",
-  erotica: "Erotica",
-  hentai: "Hentai",
-};
-const CAT_RANK: Record<string, number> = { ecchi: 1, erotica: 2, hentai: 3 };
-
-/** none=0 … hentai=3 (old levelRank). */
-export function levelRank(level: ContentLevel): number {
-  return CONTENT_LADDER.indexOf(level);
-}
 
 // --- tiny external store so Discover + Library chips stay in sync ----------
 let cached: ContentLevel | null = null;
@@ -45,9 +39,8 @@ const listeners = new Set<() => void>();
 function readStored(): ContentLevel {
   try {
     const v = localStorage.getItem(CONTENT_LEVEL_KEY);
-    return (CONTENT_LADDER as readonly string[]).includes(v ?? "")
-      ? (v as ContentLevel)
-      : "none";
+    // A saved old step (ecchi/erotica/hentai) means the user opted in: Shown.
+    return v === "ecchi" || v === "erotica" || v === "hentai" ? "hentai" : "none";
   } catch {
     return "none";
   }
@@ -102,63 +95,42 @@ export function contentCatsOf(item: ContentTagged): string[] {
   return cats;
 }
 
-/** True when the item sits ABOVE the chosen level (old isHidden). */
+/** True when adult titles are hidden and this one is adult. */
 export function isHidden(item: ContentTagged, level: ContentLevel): boolean {
-  const cats = contentCatsOf(item);
-  if (!cats.length) return false; // non-adult always shown
-  const itemRank = Math.max(...cats.map((c) => CAT_RANK[c] || 0));
-  return itemRank > levelRank(level);
+  return level === "none" && contentCatsOf(item).length > 0;
 }
 
-/** The lowest level that shows every item in `items` — what the "hidden by
- *  the 18+ filter — show" link switches to. */
-export function levelToShow(items: ContentTagged[]): ContentLevel {
-  let rank = 0;
-  for (const it of items) for (const c of contentCatsOf(it)) rank = Math.max(rank, CAT_RANK[c] || 0);
-  return CONTENT_LADDER[rank] ?? "hentai";
+/** Shiori's useHideAdult: [hidden, toggle] over the shared store. */
+export function useHideAdult(): [boolean, () => void] {
+  const [level, setLevel] = useContentLevel();
+  const hidden = level === "none";
+  const toggle = useCallback(() => setLevel(hidden ? "hentai" : "none"), [hidden, setLevel]);
+  return [hidden, toggle];
 }
-
-// --- the segmented chip ladder (old renderContentChips) --------------------
 
 /**
- * "🔞 Show up to" chip ladder — doubles as the current-mode indicator.
- * Rendered on ALL platforms (TV included, matching old renderContentChips —
- * the plain <button> chips are D-pad focusable via tvnav).
+ * Shiori's 18+ button (RenzoFrontend app/library/page.tsx): outline when
+ * hidden, an amber wash once adult titles are shown. Used on the Library and
+ * Discover ribbons.
  */
-export function ContentChips({ className }: { className?: string }) {
-  const [level, setLevel] = useContentLevel();
+export function AdultToggle({ className }: { className?: string }) {
+  const [hidden, toggle] = useHideAdult();
   return (
-    <div
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={toggle}
+      aria-pressed={!hidden}
+      title={hidden ? "Adult (18+) titles are hidden" : "Adult (18+) titles are shown"}
       className={cn(
-        "content-chips my-1.5 flex flex-wrap items-center gap-2",
+        "h-8 shrink-0 gap-1.5 px-2.5 text-xs",
+        !hidden && "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/15 dark:text-amber-400",
         className,
       )}
     >
-      <span className="content-chips-label mr-0.5 text-xs font-semibold text-muted-foreground opacity-80">
-        🔞 Show up to
-      </span>
-      {CONTENT_LADDER.map((l) => (
-        <button
-          key={l}
-          type="button"
-          title={
-            l === "none"
-              ? "Hide all adult content"
-              : `Show up to ${CONTENT_LABELS[l]} (and everything milder)`
-          }
-          onClick={() => setLevel(l)}
-          className={cn(
-            // NOTE: not the literal `chip` class — globals.css already has an
-            // unlayered Shiori `.chip` rule that would override these utilities.
-            "content-chip cursor-pointer rounded-full border px-3.5 py-1.5 text-[13px] transition-colors",
-            l === level
-              ? "border-transparent bg-primary text-primary-foreground"
-              : "border-border bg-card text-muted-foreground hover:border-ring hover:text-foreground",
-          )}
-        >
-          {CONTENT_LABELS[l]}
-        </button>
-      ))}
-    </div>
+      {hidden ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      <span className="hidden sm:inline">{hidden ? "18+ Hidden" : "18+ Shown"}</span>
+      <span className="sm:hidden">18+</span>
+    </Button>
   );
 }

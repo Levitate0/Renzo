@@ -31,6 +31,7 @@
 // See CONTRACTS.md "DOM contract for tvnav.js".
 
 import {
+  Eye,
   EyeOff,
   Image as ImageIcon,
   KeyRound,
@@ -45,11 +46,7 @@ import { useRouter } from "next/navigation";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import {
-  CONTENT_LADDER,
-  type ContentLevel,
-  useContentLevel,
-} from "@/components/media/content-filter";
+import { useHideAdult } from "@/components/media/content-filter";
 import { AvatarDialog } from "@/components/shell/avatar-dialog";
 import { ExternalLinks } from "@/components/shell/external-links";
 import { ChangePasswordDialog } from "@/components/shell/change-password-dialog";
@@ -110,52 +107,26 @@ function WhoHeader({ user }: { user: PublicUser | null }) {
   );
 }
 
-const CONTENT_LABELS: Record<ContentLevel, string> = {
-  none: "Off",
-  ecchi: "Ecchi",
-  erotica: "Erotica",
-  hentai: "Hentai",
-};
-
 /**
- * Inline adult-content quick control — the same graduated "show up to" ladder
- * as the page chips (ContentChips), reading/writing the SAME store
- * (useContentLevel), so flipping it here instantly updates every grid and the
- * chips reflect it on next look. Plain <button>s inside the menu body: Radix
- * only closes on item select, so the segment stays open while cycling (and on
- * TV the buttons are D-pad focusable inside the inline panel).
+ * Shiori's "Adult (18+): Hidden / Shown" menu row (user-menu.tsx), on the
+ * same store as the ribbons' 18+ button. A plain <button> rather than a menu
+ * item, so the menu stays open and the change is visible (Shiori keeps it
+ * open the same way); on TV it is D-pad focusable inside the inline panel.
  */
 function ContentTierControl() {
-  const [level, setLevel] = useContentLevel();
+  const [hidden, toggle] = useHideAdult();
   return (
-    <div className="content-tier px-3.5 py-1.5">
-      <div className="mb-1.5 flex items-center gap-2 text-xs text-muted-foreground">
-        <EyeOff className="h-4 w-4 shrink-0" />
-        <span>Show up to</span>
-      </div>
-      <div className="flex items-center gap-1">
-        {CONTENT_LADDER.map((l) => (
-          <button
-            key={l}
-            type="button"
-            title={
-              l === "none"
-                ? "Hide all adult content"
-                : `Show up to ${CONTENT_LABELS[l]} (and everything milder)`
-            }
-            onClick={() => setLevel(l)}
-            className={cn(
-              "flex-1 cursor-pointer rounded-full border px-1.5 py-1 text-[11px] font-medium transition-colors",
-              l === level
-                ? "border-transparent bg-primary text-primary-foreground"
-                : "border-border bg-card text-muted-foreground hover:border-ring hover:text-foreground",
-            )}
-          >
-            {CONTENT_LABELS[l]}
-          </button>
-        ))}
-      </div>
-    </div>
+    <button
+      type="button"
+      onClick={toggle}
+      className={cn(
+        "content-tier flex w-full cursor-pointer items-center rounded-sm text-left text-sm outline-none transition-colors hover:bg-accent focus-visible:bg-accent",
+        MENU_ITEM_CLS,
+      )}
+    >
+      {hidden ? <EyeOff className="mr-2 h-4 w-4" /> : <Eye className="mr-2 h-4 w-4" />}
+      Adult (18+): {hidden ? "Hidden" : "Shown"}
+    </button>
   );
 }
 

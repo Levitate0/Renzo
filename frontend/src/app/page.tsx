@@ -2,35 +2,33 @@
 
 // ---------------------------------------------------------------------------
 // Discover (`/`, the old default tab) — port of loadBrowse/doSearch/
-// showCategory (public/app.js:653-708) + the on-page content-filter chips.
+// showCategory (public/app.js:653-708) + the 18+ button on the ribbon.
 // Three modes:
 //   * browse   — Trending / Recommended / New & this season rows
 //   * category — full wrapping grid of one row ("See all ›" / More tile)
 //   * search   — results for the topbar query (shared search context); the
 //                topbar already navigates here when the user types.
 // Search wins over category; "‹ Back" clears search (old #discoverBack) or
-// leaves the category view. Content chips sit at the top in every mode (old
-// #browseContentChips) — on EVERY platform including TV, where they are plain
-// <button>s that tvnav's D-pad discovery picks up.
+// leaves the category view. The 18+ button (Shiori's) sits on the ribbon in
+// every mode, on EVERY platform including TV, where it is a plain <button>
+// that tvnav's D-pad discovery picks up.
 // ---------------------------------------------------------------------------
 
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Eye, EyeOff, Play } from "lucide-react";
+import { Play } from "lucide-react";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { type ContentLevel, isHidden, useContentLevel } from "@/components/media/content-filter";
+import { AdultToggle, isHidden, useContentLevel } from "@/components/media/content-filter";
 import { BrowseRowGrid, MediaGrid } from "@/components/media/media-grid";
 import { SpotlightHero, type SpotlightItem } from "@/components/media/spotlight-hero";
 import { AppShell } from "@/components/shell/app-shell";
 import { RibbonSlot } from "@/components/shell/ribbon";
-import { TvSelect } from "@/components/ui/tv-select";
 import { useAuth } from "@/contexts/auth-context";
 import { useSearch } from "@/contexts/search-context";
 import { api, ApiError } from "@/lib/api";
 import type { CardItem, TitleDetail } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 type CatKey = "trending" | "recommended" | "newSeason";
 
@@ -198,35 +196,12 @@ function DiscoverSpotlight({ items }: { items: CardItem[] | undefined }) {
   );
 }
 
-/** Shiori's library ribbon, Discover's share of it: the 18+ control. */
+/** Shiori's library ribbon, Discover's share of it: the 18+ button. */
 function ContentRibbon() {
-  const [level, setLevel] = useContentLevel();
-  const shown = level !== "none";
   return (
     <RibbonSlot>
       <div className="flex w-full items-center gap-2">
-        <div
-          className={cn(
-            "flex shrink-0 items-center gap-1.5",
-            shown && "[&_button]:border-amber-500/50 [&_button]:bg-amber-500/10 [&_button]:text-amber-400 [&_select]:border-amber-500/50 [&_select]:text-amber-400",
-          )}
-        >
-          {shown ? <Eye className="h-4 w-4 text-amber-400" /> : <EyeOff className="h-4 w-4 text-muted-foreground" />}
-          <div className="w-40">
-            <TvSelect
-              aria-label="18+ content"
-              className="h-8 w-full !pr-2 text-xs sm:text-sm"
-              value={level}
-              onValueChange={(v) => setLevel(v as ContentLevel)}
-              options={[
-                { value: "none", label: "18+ Hidden" },
-                { value: "ecchi", label: "18+ up to Ecchi" },
-                { value: "erotica", label: "18+ up to Erotica" },
-                { value: "hentai", label: "18+ up to Hentai" },
-              ]}
-            />
-          </div>
-        </div>
+        <AdultToggle />
       </div>
     </RibbonSlot>
   );

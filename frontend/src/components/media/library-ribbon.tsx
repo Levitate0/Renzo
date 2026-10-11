@@ -1,12 +1,12 @@
 "use client";
 
 // Library ribbon — Shiori's library ribbon (RenzoFrontend app/library/page.tsx
-// <RibbonSlot>), portaled into the command bar: compact h-8 selects for folder,
-// list and the 18+ ladder on the left; sort, card size, New folder and the
+// <RibbonSlot>), portaled into the command bar: compact h-8 selects for folder
+// and list and the 18+ button on the left; sort, card size, New folder and the
 // primary Import action pushed right (ml-auto). Replaces the folder/list chip
 // rows and the "My Library" head (branch backup/pre-shiori-restyle).
 
-import { Eye, EyeOff, FolderPlus, RefreshCw } from "lucide-react";
+import { FolderPlus, RefreshCw } from "lucide-react";
 import React, { useState } from "react";
 import { toast } from "sonner";
 
@@ -24,20 +24,12 @@ import { Input } from "@/components/ui/input";
 import { TvSelect } from "@/components/ui/tv-select";
 import { api } from "@/lib/api";
 import type { FolderInfo, ListCounts } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 import { CARD_SIZES, setCardSize, useCardSize } from "./card-size";
-import { type ContentLevel, useContentLevel } from "./content-filter";
+import { AdultToggle } from "./content-filter";
 
 const TRIGGER = "h-8 w-full !pr-2 text-xs sm:text-sm";
 const ALL = "__all__"; // Radix Select can't hold "" as a value
-
-const LEVEL_LABEL: Record<ContentLevel, string> = {
-  none: "18+ Hidden",
-  ecchi: "18+ up to Ecchi",
-  erotica: "18+ up to Erotica",
-  hentai: "18+ up to Hentai",
-};
 
 const listLabel = (n: string) => (n === "watchlist" ? "Watchlist" : n === "favorites" ? "Favourites" : n);
 
@@ -66,10 +58,8 @@ export function LibraryRibbon({
   onImport: () => void;
   onFolderCreated: (name: string) => void;
 }) {
-  const [level, setLevel] = useContentLevel();
   const size = useCardSize();
   const [newOpen, setNewOpen] = useState(false);
-  const shown = level !== "none";
   // Built-ins first, then any custom lists (old renderChips).
   const names = [...new Set(["watchlist", "favorites", ...Object.keys(counts || {})])];
 
@@ -100,25 +90,8 @@ export function LibraryRibbon({
             ]}
           />
         </div>
-        {/* 18+ — Shiori's chip position and colours; Renzo's ladder has four
-            steps, so it is a select: muted when hidden, amber once allowed. */}
-        <div
-          className={cn(
-            "flex shrink-0 items-center gap-1.5 rounded-md",
-            shown && "[&_button]:border-amber-500/50 [&_button]:bg-amber-500/10 [&_button]:text-amber-400 [&_select]:border-amber-500/50 [&_select]:text-amber-400",
-          )}
-        >
-          {shown ? <Eye className="hidden h-4 w-4 text-amber-400 sm:block" /> : <EyeOff className="hidden h-4 w-4 text-muted-foreground sm:block" />}
-          <div className="w-36 sm:w-40">
-            <TvSelect
-              aria-label="18+ content"
-              className={TRIGGER}
-              value={level}
-              onValueChange={(v) => setLevel(v as ContentLevel)}
-              options={(Object.keys(LEVEL_LABEL) as ContentLevel[]).map((l) => ({ value: l, label: LEVEL_LABEL[l] }))}
-            />
-          </div>
-        </div>
+        {/* 18+ — Shiori's button, in Shiori's place. */}
+        <AdultToggle />
 
         {/* Right cluster: sort, card size, New folder, Import */}
         <div className="ml-auto flex shrink-0 items-center gap-2">
