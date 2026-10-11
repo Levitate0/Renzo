@@ -39,6 +39,8 @@ interface EpisodeGridProps {
   onToggleOffline: (ep: number, saved: boolean, label: string) => void;
   onSaveSeason: () => void;
   onDownloadSeason: () => void;
+  /** The series' download settings, pushed right on the chip row. */
+  settings?: React.ReactNode;
 }
 
 /** Shiori's RenzoChip — a pill with icon, label and "(count)". */
@@ -89,6 +91,7 @@ export function EpisodeGrid({
   onToggleOffline,
   onSaveSeason,
   onDownloadSeason,
+  settings,
 }: EpisodeGridProps) {
   const [openMenu, setOpenMenu] = useState<number | null>(null);
   // Close the open kebab menu on any click outside an .ep-foot (old
@@ -151,7 +154,7 @@ export function EpisodeGrid({
       <div className="h-px bg-border/60" />
 
       {/* Action chips */}
-      <div className="flex flex-wrap gap-2 py-2.5">
+      <div className="flex flex-wrap items-center gap-2 py-2.5">
         {!offline && !denied && onServer < airedCount && (
           <Chip icon={Download} label="Download season" count={airedCount - onServer} tone="primary" onClick={onDownloadSeason} />
         )}
@@ -166,6 +169,7 @@ export function EpisodeGrid({
             onClick={() => onSetProgress(seasonWatched ? 0 : airedCount)}
           />
         )}
+        {settings && <div className="ml-auto">{settings}</div>}
       </div>
 
       {/* Renzo's episode grid */}

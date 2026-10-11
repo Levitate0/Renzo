@@ -1,16 +1,16 @@
 "use client";
 
-// Downloads — the title page's left-rail section for where this series'
-// episodes land (library folder) and which release group they come from, in
-// Shiori's rail-section form. Moved here from the old hero's detail-controls
-// row; the folder and provider calls are unchanged (populateFolderSelect /
-// loadProviders, public/app.js:950/1025).
+// Download settings — where this series' episodes land (library folder) and
+// which release group they come from, as two compact selects on the episode
+// header's chip row. They were a left-rail section, which squeezed the
+// episode grid (owner, 2026-10-11). The folder and provider calls are
+// unchanged (populateFolderSelect / loadProviders, public/app.js:950/1025).
+// Hub twin: TitleScreen.kt DownloadSettingsInline.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React from "react";
 import { toast } from "sonner";
 
-import { Label } from "@/components/ui/label";
 import { TvSelect } from "@/components/ui/tv-select";
 import { api } from "@/lib/api";
 import type { ProviderOption, TitleDetail } from "@/lib/types";
@@ -73,20 +73,19 @@ export function DownloadSettings({ d }: { d: DetailModel }) {
   };
 
   return (
-    <section className="space-y-3">
-      <h2 className="text-base font-semibold text-foreground">Downloads</h2>
-      <div className="space-y-2">
-        <Label>Library folder</Label>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2" title="Used for every episode and season of this series">
+      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        Folder
         <TvSelect
           aria-label="Library folder"
           value={folder}
           onValueChange={(v) => void moveFolder(v)}
           options={[...names.map((n) => ({ value: n, label: n })), { value: NEW_FOLDER, label: "+ New folder…" }]}
-          className="w-full"
+          className="h-8 w-36 text-xs"
         />
       </div>
-      <div className="space-y-2">
-        <Label>Release group</Label>
+      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        Release group
         <TvSelect
           aria-label="Preferred release group"
           // "" is the web's Auto (best); Radix Select can't hold "", so a sentinel.
@@ -101,10 +100,9 @@ export function DownloadSettings({ d }: { d: DetailModel }) {
             }),
             ...(extra ? [{ value: extra, label: extra }] : []),
           ]}
-          className="w-full"
+          className="h-8 w-44 text-xs"
         />
-        <p className="text-xs text-muted-foreground">Used for every episode and season of this series.</p>
       </div>
-    </section>
+    </div>
   );
 }

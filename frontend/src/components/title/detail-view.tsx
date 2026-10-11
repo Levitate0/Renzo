@@ -25,7 +25,6 @@ import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError, emitAppEvent, OPEN_DOWNLOADS_EVENT } from "@/lib/api";
 import { useOffline } from "@/lib/offline-react";
 import { useTvBodyState } from "@/lib/tv";
-import { cn } from "@/lib/utils";
 import type { ProgressResult, TitleDetail, WatchStart } from "@/lib/types";
 
 import { modelFromOffline, modelFromOnline } from "./detail-model";
@@ -317,10 +316,10 @@ export function TitleDetailView({ id }: { id: number }) {
 
   // Shiori's series page (app/library/series/page.tsx): the ribbon's
   // "‹ Back" + centred title, the full-bleed hero, then the centred max-w-7xl
-  // body — a left rail with the download settings (Shiori's downloads panel)
-  // and, leading on mobile, Renzo's season strip over Renzo's episode grid
-  // (owner, 2026-10-11).
-  const showRail = !offlineMode && !denied && d.type === "series";
+  // body — Renzo's season strip, the episode header (chips + the download
+  // settings), then Renzo's episode grid at full width (owner, 2026-10-11:
+  // the old left rail squeezed it).
+  const showSettings = !offlineMode && !denied && d.type === "series";
   return (
     <div className="title-page">
       <RibbonSlot>
@@ -347,29 +346,23 @@ export function TitleDetailView({ id }: { id: number }) {
       />
 
       <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:py-6">
-        <div className={cn("grid grid-cols-1 gap-6 lg:gap-8", showRail && "lg:grid-cols-[minmax(280px,320px)_1fr]")}>
-          {showRail && (
-            <div className="order-2 min-w-0 space-y-8 lg:order-1">
-              <DownloadSettings d={d} />
-            </div>
-          )}
-          <div className="detail-episodes order-1 min-w-0 space-y-4 lg:order-2">
-            <SeasonRow d={d} />
-            <EpisodeGrid
-              d={d}
-              offline={offlineMode}
-              denied={denied}
-              offlineSupported={offline.ready && offline.supported}
-              offlineHas={offline.has}
-              jobByEp={jobByEp}
-              onPlay={(ep) => void play(ep)}
-              onSetProgress={(ep) => void setProgress(ep)}
-              onDownload={(ep, now) => void downloadEp(ep, now)}
-              onToggleOffline={(ep, saved, label) => void toggleOffline(ep, saved, label)}
-              onSaveSeason={() => void saveSeasonOffline()}
-              onDownloadSeason={() => void downloadSeason()}
-            />
-          </div>
+        <div className="detail-episodes min-w-0 space-y-4">
+          <SeasonRow d={d} />
+          <EpisodeGrid
+            d={d}
+            offline={offlineMode}
+            denied={denied}
+            offlineSupported={offline.ready && offline.supported}
+            offlineHas={offline.has}
+            jobByEp={jobByEp}
+            onPlay={(ep) => void play(ep)}
+            onSetProgress={(ep) => void setProgress(ep)}
+            onDownload={(ep, now) => void downloadEp(ep, now)}
+            onToggleOffline={(ep, saved, label) => void toggleOffline(ep, saved, label)}
+            onSaveSeason={() => void saveSeasonOffline()}
+            onDownloadSeason={() => void downloadSeason()}
+            settings={showSettings ? <DownloadSettings d={d} /> : undefined}
+          />
         </div>
       </div>
 
