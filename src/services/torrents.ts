@@ -233,6 +233,13 @@ export function rank(results: TorrentResult[], opts: RankOpts = {}): TorrentResu
   const pref = opts.preferredResolution ?? config.preferredResolution;
   const scored = results
     .filter((r) => r.seeders >= config.minSeeders || r.seeders === 0) // keep 0-seed (RD may still have it cached)
+    // A single release clearly numbered for ANOTHER episode is never a
+    // candidate. It used to be only marked down (-400), so when the wanted
+    // episode had no release yet (just aired, or not out at all) the best
+    // wrong one won: Nia Liston E2 was saved from "- 01", and E3 (unaired)
+    // resolved to "- 02". No release beats the wrong episode — the job
+    // fails and autodl tries again later. Batches and unnumbered names stay.
+    .filter((r) => opts.wantBatch || opts.episode === undefined || r.isBatch || r.episode === undefined || r.episode === opts.episode)
     .map((r) => {
       let score = 0;
       // Chosen release group wins decisively (user picked it for all episodes).

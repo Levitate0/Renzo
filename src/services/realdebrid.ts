@@ -139,6 +139,13 @@ export async function resolveEpisodeLink(token: string, info: RdTorrentInfo, epi
   const selected = info.files.filter((f) => f.selected === 1);
 
   let idx = 0;
+  // A one-file torrent whose name says another episode is the wrong download
+  // (rank() should already have dropped it; this also catches a reused
+  // rdTorrentId saved before that filter existed).
+  if (episode !== undefined && selected.length === 1) {
+    const n = parseEpisode(selected[0].path);
+    if (n !== undefined && n !== episode) throw new Error(`torrent holds episode ${n}, not ${episode}`);
+  }
   if (episode !== undefined && selected.length === info.links.length && selected.length > 1) {
     const found = selected.findIndex((f) => parseEpisode(f.path) === episode);
     // Wrong-file beats no-file? No: serving a different episode is worse than

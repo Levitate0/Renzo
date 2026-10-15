@@ -129,6 +129,12 @@ export async function resolveEpisodeLink(key: string, info: RdTorrentInfo, episo
   const pool = videos.length ? videos : info.files.map((f, i) => ({ f, i }));
 
   let idx = pool[0].i;
+  // A one-file magnet whose name says another episode is the wrong download
+  // (see realdebrid.resolveEpisodeLink).
+  if (episode !== undefined && pool.length === 1) {
+    const n = parseEpisode(pool[0].f.path);
+    if (n !== undefined && n !== episode) throw new Error(`magnet holds episode ${n}, not ${episode}`);
+  }
   if (episode !== undefined && pool.length > 1) {
     const found = pool.find(({ f }) => parseEpisode(f.path) === episode);
     if (!found) throw new Error(`episode ${episode} not present in magnet files`);
