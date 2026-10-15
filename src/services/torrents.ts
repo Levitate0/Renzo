@@ -32,12 +32,32 @@ export function parseResolution(name: string): number {
   return 0;
 }
 
+/**
+ * "01-12", "1~12", "(1-12)", "01 - 12" — an ascending range of episodes.
+ * NOT a title that ends in a number followed by the episode: Erai-raws names
+ * Trapped in a Dating Sim S2 "…Kibishii Sekai Desu 2 - 04", which the old
+ * "any N - N" test read as a 2-to-4 batch, so it escaped the wrong-episode
+ * filter. A spaced dash after a lone single digit is that title pattern.
+ */
+function isEpisodeRange(n: string): boolean {
+  const re = /(?<![\d.])(\d{1,3})(\s*)([-~])(\s*)(\d{1,3})(?![\d.])/g;
+  for (const m of n.matchAll(re)) {
+    const from = Number(m[1]);
+    const to = Number(m[5]);
+    if (to <= from) continue; // "S2 - 01", "10 - 05": not a range
+    const spaced = m[2].length > 0 || m[4].length > 0;
+    if (m[3] === "-" && spaced && m[1].length === 1) continue; // "Desu 2 - 04"
+    return true;
+  }
+  return false;
+}
+
 export function isBatchName(name: string, episode?: number): boolean {
   const n = name.toLowerCase();
   const strong =
     /\bbatch\b/.test(n) ||
     /\bcomplete\b/.test(n) ||
-    /\b\d{1,3}\s*[-~]\s*\d{1,3}\b/.test(n) || // 01-12 ranges
+    isEpisodeRange(n) ||                      // 01-12 ranges
     /\bvol(?:ume)?\.?\s*\d/.test(n);
   if (strong) return true;
   // "Season"/"S2" alone doesn't make it a batch if it's clearly a single episode
