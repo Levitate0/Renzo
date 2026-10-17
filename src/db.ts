@@ -35,22 +35,42 @@ class Store {
         if ((u.role as string) === "admin") { u.role = "owner"; migrated = true; }
       }
       if (migrated) await this.flush();
-    } catch {
+    } catch (e) {
+      // Only a MISSING file means a fresh install. Anything else (a file
+      // that exists but will not parse) used to land here too and was then
+      // overwritten with an empty database: every user and title gone, and
+      // with no users the setup page would hand the owner account to
+      // whoever opened it first. Refuse to start instead and leave the file.
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        log.error("db.json exists but could not be read; refusing to start rather than overwrite it", String(e));
+        throw e;
+      }
       log.info("no db found, starting fresh at", this.path);
       await this.flush();
     }
     this.loaded = true;
   }
 
-  private async flush(): Promise<void> {
+  /** A write that is queued but has not started yet; later callers share it. */
+  private queued: Promise<void> | null = null;
+
+  private flush(): Promise<void> {
+    // Coalesced: a queued write serializes the data when it STARTS, so it
+    // already carries every change made before then and any caller arriving
+    // meanwhile can simply share it. Every call used to append its own full
+    // rewrite of the ~2 MB file, and a download's progress ticks queued them
+    // faster than they drained.
+    if (this.queued) return this.queued;
     // Serialize writes so concurrent callers can't corrupt the file. The
     // .catch(() => {}) is load-bearing: without it one failed write would
     // leave `this.writing` rejected and every later flush would silently skip.
     const run = this.writing.catch(() => {}).then(async () => {
+      this.queued = null; // changes from here on need the next write
       const tmp = `${this.path}.tmp`;
       await fs.writeFile(tmp, JSON.stringify(this.data, null, 2));
       await fs.rename(tmp, this.path);
     });
+    this.queued = run;
     this.writing = run.catch((e) => log.error("flush failed", String(e)));
     return run;
   }
@@ -94,6 +114,10 @@ class Store {
     else this.data.jobs.push(j);
     await this.flush();
     return j;
+  }
+  /** Replace the job list in memory; persisted by the next write. */
+  replaceJobs(jobs: DownloadJob[]): void {
+    this.data.jobs = jobs;
   }
   async removeJob(id: string): Promise<void> {
     this.data.jobs = this.data.jobs.filter((j) => j.id !== id);

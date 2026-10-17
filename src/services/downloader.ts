@@ -423,7 +423,45 @@ class DownloadQueue {
   private pending: string[] = [];
   private active = new Set<string>();
 
+  /**
+   * Job rows are a log nobody trimmed: each auto-download retry added a row
+   * and left the failed one behind, so one install held 1,321 failed rows for
+   * 49 episodes (up to 48 apiece), 47 of which had since downloaded fine —
+   * and /jobs sent every one to the Downloads page on each poll. Keeps the
+   * newest failed row per episode, drops failures the episode has outlived,
+   * and drops finished rows after a week (the page shows them for a minute).
+   */
+  private pruneJobs(): number {
+    const before = db.jobs().length;
+    const now = Date.now();
+    const newestFailed = new Map<string, DownloadJob>();
+    for (const j of db.jobs()) {
+      if (j.status !== "failed") continue;
+      const k = `${j.userId}:${j.titleId}:${j.episode}`;
+      const cur = newestFailed.get(k);
+      if (!cur || cur.updatedAt < j.updatedAt) newestFailed.set(k, j);
+    }
+    const keep = db.jobs().filter((j) => {
+      if (j.status === "downloaded") return now - new Date(j.updatedAt).getTime() < 7 * 86_400_000;
+      if (j.status !== "failed") return true;
+      if (newestFailed.get(`${j.userId}:${j.titleId}:${j.episode}`) !== j) return false;
+      const user = db.getUser(j.userId);
+      return !user || peekUserEp(user, j.titleId, j.episode)?.status !== "downloaded";
+    });
+    db.replaceJobs(keep);
+    return before - keep.length;
+  }
+
+  /** A new attempt supersedes the episode's earlier failures (Retry already did this). */
+  private dropFailed(userId: string, titleId: number, episode: number): void {
+    db.replaceJobs(db.jobs().filter(
+      (j) => !(j.status === "failed" && j.userId === userId && j.titleId === titleId && j.episode === episode),
+    ));
+  }
+
   async resume(): Promise<void> {
+    const pruned = this.pruneJobs();
+    if (pruned > 0) log.info(`pruned ${pruned} stale download job row(s)`);
     for (const j of db.jobs()) {
       if (j.status === "queued" || j.status === "downloading" || j.status === "searching") {
         j.status = "queued";
@@ -497,6 +535,7 @@ class DownloadQueue {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    this.dropFailed(userId, anilistId, episode);
     void db.upsertJob(job);
     this.pending.push(job.id);
     this.pump();
@@ -560,7 +599,9 @@ class DownloadQueue {
         job.progress = frac;
         ep.progress = frac;
         const now = Date.now();
-        if (now - lastPersist > 1500) {
+        // Live progress is read from memory (job/ep are the stored objects);
+        // this only bounds what a crash loses, so it need not be frequent.
+        if (now - lastPersist > 10_000) {
           lastPersist = now;
           await db.upsertJob(job).catch(() => {});
         }
