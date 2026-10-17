@@ -16,7 +16,8 @@ const config = {
   typescript: {
     // Typechecking runs separately (`npm run typecheck`); the build should not
     // die on a type error during iteration.
-    ignoreBuildErrors: true,
+    // Type-checks clean (2026-10-16); keep it that way.
+    ignoreBuildErrors: false,
   },
   images: {
     // Static export has no image optimizer, and artwork comes from the user's
