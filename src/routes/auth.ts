@@ -72,6 +72,12 @@ authRoutes.get("/me", wrap(async (req, res) => {
   const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
   const user = auth.sessionUser(token);
   if (!user) return res.status(401).json({ error: "unauthorized" });
+  // The same upkeep requireAuth does. This is the call every client makes at
+  // launch, so it is where a device that missed a rotation (the response that
+  // carried it was lost) is handed the current token back, and where a due
+  // rotation lands on a response the client is certain to read.
+  const refreshed = auth.maintainSession(token, req.secure);
+  if (refreshed) res.append("Set-Cookie", refreshed);
   res.json({ user: publicUser(user) });
 }));
 

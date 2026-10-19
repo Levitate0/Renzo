@@ -235,12 +235,13 @@ export function maintainSession(token: string | undefined, secure: boolean): str
   if (!hit) return null;
   const { s, viaPrev } = hit;
   const now = Date.now();
-  const maxAge = s.remember === false ? null : Math.max(1, Math.floor((new Date(s.expiresAt).getTime() - now) / 1000));
+  const maxAge = () =>
+    s.remember === false ? null : Math.max(1, Math.floor((new Date(s.expiresAt).getTime() - now) / 1000));
 
   // Arrived on the replaced token: the response carrying the replacement was
   // lost. Re-send the SAME replacement rather than rotating again, so the
   // client ends up holding exactly what it should have received.
-  if (viaPrev) return sessionCookie(s.token, maxAge, secure);
+  if (viaPrev) return sessionCookie(s.token, maxAge(), secure);
 
   const rotatedAt = s.rotatedAt ? new Date(s.rotatedAt).getTime() : new Date(s.createdAt).getTime();
   if (now - rotatedAt < ROTATE_EVERY_MS) return null;
@@ -250,11 +251,20 @@ export function maintainSession(token: string | undefined, secure: boolean): str
   s.prevUntil = new Date(now + PREV_GRACE_MS).toISOString();
   s.token = next;
   s.rotatedAt = new Date(now).toISOString();
+  // A remembered session that is in use stays alive. Its lifetime used to run
+  // from sign-in no matter what, so a device used every day was still signed
+  // out once a month. Each rotation now restarts it, as Shiori's refresh does
+  // (RefreshSessionService.RotateAsync). An idle device still lapses after the
+  // full TTL, and a session cookie ("Remember me" off) keeps its fixed end.
+  if (s.remember !== false) {
+    const ttlDays = s.tv ? config.tvSessionTtlDays : config.sessionTtlDays;
+    s.expiresAt = new Date(now + ttlDays * 24 * 3600_000).toISOString();
+  }
   // The in-memory last-seen map is keyed by token; move the stamp with it.
   const seen = lastSeen.get(s.prevToken);
   if (seen !== undefined) { lastSeen.delete(s.prevToken); lastSeen.set(next, seen); }
   void db.save(); // fire-and-forget: never make a request wait on a disk write
-  return sessionCookie(next, maxAge, secure);
+  return sessionCookie(next, maxAge(), secure);
 }
 
 export async function destroySession(token: string | undefined): Promise<void> {
