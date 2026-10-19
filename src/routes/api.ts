@@ -15,7 +15,7 @@ import * as captions from "../services/captions.js";
 import * as library from "../services/library.js";
 import * as watch from "../services/watch.js";
 import * as mal from "../services/mal.js";
-import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, requireToken, userDownloadedCount, peekUserEp, sharedCopy, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
+import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, refreshTitle, requireToken, userDownloadedCount, peekUserEp, sharedCopy, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
 import type { ResolvedStream } from "../services/downloader.js";
 import * as previews from "../services/previews.js";
 import * as autodl from "../services/autodl.js";
@@ -1023,6 +1023,53 @@ api.get("/updates", wrap(async (req, res) => {
     out.push({ ...card, title: baseSeriesName(card.title), season: season ?? ex?.seasonNum ?? null, seasonPart: ex?.seasonPart ?? null });
   }
   res.json(out);
+}));
+
+// --- Release heads: what the Hub's new-episode notifications poll ------------
+// Every library title with the number of episodes that have aired, the same
+// count the Updates feed and the title page use. The Hub keeps the highest
+// count it has seen per title and announces only an increase, so a better
+// release of an episode, or a re-download, can never announce itself.
+//
+// Airing data is refreshed here for the caller's titles that can still change.
+// Nothing else refreshes a library title the auto-downloader does not target,
+// so without this its count went stale. getById's cache makes a fresh title
+// free, and anilist.isCachedFresh skips even the db write; a pass that runs
+// long finishes in the background and is picked up by the next poll.
+const airingRefreshing = new Set<number>();
+async function refreshAiring(titles: Title[], budgetMs: number): Promise<void> {
+  const due = titles.filter((t) =>
+    (t.airingStatus !== "FINISHED" || !t.episodeCount) &&
+    !airingRefreshing.has(t.id) && !anilist.isCachedFresh(t.id));
+  const pass = (async () => {
+    for (const t of due) {
+      if (airingRefreshing.has(t.id)) continue;
+      airingRefreshing.add(t.id);
+      try { await refreshTitle(t); } catch (e) { log.warn("release-heads refresh", t.romaji, String(e)); }
+      finally { airingRefreshing.delete(t.id); }
+      await new Promise((r) => setTimeout(r, 300)); // AniList: 30 req/min
+    }
+  })();
+  await Promise.race([pass, new Promise((r) => setTimeout(r, budgetMs))]);
+}
+
+api.get("/library/release-heads", wrap(async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  const titles = (user.library ?? []).map((id) => db.getTitle(id)).filter((t): t is Title => !!t);
+  await refreshAiring(titles, 6_000);
+  res.json({
+    now: new Date().toISOString(),
+    titles: titles.map((t) => ({
+      id: t.id,
+      type: t.type,
+      title: t.english ?? t.romaji,
+      poster: t.poster ?? null,
+      aired: availableEpisodes(t),
+      status: t.airingStatus ?? null,
+      // Same tags every card carries, so the client's 18+ switch applies.
+      content: contentTags(t.genres, t.isAdult),
+    })),
+  });
 }));
 
 // --- Jobs (only MY jobs; admin sees all) -----------------------------------

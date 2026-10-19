@@ -10,7 +10,8 @@ export interface AniListMedia {
   format: string | null;
   status: string | null;
   episodes: number | null;
-  nextAiringEpisode: { episode: number } | null;
+  /** airingAt is unix SECONDS (AniList's unit). */
+  nextAiringEpisode: { episode: number; airingAt?: number } | null;
   seasonYear: number | null;
   genres: string[];
   isAdult: boolean;
@@ -27,7 +28,7 @@ const MEDIA_FIELDS = `
   format
   status
   episodes
-  nextAiringEpisode { episode }
+  nextAiringEpisode { episode airingAt }
   seasonYear
   genres
   isAdult
@@ -351,10 +352,30 @@ const BY_ID_TTL_RELEASING = 6 * 60 * 60_000;
 const BY_ID_TTL_FINISHED = 7 * 24 * 60 * 60_000;
 const byIdTtl = (m: AniListMedia) =>
   m.status === "FINISHED" ? BY_ID_TTL_FINISHED : BY_ID_TTL_RELEASING;
+// A cached RELEASING show is stale the moment its next episode airs, so the
+// entry ends an hour after that rather than up to six hours later. Six hours
+// was how late an aired episode could show up anywhere: the title page, the
+// Updates feed, the auto-downloader and the Hub's new-episode notifications.
+// The hour gives releases time to appear. The 15-minute floor stops a refetch
+// on every call while AniList still lists an episode that has already aired.
+const AIRED_SETTLE_MS = 60 * 60_000;
+const MIN_CACHE_MS = 15 * 60_000;
+function byIdExpiry(hit: { at: number; data: AniListMedia }): number {
+  const full = hit.at + byIdTtl(hit.data);
+  const airs = hit.data.nextAiringEpisode?.airingAt;
+  if (!airs) return full;
+  return Math.max(hit.at + MIN_CACHE_MS, Math.min(full, airs * 1000 + AIRED_SETTLE_MS));
+}
+
+/** True when getById(id) would answer from cache, i.e. a refresh would cost nothing. */
+export function isCachedFresh(id: number): boolean {
+  const hit = byIdCache.get(id);
+  return !!hit && Date.now() < byIdExpiry(hit);
+}
 
 export async function getById(id: number): Promise<AniListMedia | null> {
   const hit = byIdCache.get(id);
-  if (hit && Date.now() - hit.at < byIdTtl(hit.data)) return hit.data;
+  if (hit && Date.now() < byIdExpiry(hit)) return hit.data;
   const query = `query ($id: Int) { Media(id: $id, type: ANIME) { ${MEDIA_FIELDS} } }`;
   try {
     const data = await gql<{ Media: AniListMedia }>(query, { id });
@@ -771,6 +792,7 @@ export function toTitle(m: AniListMedia): Title {
     banner: m.bannerImage ?? undefined,
     airingStatus: m.status ?? undefined,
     nextAiringEpisode: m.nextAiringEpisode?.episode ?? undefined,
+    nextAiringAt: m.nextAiringEpisode?.airingAt ? m.nextAiringEpisode.airingAt * 1000 : undefined,
     addedAt: new Date().toISOString(),
     episodes: [],
   };

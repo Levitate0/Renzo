@@ -48,6 +48,7 @@ export interface Title {
   banner?: string;
   airingStatus?: string;      // FINISHED | RELEASING | NOT_YET_RELEASED | ...
   nextAiringEpisode?: number; // next episode number to air (while RELEASING)
+  nextAiringAt?: number;      // when it airs, epoch ms (AniList airingAt)
   autoDownload?: boolean;     // auto-grab new episodes on the schedule
   autoFromTracker?: boolean;  // autoDownload=true came from tracker sync (so sync may also clear it)
   lists?: string[];           // DEPRECATED: lists moved to UserRecord.lists (per-user)

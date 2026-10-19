@@ -119,7 +119,13 @@ export async function tick(): Promise<{ queued: number }> {
           const rec = peekUserEp(u, t.id, n);
           if (rec && ["downloaded", "downloading", "queued", "searching"].includes(rec.status)) continue;
           // Don't hammer a permanently-failing episode: retry at most daily.
-          if (rec?.status === "failed" && Date.now() - new Date(rec.updatedAt).getTime() < 24 * 3600_000) continue;
+          // Except the newest episode of a show that is airing: it most often
+          // failed because no release was out yet, and its release usually
+          // appears within hours. A day's wait was the slowest way to find
+          // out, and an episode now counts as aired an hour after it airs
+          // (anilist.byIdExpiry), which is often before the first release.
+          const backoff = t.airingStatus === "RELEASING" && n === avail ? 2 * 3600_000 : 24 * 3600_000;
+          if (rec?.status === "failed" && Date.now() - new Date(rec.updatedAt).getTime() < backoff) continue;
           eps.push(n);
         }
         if (eps.length) plans.push({ t, eps });
