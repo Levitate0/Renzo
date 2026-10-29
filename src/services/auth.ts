@@ -380,7 +380,15 @@ export function parseCookies(header: string | undefined): Record<string, string>
   if (!header) return out;
   for (const part of header.split(";")) {
     const i = part.indexOf("=");
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    const val = part.slice(i + 1).trim();
+    // A malformed %-sequence in ANY cookie (another app's, on a shared domain)
+    // threw "URI malformed" and turned every request into a 500. Keep it raw.
+    try {
+      out[part.slice(0, i).trim()] = decodeURIComponent(val);
+    } catch {
+      out[part.slice(0, i).trim()] = val;
+    }
   }
   return out;
 }
