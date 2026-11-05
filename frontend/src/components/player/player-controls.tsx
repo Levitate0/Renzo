@@ -92,6 +92,8 @@ export function PlayerControls({
   onFullscreen,
   autoplay,
   onAutoplay,
+  skipCountdown,
+  onSkipCountdown,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   paused: boolean;
@@ -103,6 +105,9 @@ export function PlayerControls({
   onFullscreen: () => void;
   autoplay: boolean;
   onAutoplay: (on: boolean) => void;
+  /** Autoplay starts the next episode the moment one ends, with no "Up next" countdown. */
+  skipCountdown: boolean;
+  onSkipCountdown: (on: boolean) => void;
 }) {
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
@@ -347,21 +352,36 @@ export function PlayerControls({
             <div className="cc-head px-2.5 pb-1.5 pt-1 text-[11px] uppercase tracking-wider text-muted-foreground">
               Settings
             </div>
-            <button type="button" className="cc-item flex items-center" onClick={() => onAutoplay(!autoplay)}>
-              <span className="flex-1">Autoplay</span>
-              <span
-                className={cn(
-                  "flex h-5 w-[34px] items-center rounded-full p-[3px] transition-colors",
-                  autoplay ? "justify-end bg-primary" : "justify-start bg-muted",
-                )}
-              >
-                <span className="h-3.5 w-3.5 rounded-full bg-white" />
-              </span>
-            </button>
+            <SwitchItem on={autoplay} onClick={() => onAutoplay(!autoplay)}>
+              Autoplay
+            </SwitchItem>
+            {/* Only means something with Autoplay on, so it hides with it. */}
+            {autoplay && (
+              <SwitchItem on={skipCountdown} onClick={() => onSkipCountdown(!skipCountdown)}>
+                Skip countdown
+              </SwitchItem>
+            )}
           </>
         )}
       </div>
     </>
+  );
+}
+
+/** A settings-menu row with an on/off switch at the end. */
+function SwitchItem({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} className="cc-item flex items-center" onClick={onClick}>
+      <span className="flex-1">{children}</span>
+      <span
+        className={cn(
+          "flex h-5 w-[34px] items-center rounded-full p-[3px] transition-colors",
+          on ? "justify-end bg-primary" : "justify-start bg-muted",
+        )}
+      >
+        <span className="h-3.5 w-3.5 rounded-full bg-white" />
+      </span>
+    </button>
   );
 }
 

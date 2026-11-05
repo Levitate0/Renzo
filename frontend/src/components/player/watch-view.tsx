@@ -123,6 +123,10 @@ interface ResumeRun {
 const RESUME_SAVE_MS = 10_000;
 /** Player setting (gear menu): count down into the next episode. Per browser. */
 const AUTOPLAY_KEY = "renzo-autoplay";
+/** Player setting (gear menu): with Autoplay on, start the next episode the
+ *  moment one ends instead of counting down. Per browser; off by default.
+ *  Hub twin: Prefs.playNextImmediately. */
+const SKIP_COUNTDOWN_KEY = "renzo-autoplay-immediate";
 /** One retry for the initial read: a single blip on mobile wifi shouldn't cost
  *  the session its position (and with it the ability to save at all). */
 const RESUME_RETRY_MS = 2_000;
@@ -197,6 +201,8 @@ export function WatchView() {
   const [autoNext, setAutoNext] = useState<AutoNextInfo | null>(null);
   const [autoplay, setAutoplayState] = useState(true);
   const autoplayRef = useRef(true);
+  const [skipCountdown, setSkipCountdownState] = useState(false);
+  const skipCountdownRef = useRef(false);
   const [watchedThrough, setWatchedThrough] = useState(0);
   const [lists, setLists] = useState<string[]>([]);
   const [linkCopied, setLinkCopied] = useState(false);
@@ -207,8 +213,20 @@ export function WatchView() {
       const on = localStorage.getItem(AUTOPLAY_KEY) !== "0";
       autoplayRef.current = on;
       setAutoplayState(on);
+      const skip = localStorage.getItem(SKIP_COUNTDOWN_KEY) === "1";
+      skipCountdownRef.current = skip;
+      setSkipCountdownState(skip);
     } catch {
-      /* storage unavailable — autoplay stays on */
+      /* storage unavailable — autoplay stays on, with its countdown */
+    }
+  }, []);
+  const setSkipCountdown = useCallback((on: boolean) => {
+    skipCountdownRef.current = on;
+    setSkipCountdownState(on);
+    try {
+      localStorage.setItem(SKIP_COUNTDOWN_KEY, on ? "1" : "0");
+    } catch {
+      /* per-session only */
     }
   }, []);
   const setAutoplay = useCallback((on: boolean) => {
@@ -608,6 +626,13 @@ export function WatchView() {
     [applyResume, prefetchNext, saveResumeNow, setupCaptions, showControls, watchJob],
   );
 
+  // The `ended` handler is bound once per video; it reaches the current goToEp
+  // through this ref (Skip countdown).
+  const goToEpRef = useRef(goToEp);
+  useEffect(() => {
+    goToEpRef.current = goToEp;
+  }, [goToEp]);
+
   // --- enter/leave the watch session (old enterWatch/exitWatch) -------------
   useEffect(() => {
     if (!watchIdParam) return;
@@ -757,9 +782,13 @@ export function WatchView() {
       // to whatever the last tick happened to store.
       const store = resumeRef.current;
       if (store && store.titleId === titleId) delete store.points[String(endedEp)];
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        queueWatched(titleId, endedEp); // sync on reconnect
-      } else {
+      const max = airedCount(d);
+      const hasNext = d.type !== "movie" && endedEp < max;
+      const markWatched = async () => {
+        if (typeof navigator !== "undefined" && !navigator.onLine) {
+          queueWatched(titleId, endedEp); // sync on reconnect
+          return;
+        }
         try {
           await api(`/titles/${titleId}/watched/${endedEp}`, { method: "POST" });
           void queryClient.invalidateQueries({ queryKey: ["updates"] });
@@ -769,12 +798,21 @@ export function WatchView() {
         } catch {
           /* trackers optional */
         }
+      };
+      // Skip countdown: go now, and let /watched finish on its own. It
+      // scrobbles to the trackers before it answers, which can take seconds,
+      // and switching episodes in place never cancels it.
+      if (hasNext && autoplayRef.current && skipCountdownRef.current) {
+        void markWatched();
+        setWatchedThrough((w) => Math.max(w, endedEp));
+        void goToEpRef.current?.(endedEp + 1);
+        return;
       }
+      await markWatched();
       const cur = watchRef.current;
       if (!cur || cur.titleId !== titleId || cur.ep !== endedEp) return; // exited or moved on
       setWatchedThrough((w) => Math.max(w, endedEp));
-      const max = airedCount(d);
-      if (d.type !== "movie" && endedEp < max && autoplayRef.current) {
+      if (hasNext && autoplayRef.current) {
         const nextEp = endedEp + 1;
         const meta = (d.episodeList || []).find((e) => e.number === nextEp);
         setAutoNext({
@@ -1061,6 +1099,8 @@ export function WatchView() {
               onFullscreen={enterVideoFullscreen}
               autoplay={autoplay}
               onAutoplay={setAutoplay}
+              skipCountdown={skipCountdown}
+              onSkipCountdown={setSkipCountdown}
             />
             {autoNext && (
               <AutoNextCard
