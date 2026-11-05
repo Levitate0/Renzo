@@ -17,7 +17,7 @@ import { CloudDownload, Download, ListChecks, PlayCircle } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { cn } from "@/lib/utils";
+import { airDateLabel, cn } from "@/lib/utils";
 
 import type { DetailModel } from "./detail-model";
 
@@ -193,6 +193,7 @@ export function EpisodeGrid({
           const label = `${series} · E${ep.number}`;
           const openEp = () => (unaired ? toast(`Episode ${ep.number} hasn't aired yet`) : onPlay(ep.number));
           const menuOpen = openMenu === ep.number;
+          const airLabel = airDateLabel(ep.airDate, unaired);
 
           return (
             <div key={ep.number} className={cn("ep-card", unaired && "unaired", watched && "watched")}>
@@ -218,7 +219,9 @@ export function EpisodeGrid({
                 E{ep.number} – {ep.epTitle || `Episode ${ep.number}`}
               </div>
               <div className="ep-foot">
-                <span className="ep-sub">Subtitled</span>
+                <span className="ep-sub min-w-0 truncate">
+                  {airLabel ? `${airLabel} · ` : ""}Subtitled
+                </span>
                 {!unaired && (
                   <button
                     type="button"

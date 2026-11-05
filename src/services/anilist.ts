@@ -186,6 +186,32 @@ async function gql<T>(
  * never registered as a rate limit and its requests were invisible to every
  * budget decision made here.
  */
+/**
+ * AniList's broadcast schedule for one title: episode number -> airingAt
+ * (unix SECONDS), aired and upcoming alike. AniList only keeps a schedule for
+ * shows it tracked while they aired, so older titles come back empty.
+ */
+export async function airingSchedule(id: number, maxPages = 10): Promise<Map<number, number>> {
+  const query = `query ($id: Int, $page: Int) {
+    Media(id: $id, type: ANIME) {
+      airingSchedule(page: $page, perPage: 50) {
+        pageInfo { hasNextPage }
+        nodes { episode airingAt }
+      }
+    }
+  }`;
+  const out = new Map<number, number>();
+  for (let page = 1; page <= maxPages; page++) {
+    const data = await gql<{
+      Media: { airingSchedule: { pageInfo: { hasNextPage: boolean }; nodes: { episode: number; airingAt: number }[] } | null } | null;
+    }>(query, { id, page });
+    const sched = data.Media?.airingSchedule;
+    for (const n of sched?.nodes ?? []) if (n.episode > 0 && n.airingAt > 0) out.set(n.episode, n.airingAt);
+    if (!sched?.pageInfo.hasNextPage) break;
+  }
+  return out;
+}
+
 export async function gqlAuthed<T>(
   token: string,
   query: string,

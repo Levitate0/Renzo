@@ -54,6 +54,8 @@ export interface Title {
   lists?: string[];           // DEPRECATED: lists moved to UserRecord.lists (per-user)
   seriesKey?: number;         // canonical id shared by every season of a series (library grouping)
   seriesKeyV?: number;        // chain-walk version the key came from (see anilist.SERIES_CHAIN_VERSION)
+  airDates?: Record<string, string>; // episode number -> air date "YYYY-MM-DD" (services/airdates.ts)
+  airDatesAt?: number;        // when airDates was last fetched, epoch ms
   addedAt: string;
   episodes: EpisodeRecord[];
 }

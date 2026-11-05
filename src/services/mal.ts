@@ -44,6 +44,48 @@ async function jikan(path: string): Promise<{ data?: unknown[] }> {
   return (await res.json()) as { data?: unknown[] };
 }
 
+const MONTHS: Record<string, string> = {
+  Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
+  Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12",
+};
+
+/**
+ * Each episode's air date as MyAnimeList lists it ("YYYY-MM-DD", the Japanese
+ * broadcast date): episode number -> date. Read from MAL's own episode page,
+ * 100 episodes a page, one page a second. Jikan serves the same table, but
+ * its address doesn't answer from this server. Undated episodes ("N/A") are
+ * left out, and a failure part-way keeps the pages already read.
+ */
+export async function malEpisodeAirDates(malId: number, maxPages = 20): Promise<Map<number, string>> {
+  const dates = new Map<number, string>();
+  for (let page = 0; page < maxPages; page++) {
+    let html: string;
+    try {
+      const res = await fetch(`https://myanimelist.net/anime/${malId}/_/episode?offset=${page * 100}`, {
+        headers: { accept: "text/html" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) throw new Error(`MAL ${res.status}`);
+      html = await res.text();
+    } catch (e) {
+      if (page === 0) throw e;
+      log.warn(`episode dates for MAL ${malId} stopped at page ${page + 1}: ${String(e)}`);
+      break;
+    }
+    const rows = html.split('<tr class="episode-list-data">').slice(1);
+    for (const row of rows) {
+      const num = Number(row.match(/episode-number nowrap" data-raw="(\d+)"/)?.[1]);
+      const aired = row.match(/episode-aired nowrap">\s*([A-Z][a-z]{2}) (\d{1,2}), (\d{4})\s*</);
+      if (num > 0 && aired && MONTHS[aired[1]]) {
+        dates.set(num, `${aired[3]}-${MONTHS[aired[1]]}-${aired[2].padStart(2, "0")}`);
+      }
+    }
+    if (rows.length < 100) break;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return dates;
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Adult categories from Jikan. Jikan keeps Hentai/Erotica in a separate
 // `explicit_genres` field (never in `genres`), plus a `rating` like "Rx - Hentai",

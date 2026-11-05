@@ -267,6 +267,8 @@ export interface EpisodeInfo {
   aired: boolean;
   thumbnail: string | null;
   epTitle: string | null;
+  /** Air date "YYYY-MM-DD" (Japan) from MAL / AniList; null or absent when neither has one. */
+  airDate?: string | null;
 }
 
 /** GET /api/titles/:id — Title record spread + detail extras. */

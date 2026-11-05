@@ -64,6 +64,8 @@ export interface OfflineEpisodeMeta {
   epTitle: string | null;
   thumbnail: string | null;
   aired: boolean;
+  /** Absent on copies saved before air dates existed. */
+  airDate?: string | null;
 }
 
 /** Cached series metadata so offline library/detail render exactly like online. */
@@ -115,6 +117,7 @@ export interface TitleDetailLike {
     epTitle?: string | null;
     thumbnail?: string | null;
     aired?: boolean;
+    airDate?: string | null;
   }>;
 }
 
@@ -479,6 +482,7 @@ export function setMeta(d: TitleDetailLike | null | undefined): void {
       epTitle: e.epTitle || null,
       thumbnail: e.thumbnail || null,
       aired: e.aired !== false,
+      airDate: e.airDate || null,
     })),
     at: Date.now(),
   };

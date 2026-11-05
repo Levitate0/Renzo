@@ -94,6 +94,7 @@ export function modelFromOffline(d: OfflineTitleDetail): DetailModel {
       aired: e.aired !== false,
       thumbnail: e.thumbnail,
       epTitle: e.epTitle,
+      airDate: e.airDate ?? null,
     })),
     seasons: [],
     seasonNum: d.seasonNum ?? null,

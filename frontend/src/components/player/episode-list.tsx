@@ -9,7 +9,7 @@ import React, { useEffect, useRef } from "react";
 import { toast } from "sonner";
 
 import { seasonChip } from "@/components/player/season-utils";
-import { cn } from "@/lib/utils";
+import { airDateLabel, cn } from "@/lib/utils";
 import type { ResumeMap, SeasonRef } from "@/lib/types";
 
 export interface WatchEpisode {
@@ -18,6 +18,7 @@ export interface WatchEpisode {
   thumbnail?: string | null;
   aired?: boolean;
   hasFile?: boolean;
+  airDate?: string | null;
 }
 
 export function EpisodeList({
@@ -136,7 +137,14 @@ export function EpisodeList({
                 E{ep.number} – {ep.epTitle || `Episode ${ep.number}`}
               </div>
               <div className={cn("text-xs", playing ? "font-semibold text-primary" : "text-muted-foreground")}>
-                {playing ? "Now playing" : unaired ? "Soon" : watched ? "Watched" : ""}
+                {/* The state first, then the air date: "Watched · Sep 29, 2023",
+                    or "Airs Oct 13" in place of "Soon". */}
+                {[
+                  playing ? "Now playing" : unaired ? (ep.airDate ? null : "Soon") : watched ? "Watched" : null,
+                  airDateLabel(ep.airDate, unaired),
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </div>
             </div>
             {ep.hasFile ? (

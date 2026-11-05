@@ -18,6 +18,7 @@ import * as mal from "../services/mal.js";
 import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, refreshTitle, requireToken, userDownloadedCount, peekUserEp, sharedCopy, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
 import type { ResolvedStream } from "../services/downloader.js";
 import * as previews from "../services/previews.js";
+import { airDatesFor } from "../services/airdates.js";
 import * as autodl from "../services/autodl.js";
 import { requireAdmin, mintDownloadToken, type AuthedRequest } from "../services/auth.js";
 import { isTrackStatus } from "../services/tracker.js";
@@ -601,6 +602,8 @@ api.delete("/library/:id", wrap(async (req, res) => {
 
 api.get("/titles/:id", wrap(async (req, res) => {
   const t = await getOrCreateTitle(Number(req.params.id));
+  // Started now, so a first fetch overlaps detailExtra's instead of following it.
+  const airDatesP = airDatesFor(t).catch(() => ({} as Record<string, string>));
   const extra = await anilist.detailExtra(t.id).catch(() => ({ episodes: [], seasons: [], seasonNum: 1, seasonPart: null, seasonKind: "season" as const, seasonFormat: null, nextUp: null, duration: null }));
   // Heal legacy per-season state: if any sibling season is in the library / auto /
   // a list, bring the whole series into lockstep before we read state below.
@@ -612,10 +615,17 @@ api.get("/titles/:id", wrap(async (req, res) => {
     if (reconcileSeries(req.user, siblingIds)) await db.save();
   }
   const detail = detailFromTitle(t, req.user);
-  // Merge per-episode preview thumbnails + episode titles (fallback: banner/poster).
+  const airDates = await airDatesP;
+  // Merge per-episode preview thumbnails + episode titles (fallback: banner/poster),
+  // and each episode's air date from MAL / AniList (null when neither has one).
   const episodeList = detail.episodeList.map((e) => {
     const meta = extra.episodes[e.number - 1];
-    return { ...e, thumbnail: meta?.thumbnail || t.banner || t.poster || null, epTitle: meta?.title || null };
+    return {
+      ...e,
+      thumbnail: meta?.thumbnail || t.banner || t.poster || null,
+      epTitle: meta?.title || null,
+      airDate: airDates[e.number] ?? null,
+    };
   });
   res.json({
     ...detail,
