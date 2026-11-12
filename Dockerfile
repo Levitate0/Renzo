@@ -48,7 +48,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY public ./public
-# Next static export — served instead of public/ when USE_NEXT_UI=1
+# Next static export — the UI; public/ is served instead only when LEGACY_UI=1
 COPY --from=webbuild /web/out ./frontend/out
 
 EXPOSE 8787

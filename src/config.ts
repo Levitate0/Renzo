@@ -133,11 +133,8 @@ export const config = {
   // with DOWNLOAD_CONCURRENCY for premium accounts that can handle parallelism.
   downloadConcurrency: Math.max(1, int(process.env.DOWNLOAD_CONCURRENCY, 1)),
 
-  tmdbApiKey: process.env.TMDB_API_KEY ?? "",
-
   // Subtitles
   jimakuApiKey: process.env.JIMAKU_API_KEY ?? "",
-  openSubtitlesApiKey: process.env.OPENSUBTITLES_API_KEY ?? "",
   // Empty by default = keep all languages (English extracted from the release +
   // Japanese from Jimaku). Set SUBTITLE_LANGS=en to keep only English, etc.
   subtitleLangs: (process.env.SUBTITLE_LANGS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
@@ -155,6 +152,8 @@ export const config = {
 
   // Tracker connections. Priority per user: their own token > env override >
   // the self-hosted auth site (below), which fetches/refreshes tokens centrally.
+  // The env and auth-site tokens are one account each, so only the instance
+  // owner falls back to them (services/tracker.ts, mayUseSharedTokens).
   anilistToken: process.env.ANILIST_TOKEN ?? "",
   malToken: process.env.MAL_TOKEN ?? "",
   kitsuToken: process.env.KITSU_TOKEN ?? "",

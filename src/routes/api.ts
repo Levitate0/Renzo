@@ -254,7 +254,8 @@ async function syncWatchStatus(t: Title, user: UserRecord): Promise<void> {
   if (user.autoStatus === false) return; // per-user "Auto-update status" set to Off
   // NB: don't gate on user.anilistToken/malToken — trackers are usually linked
   // via the auth site, so those are empty. setTracking resolves the token itself
-  // (user → env → auth site) and no-ops when none is available.
+  // (user → env → auth site, the last two for the owner only) and no-ops when
+  // none is available.
   const finished = t.type === "movie" || t.airingStatus === "FINISHED";
   const total = t.type === "movie" ? 1 : (t.episodeCount ?? availableEpisodes(t));
   const watched = watchedEp(user, t.id);

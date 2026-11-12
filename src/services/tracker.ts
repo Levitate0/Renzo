@@ -12,19 +12,43 @@ const KITSU_JSONAPI = "application/vnd.api+json";
 
 // Token resolution, highest priority first:
 //   1. the user's own connected token (per-user, from Settings)
-//   2. an env override (ANILIST_TOKEN / MAL_TOKEN)
-//   3. the self-hosted auth site (fetched + auto-refreshed at call time)
+//   2. an env override (ANILIST_TOKEN / MAL_TOKEN / KITSU_TOKEN)  — owner only
+//   3. the self-hosted auth site's central token                  — owner only
 export async function anilistTokenFor(user?: UserRecord): Promise<string> {
   if (user?.anilistToken) return (await freshUserToken(user, "anilist")) ?? user.anilistToken;
+  if (!mayUseSharedTokens(user)) return "";
   return config.anilistToken || (await authsite.getToken("anilist")) || "";
 }
 export async function malTokenFor(user?: UserRecord): Promise<string> {
   if (user?.malToken) return (await freshUserToken(user, "myanimelist")) ?? user.malToken;
+  if (!mayUseSharedTokens(user)) return "";
   return config.malToken || (await authsite.getToken("myanimelist")) || "";
 }
 export async function kitsuTokenFor(user?: UserRecord): Promise<string> {
   if (user?.kitsuToken) return (await freshUserToken(user, "kitsu")) ?? user.kitsuToken;
+  if (!mayUseSharedTokens(user)) return "";
   return config.kitsuToken || (await authsite.getToken("kitsu")) || "";
+}
+
+/** The env tokens and the auth site's central token are ONE tracker account
+ *  each, so they belong to the instance owner alone. They used to be lent to
+ *  every user without a token of their own, which scrobbled everybody's
+ *  watching onto that one account; now other users simply don't scrobble
+ *  until they connect their own.
+ *
+ *  "The owner" is the earliest-created role:"owner" account. Normally there is
+ *  exactly one — first-run setup creates it and no route can grant the role —
+ *  but a db migrated from the old multi-"admin" model can hold several, and
+ *  only one of them can be the person whose account these tokens are. With
+ *  AUTH_DISABLED there is no login and every request is the "system" stand-in,
+ *  so that is the owner. */
+function mayUseSharedTokens(user?: UserRecord): boolean {
+  if (!user) return false;
+  if (user.id === "system") return config.authDisabled;
+  const owner = db.users()
+    .filter((u) => u.role === "owner" && u.id !== "system")
+    .reduce<UserRecord | undefined>((a, u) => (!a || u.createdAt < a.createdAt ? u : a), undefined);
+  return owner?.id === user.id;
 }
 
 /** Per-user OAuth tokens carry an expiry + refresh token (auth-site machine
@@ -533,11 +557,12 @@ export async function importAll(user?: UserRecord): Promise<{ anilist: number; m
 }
 
 /** Every user with an AniList connection (for the auto-downloader's sync).
- *  Must mirror anilistTokenFor()'s resolution order — a user linked through the
- *  auth site (or a server-wide env token) has NO u.anilistToken, and gating on
- *  that raw field silently excluded them from the sync, so their Watching list
- *  never auto-downloaded. */
+ *  Must mirror anilistTokenFor()'s resolution order — the owner linked through
+ *  the auth site (or a server-wide env token) has NO u.anilistToken, and gating
+ *  on that raw field silently excluded them from the sync, so their Watching
+ *  list never auto-downloaded. The shared token is the owner's only. */
 export async function usersWithAniList(): Promise<UserRecord[]> {
   const shared = Boolean(config.anilistToken) || Boolean(await authsite.getToken("anilist"));
-  return db.users().filter((u) => u.id !== "system" && (Boolean(u.anilistToken) || shared));
+  return db.users().filter((u) =>
+    u.id !== "system" && (Boolean(u.anilistToken) || (shared && mayUseSharedTokens(u))));
 }

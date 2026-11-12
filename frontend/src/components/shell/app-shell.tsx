@@ -1,6 +1,7 @@
 "use client";
 
-// AppShell — pages wrap themselves in this (CONTRACTS "shell"):
+// AppShell — pages wrap themselves in this (page root = `view active`, see
+// CONTRACTS.md "DOM contract for tvnav.js"):
 //
 //   export default function Page() {
 //     return (
