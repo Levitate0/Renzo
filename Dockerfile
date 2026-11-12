@@ -61,6 +61,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # NOTE: runs as root deliberately, for now. /data and /library are bind mounts
 # on existing installs and are root-owned there; switching to `USER node` would
-# make an in-place upgrade fail on first write. See DOCKER-PUBLISHING.md
-# "Running as non-root" for the migration this needs.
+# make an in-place upgrade fail on first write. See the wiki's Installation
+# page ("Runs as root") for the migration this needs.
 CMD ["node", "dist/server.js"]

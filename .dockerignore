@@ -11,7 +11,5 @@ frontend/out
 .env.*
 .github
 .claude
-BUILD.md
-DOCKER-PUBLISHING.md
 docker-compose*.yml
 *.md

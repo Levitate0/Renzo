@@ -24,7 +24,7 @@ services:
       #
       # Behind a reverse proxy, name the hop you trust — NOT `true`, which
       # takes the leftmost X-Forwarded-For header from anyone who sends one and
-      # hands your login lockout a knob to turn. See README "TRUST_PROXY".
+      # hands your login lockout a knob to turn. See the wiki's Installation page.
       # TRUST_PROXY: loopback
     ports:
       - "${PORT:-8787}:8787"
