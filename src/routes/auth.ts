@@ -23,6 +23,12 @@ export const authRoutes = Router();
 function wrap(fn: (req: Request, res: Response) => Promise<unknown>) {
   return (req: Request, res: Response) => {
     fn(req, res).catch((e) => {
+      // The scrypt queue was full (setup, invite accept, a password change):
+      // a temporary refusal, not a server fault.
+      if (e instanceof auth.AuthBusyError) {
+        if (!res.headersSent) res.status(503).set("Retry-After", "2").json({ error: e.message });
+        return;
+      }
       log.error(req.method, req.path, String(e));
       if (!res.headersSent) res.status(500).json({ error: String(e instanceof Error ? e.message : e) });
     });
@@ -66,6 +72,10 @@ function publicUser(u: {
 // --- Session state ----------------------------------------------------------
 authRoutes.get("/me", wrap(async (req, res) => {
   if (config.authDisabled) {
+    // Same LAN-only rule as requireAuth: a tunnel visitor is not told it is the owner.
+    if (!auth.authDisabledAllowed(req)) {
+      return res.status(403).json({ error: "This server has sign-in disabled and only answers its local network" });
+    }
     return res.json({ user: { id: "system", username: "local", role: "owner" }, authDisabled: true });
   }
   if (auth.setupRequired()) return res.json({ setupRequired: true });
@@ -106,19 +116,36 @@ authRoutes.post("/setup", wrap(async (req, res) => {
 authRoutes.post("/login", wrap(async (req, res) => {
   if (config.authDisabled) return res.status(400).json({ error: "auth is disabled" });
   const ip = clientIp(req);
-  if (!auth.loginAllowed(ip)) {
-    return res.status(429).json({ error: "Too many failed attempts — try again in 15 minutes" });
+  const username = typeof req.body?.username === "string" ? req.body.username : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const user = db.getUserByName(username);
+  // A network this account has signed in from with its password: exempt from
+  // the per-account throttle
+  // and served in scrypt's priority lane, so a flood of strangers guessing
+  // this name can neither lock its owner out nor crowd them out.
+  const trusted = user ? auth.trustedClient(user, ip) : false;
+  // Checked before the attempt is reserved, and nothing awaits between here
+  // and verifyPassword taking its scrypt slot, so a login that passes this
+  // check is never refused for load half-way through.
+  if (auth.authBusy(trusted)) return res.status(503).json({ error: "Server is busy — try again in a moment" });
+  // Reserved synchronously (counted as a failure until proven otherwise), so
+  // parallel requests cannot all slip past one "allowed" check.
+  const gate = auth.beginLogin(ip, username, trusted);
+  if (!gate.ok) {
+    const mins = Math.ceil(gate.retryAfterSec / 60);
+    return res.status(429).set("Retry-After", String(gate.retryAfterSec)).json({
+      error: gate.retryAfterSec > 90
+        ? `Too many failed attempts — try again in ${mins} minutes`
+        : `Too many failed attempts — try again in ${gate.retryAfterSec} seconds`,
+    });
   }
-  const password = String(req.body?.password ?? "");
-  const user = db.getUserByName(String(req.body?.username ?? ""));
   const ok = user
-    ? await auth.verifyPassword(password, user.passHash)
+    ? await auth.verifyPassword(password, user.passHash, trusted)
     : (await auth.dummyVerify(password), false); // equalize timing for unknown users
   if (!ok || !user) {
-    auth.recordLoginFailure(ip);
     return res.status(401).json({ error: "Invalid username or password" });
   }
-  auth.recordLoginSuccess(ip);
+  auth.loginSucceeded(gate.ticket, user, ip); // persisted by createSession's save below
   log.info(`login ok: ${user.username} from ${ip}`);
   // "Remember me" (default on): a persistent cookie kept for the full session
   // TTL. Unchecked: a session cookie the browser drops when it closes. Recorded
@@ -284,9 +311,18 @@ authRoutes.post("/invite/accept", wrap(async (req, res) => {
   if (!inv || inv.usedAt || new Date(inv.expiresAt).getTime() < Date.now()) {
     return res.status(404).json({ error: "This invite is invalid or has expired" });
   }
-  const username = inv.username || String(req.body?.username ?? "");
-  const user = await auth.createUser(username, String(req.body?.password ?? ""), inv.role, inv.email);
+  // Claimed synchronously, before the scrypt await: marking it used only after
+  // createUser let parallel accepts of one link each mint an account. A failed
+  // accept (bad password shape, taken name) releases it for another try.
   inv.usedAt = new Date().toISOString();
+  let user;
+  try {
+    const username = inv.username || String(req.body?.username ?? "");
+    user = await auth.createUser(username, String(req.body?.password ?? ""), inv.role, inv.email);
+  } catch (e) {
+    inv.usedAt = undefined;
+    throw e;
+  }
   await db.save();
   const token = await auth.createSession(user.id, deviceNameFromRequest(req));
   res.setHeader("Set-Cookie", auth.sessionCookie(token, config.sessionTtlDays * 24 * 3600, req.secure));
@@ -303,17 +339,25 @@ function escapeHtml(s: string): string {
 // discover which accounts (or emails) exist. Only sends a link when the account
 // exists, has an email, and SMTP is configured.
 authRoutes.post("/forgot", wrap(async (req, res) => {
+  const startedAt = Date.now();
   const ip = clientIp(req);
+  // Limited per /64, per /48 and globally (see forgotAllowed). A refusal does
+  // no work at all, so it is answered at once — it reveals nothing about the
+  // account, only about the caller's own rate.
   if (!auth.forgotAllowed(ip)) {
-    return res.status(429).json({ error: "Too many requests — try again in 15 minutes" });
+    return res.status(429).set("Retry-After", "900").json({ error: "Too many requests — try again in 15 minutes" });
   }
-  const username = String(req.body?.username ?? "").trim();
+  const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
   const user = username ? db.getUserByName(username) : undefined;
-  if (user && user.id !== "system" && user.email && mailer.smtpConfigured()) {
+  // A link mailed in the last few minutes is left alone (resetTokenFresh):
+  // not replaced, not re-sent.
+  if (user && user.id !== "system" && user.email && mailer.smtpConfigured() && !auth.resetTokenFresh(user)) {
     const token = randomBytes(24).toString("base64url");
     user.resetToken = token;
-    user.resetExpires = Date.now() + 30 * 60_000;
-    await db.save();
+    user.resetExpires = Date.now() + auth.RESET_TTL_MS;
+    // Not awaited: a slow disk write would make "this account exists and has
+    // an email" measurable. The token is live in memory either way.
+    db.save().catch((e) => log.warn("reset token save failed", String(e)));
     const link = `${config.publicUrl}/?reset=${token}`;
     mailer.sendMail(
       user.email,
@@ -323,9 +367,11 @@ authRoutes.post("/forgot", wrap(async (req, res) => {
        <p>If you didn't request this, ignore this email.</p>`,
       `Reset your Renzo password: ${link} (valid 30 minutes). If you didn't request this, ignore this email.`,
     ).catch((e) => log.warn("reset mail failed", String(e)));
-  } else {
-    await auth.dummyVerify("timing-equalizer"); // keep response time uniform
   }
+  // Every accepted request is answered after the same padded delay, whatever
+  // happened above — a timer, not a scrypt, so a /forgot flood can never take
+  // sign-ins' scrypt slots.
+  await auth.forgotPace(startedAt);
   res.json({ ok: true });
 }));
 
@@ -363,12 +409,21 @@ export const accountRoutes = Router();
 accountRoutes.post("/password", wrap(async (req: AuthedRequest, res) => {
   const user = req.user!;
   if (user.id === "system") return res.status(400).json({ error: "auth is disabled" });
-  const ok = await auth.verifyPassword(String(req.body?.currentPassword ?? ""), user.passHash);
+  // Rate-limited per account: the current password is the only thing between
+  // a borrowed session and a permanent takeover (see beginReauth).
+  if (auth.authBusy(true)) return res.status(503).json({ error: "Server is busy — try again in a moment" });
+  const reauth = auth.beginReauth(user.id);
+  if (!reauth) return res.status(429).json({ error: "Too many wrong passwords — try again in 15 minutes" });
+  const ok = await auth.verifyPassword(String(req.body?.currentPassword ?? ""), user.passHash, true);
   if (!ok) return res.status(403).json({ error: "Current password is incorrect" });
+  auth.reauthSucceeded(reauth);
   const next = String(req.body?.newPassword ?? "");
   const shapeErr = auth.validCredentialShape(user.username, next);
   if (shapeErr) return res.status(400).json({ error: shapeErr });
   user.passHash = await auth.hashPassword(next);
+  // A reset link mailed before the change must not undo it.
+  user.resetToken = undefined;
+  user.resetExpires = undefined;
   await db.save();
   // Revoke every other session, then reissue a fresh cookie for this caller so
   // a stolen/old session can't survive a password change.
@@ -518,12 +573,29 @@ accountRoutes.post("/theme", wrap(async (req: AuthedRequest, res) => {
 }));
 
 // Change my own email (used for password-reset delivery).
+// Requires the current password: the email is where reset links go, so a
+// session alone (a stolen cookie, an unlocked device) could otherwise point it
+// at an attacker's inbox and turn a borrowed session into a permanent account.
 accountRoutes.post("/email", wrap(async (req: AuthedRequest, res) => {
   const user = req.user!;
   if (user.id === "system") return res.status(400).json({ error: "auth is disabled" });
   const email = String(req.body?.email ?? "").trim();
   if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     return res.status(400).json({ error: "Invalid email address" });
+  }
+  if ((email || undefined) !== user.email) {
+    const current = typeof req.body?.currentPassword === "string" ? req.body.currentPassword : "";
+    if (!current) return res.status(403).json({ error: "Enter your current password to change your email" });
+    if (auth.authBusy(true)) return res.status(503).json({ error: "Server is busy — try again in a moment" });
+    const reauth = auth.beginReauth(user.id); // same per-account limit as /password
+    if (!reauth) return res.status(429).json({ error: "Too many wrong passwords — try again in 15 minutes" });
+    if (!(await auth.verifyPassword(current, user.passHash, true))) {
+      return res.status(403).json({ error: "Current password is incorrect" });
+    }
+    auth.reauthSucceeded(reauth);
+    // A reset link already mailed to the old address stops working.
+    user.resetToken = undefined;
+    user.resetExpires = undefined;
   }
   user.email = email || undefined;
   await db.save();
@@ -755,10 +827,18 @@ userAdminRoutes.delete("/:id", wrap(async (req: AuthedRequest, res) => {
 // --- Invites (staff create; public accept) ----------------------------------
 export const inviteRoutes = Router();
 
-inviteRoutes.get("/", wrap(async (_req, res) => {
+// Managers see and revoke only the invites they created themselves, which are
+// always user-role ones. Listing every pending link handed a manager the
+// owner's manager-role invites — redeemable by anyone holding the URL.
+function inviteVisibleTo(actor: AuthedRequest["user"], i: InviteRecord): boolean {
+  if (actor?.role === "owner") return true;
+  return i.createdBy === actor?.id && i.role === "user";
+}
+
+inviteRoutes.get("/", wrap(async (req: AuthedRequest, res) => {
   const now = Date.now();
   res.json(db.invites()
-    .filter((i) => !i.usedAt && new Date(i.expiresAt).getTime() > now)
+    .filter((i) => !i.usedAt && new Date(i.expiresAt).getTime() > now && inviteVisibleTo(req.user, i))
     .map((i) => ({ token: i.token, role: i.role, email: i.email ?? null, username: i.username ?? null,
       expiresAt: i.expiresAt, url: `${config.publicUrl}/invite/${i.token}` })));
 }));
@@ -788,8 +868,11 @@ inviteRoutes.post("/", wrap(async (req: AuthedRequest, res) => {
   res.json({ token: invite.token, role, url, emailed });
 }));
 
-inviteRoutes.delete("/:token", wrap(async (req, res) => {
-  await db.removeInvite(req.params.token);
+inviteRoutes.delete("/:token", wrap(async (req: AuthedRequest, res) => {
+  const inv = db.getInvite(req.params.token);
+  if (!inv) return res.json({ ok: true }); // already gone: deleting stays idempotent
+  if (!inviteVisibleTo(req.user, inv)) return res.status(404).json({ error: "no such invite" });
+  await db.removeInvite(inv.token);
   res.json({ ok: true });
 }));
 

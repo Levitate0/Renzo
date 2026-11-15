@@ -24,6 +24,28 @@ export function userAbs(userId: string, rel: string): string {
   return join(userRoot(userId), rel);
 }
 
+// The only things a download may write into a library: a torrent can carry
+// anything (.html, .svg, .js, .exe), and library files are served from the
+// app's own origin, where an HTML or script file would run with the user's
+// session. Kept in step with VIDEO_EXT in realdebrid.ts / alldebrid.ts.
+export const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|mov|ts|webm)$/i;
+// What /files and /sharedfiles may serve inline: video, subtitle sidecars and
+// the artwork saveArtwork() writes. Anything else goes out as an opaque
+// attachment (see mediaHeaders).
+const INLINE_EXT = /\.(mkv|mp4|avi|m4v|mov|ts|webm|vtt|srt|ass|ssa|jpe?g|png|webp)$/i;
+
+/** Response headers for serving a library file. Non-media files are forced to
+ *  application/octet-stream + attachment so nothing that reached a library
+ *  (older downloads, a hand-copied file) can render or run on this origin. */
+export function mediaHeaders(name: string): Record<string, string> {
+  const h: Record<string, string> = { "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store" };
+  if (!INLINE_EXT.test(name)) {
+    h["Content-Type"] = "application/octet-stream";
+    h["Content-Disposition"] = "attachment";
+  }
+  return h;
+}
+
 /** Jellyfin-standard target path (relative to the user's root) for a download.
  *  Layout: <folder>/<movies|series>/<Title (year)>/… so users can organize their
  *  library into multiple named folders. */
@@ -35,6 +57,8 @@ export function targetFor(
   sourceName: string,
 ): { abs: string; rel: string } {
   const ext = extname(sourceName).toLowerCase() || ".mkv";
+  // Backstop for the debrid file pickers: never save a non-video file.
+  if (!VIDEO_EXT.test(ext)) throw new Error(`not a video file (${ext}); refusing to save it`);
   const base = folderName(t);
   const fdir = sanitize(folder) || "Library";
   const typeDir = t.type === "movie" ? "movies" : "series";

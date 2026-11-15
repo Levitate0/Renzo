@@ -2582,7 +2582,12 @@ $("#passSave").addEventListener("click", async () => {
 
 $("#emailSave").addEventListener("click", async () => {
   try {
-    const u = await api("/account/email", { method: "POST", body: JSON.stringify({ email: $("#acctEmail").value.trim() }) });
+    // The server requires the current password to change the email; the
+    // Security pane's "Current password" field supplies it.
+    const currentPassword = $("#curPass").value;
+    if (!currentPassword) return toast("Enter your current password below to change your email");
+    const u = await api("/account/email", { method: "POST", body: JSON.stringify({ email: $("#acctEmail").value.trim(), currentPassword }) });
+    $("#curPass").value = "";
     if (me) me.email = u.email;
     toast(u.email ? "Email saved" : "Email cleared");
   } catch (e) { toast(e.message); }

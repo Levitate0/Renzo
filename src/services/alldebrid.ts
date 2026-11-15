@@ -126,7 +126,10 @@ export async function addAndPrepare(
 export async function resolveEpisodeLink(key: string, info: RdTorrentInfo, episode?: number): Promise<RdLink> {
   if (!info.links.length) throw new Error("AllDebrid has no links yet for this magnet");
   const videos = info.files.map((f, i) => ({ f, i })).filter(({ f }) => VIDEO_EXT.test(f.path));
-  const pool = videos.length ? videos : info.files.map((f, i) => ({ f, i }));
+  // Never fall back to a non-video file: it would be saved into the library
+  // and served from this origin (see library.VIDEO_EXT).
+  if (!videos.length) throw new Error("magnet has no video files");
+  const pool = videos;
 
   let idx = pool[0].i;
   // A one-file magnet whose name says another episode is the wrong download

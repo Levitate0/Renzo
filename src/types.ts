@@ -148,6 +148,10 @@ export interface UserRecord {
   kitsuExpiresAt?: string;
   resetToken?: string;             // active password-reset token (emailed)
   resetExpires?: number;           // epoch ms
+  /** Keyed hashes of the networks (limiter buckets) this account last signed
+   *  in from — never the addresses. Exempts them from the per-account sign-in
+   *  throttle (auth.trustedClient). */
+  loginBuckets?: string[];
   theme?: ThemeSettings;           // per-user appearance
   avatarBase64?: string;           // profile picture, small (<=256KB decoded) base64 image
   avatarContentType?: string;      // image/png | image/jpeg | image/webp
@@ -185,6 +189,10 @@ export interface SessionRecord {
   prevToken?: string;
   prevUntil?: string;
   rotatedAt?: string;
+  /** First time a request arrived on the CURRENT token since the last rotation.
+   *  Once set, the previous token is no longer handed the current one, and a
+   *  late reuse of it revokes the session (see maintainSession). */
+  curUsedAt?: string;
   userId: string;
   createdAt: string;
   expiresAt: string;

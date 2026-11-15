@@ -29,6 +29,44 @@ export async function getOrCreateTitle(anilistId: number): Promise<Title> {
   return db.upsertTitle(anilist.toTitle(media));
 }
 
+/** Highest episode number anything will create per-user state for. Long
+ *  runners (Sazae-san, Doraemon) sit in the low thousands; without a ceiling
+ *  every distinct ?ep= on a real title was a new persisted EpisodeRecord. */
+export const MAX_EPISODE = 5000;
+export function validEpisode(n: number): boolean {
+  return Number.isInteger(n) && n >= 1 && n <= MAX_EPISODE;
+}
+
+// MAX_EPISODE is the same for every title, so a 12-episode show still accepted
+// 5000 distinct episode numbers. Once the title's own length is known the
+// ceiling is that, plus slack for releases that run ahead of AniList (a final
+// episode posted before AniList bumps the count, a bonus episode 13). A title
+// whose length is unknown (an open-ended long runner) keeps MAX_EPISODE.
+const EPISODE_SLACK = 10;
+export function episodeInRange(t: Title, n: number): boolean {
+  if (!validEpisode(n)) return false;
+  const known = Math.max(t.episodeCount ?? 0, t.nextAiringEpisode ?? 0);
+  return known > 0 ? n <= known + EPISODE_SLACK : true;
+}
+
+// A hard backstop on persisted per-user episode rows. Every row is written to
+// db.json on every save, and the per-title ceiling above still allows ~N+10
+// rows for each of the thousands of real AniList titles a user can name. Past
+// the cap the stalest rows that hold nothing (no file, no job) make room; a
+// cap made only of real downloads refuses new rows instead.
+const MAX_USER_EPS = 20_000;
+function makeRoomForEp(user: UserRecord): void {
+  const eps = user.eps!;
+  const keys = Object.keys(eps);
+  if (keys.length < MAX_USER_EPS) return;
+  const idle = keys
+    .filter((k) => !eps[k].filePath && (eps[k].status === "wanted" || eps[k].status === "failed"))
+    .sort((a, b) => eps[a].updatedAt.localeCompare(eps[b].updatedAt));
+  const drop = idle.slice(0, keys.length - MAX_USER_EPS + 1 + 100); // free a little headroom at once
+  for (const k of drop) delete eps[k];
+  if (Object.keys(eps).length >= MAX_USER_EPS) throw new Error("Too many episodes tracked on this account");
+}
+
 // Download state is isolated PER USER (UserRecord.eps), keyed "titleId:ep".
 // Title objects only hold shared AniList metadata.
 function epKey(titleId: number, num: number): string {
@@ -39,9 +77,20 @@ function getUserEp(user: UserRecord, titleId: number, num: number): EpisodeRecor
   const k = epKey(titleId, num);
   let ep = user.eps[k];
   if (!ep) {
+    makeRoomForEp(user);
     ep = { number: num, status: "wanted", updatedAt: new Date().toISOString() };
     user.eps[k] = ep;
   }
+  return ep;
+}
+/** Persist a record built off-book (see resolveStreamNow), unless a parallel
+ *  request stored one first — that one wins, it may carry more. */
+function adoptUserEp(user: UserRecord, titleId: number, ep: EpisodeRecord): EpisodeRecord {
+  user.eps ??= {};
+  const k = epKey(titleId, ep.number);
+  if (user.eps[k]) return user.eps[k];
+  makeRoomForEp(user);
+  user.eps[k] = ep;
   return ep;
 }
 export function peekUserEp(user: UserRecord, titleId: number, num: number): EpisodeRecord | undefined {
@@ -63,6 +112,53 @@ export async function sharedCopy(
   }
   return null;
 }
+
+// Household-copy URLs and subtitle ids name only the EPISODE, never the owning
+// account: they used to be /sharedfiles/<ownerId>/<folder>/… and
+// base64("lshare::<ownerId>::<path>"), which handed every account the other
+// accounts' user ids and private folder names. The server re-runs sharedCopy()
+// on each request, so the URL needs nothing else.
+export const SHARED_EP_PREFIX = "/sharedfiles/ep/";
+export function sharedFileUrl(titleId: number, episode: number, filePath: string): string {
+  const name = filePath.split("/").pop() ?? "video";
+  return `${SHARED_EP_PREFIX}${titleId}/${episode}/${encodeURIComponent(name)}`;
+}
+function sharedSubId(titleId: number, episode: number, ownerEp: EpisodeRecord, file: string): string {
+  const relBase = ownerEp.filePath!.replace(/\.[^.]+$/, "");
+  const suffix = file.startsWith(relBase) ? file.slice(relBase.length) : file.split("/").pop() ?? "";
+  return Buffer.from(`lsh::${titleId}::${episode}::${suffix}`).toString("base64url");
+}
+
+/**
+ * Read a household-copy subtitle for `requester`. Returns undefined when `id`
+ * is not a shared-copy id (caller handles it normally), null when it is one but
+ * nothing matches. Only sidecars recorded on the owner's episode record are
+ * served. The legacy "lshare::<ownerId>::<relpath>" form is still accepted so
+ * already-saved offline entries keep loading; it reaches nothing the new form
+ * doesn't.
+ */
+export async function readSharedSub(id: string, requester: UserRecord): Promise<string | null | undefined> {
+  const decoded = Buffer.from(id, "base64url").toString("utf8");
+  if (decoded.startsWith("lsh::")) {
+    const [, tStr, eStr, suffix = ""] = decoded.split("::");
+    const shared = await sharedCopy(Number(tStr), Number(eStr), requester.id);
+    if (!shared || !suffix) return null;
+    const relBase = shared.ownerEp.filePath!.replace(/\.[^.]+$/, "");
+    const sub = (shared.ownerEp.subs ?? []).find((s) => s.file === relBase + suffix);
+    return sub ? captions.readUserVtt(shared.owner.id, sub.file) : null;
+  }
+  if (decoded.startsWith("lshare::")) {
+    const [, ownerId, ...relParts] = decoded.split("::");
+    const rel = relParts.join("::");
+    const owner = db.users().find((u) => u.id === ownerId);
+    const known = owner && Object.values(owner.eps ?? {}).some(
+      (e) => (e.subs ?? []).some((s) => s.file === rel),
+    );
+    return known ? captions.readUserVtt(ownerId, rel) : null;
+  }
+  return undefined;
+}
+
 export function userDownloadedCount(user: UserRecord, titleId: number): number {
   const prefix = `${titleId}:`;
   return Object.entries(user.eps ?? {}).filter(([k, e]) => k.startsWith(prefix) && e.status === "downloaded").length;
@@ -213,6 +309,7 @@ async function cachedStillValid(data: ResolvedStream, ep: EpisodeRecord, userId:
 const inFlight = new Map<string, Promise<ResolvedStream>>();
 
 export function resolveStream(anilistId: number, episode: number, user: UserRecord): Promise<ResolvedStream> {
+  if (!validEpisode(episode)) return Promise.reject(new Error("invalid episode number"));
   const key = `${user.id}:${anilistId}:${episode}`;
   const running = inFlight.get(key);
   if (running) return running;
@@ -223,7 +320,12 @@ export function resolveStream(anilistId: number, episode: number, user: UserReco
 
 async function resolveStreamNow(anilistId: number, episode: number, user: UserRecord): Promise<ResolvedStream> {
   const t = await getOrCreateTitle(anilistId);
-  const ep = getUserEp(user, anilistId, episode);
+  if (!episodeInRange(t, episode)) throw new Error("invalid episode number");
+  // Not stored yet: a play that resolves nothing (no debrid, no release) used
+  // to leave a persisted row behind for every episode number it was asked
+  // about. The record is adopted into user.eps only once a debrid link exists.
+  const known = peekUserEp(user, anilistId, episode);
+  const ep: EpisodeRecord = known ?? { number: episode, status: "wanted", updatedAt: new Date().toISOString() };
   const cacheKey = `${user.id}:${anilistId}:${episode}`;
   const cached = streamCache.get(cacheKey);
   if (cached && Date.now() - cached.at < STREAM_TTL_MS && (await cachedStillValid(cached.data, ep, user.id))) {
@@ -262,9 +364,9 @@ async function resolveStreamNow(anilistId: number, episode: number, user: UserRe
   // Household dedupe (user request): a file that already exists on disk always
   // beats burning a fresh debrid resolve — and it lets debrid-less accounts
   // (e.g. the TV login) play anything the household has saved. Served through
-  // /sharedfiles/<ownerId>/<path>, which only accepts exact recorded episode
-  // paths (see server.ts). Deliberately NOT cached: local resolves are cheap
-  // and the owner can delete the file at any time.
+  // /sharedfiles/ep/<titleId>/<ep>/<name> (sharedFileUrl), which re-resolves
+  // the copy server-side (see server.ts). Deliberately NOT cached: local
+  // resolves are cheap and the owner can delete the file at any time.
   const shared = await sharedCopy(anilistId, episode, user.id);
   if (shared) {
     const { owner, ownerEp } = shared;
@@ -280,12 +382,12 @@ async function resolveStreamNow(anilistId: number, episode: number, user: UserRe
       await db.save();
     }
     const sharedSubs = (ownerEp.subs ?? []).map((s) => ({
-      id: Buffer.from(`lshare::${owner.id}::${s.file}`).toString("base64url"), label: s.label, lang: s.lang,
+      id: sharedSubId(anilistId, episode, ownerEp, s.file), label: s.label, lang: s.lang,
     }));
     log.info(`▶ shared local file: ${owner.username} -> ${user.username}`);
     return {
       source: "local",
-      url: `/sharedfiles/${owner.id}/` + ownerEp.filePath!.split("/").map(encodeURIComponent).join("/"),
+      url: sharedFileUrl(anilistId, episode, ownerEp.filePath!),
       filename: ownerEp.filePath!.split("/").pop() ?? "",
       subtitles: [...sharedSubs, ...await subtitleList(anilistId, episode, user.jimakuKey)],
       downloading: publicJob(activeJobFor(anilistId, episode, user.id)),
@@ -297,6 +399,7 @@ async function resolveStreamNow(anilistId: number, episode: number, user: UserRe
   // per-title lock so playback stays responsive during a season grab.
   const dbr = requireDebrid(user);
   const link = await resolveDebridLinkInner(dbr.api, dbr.token, t, ep, 45_000, undefined, user);
+  if (!known) adoptUserEp(user, anilistId, ep); // keeps rdTorrentId for the next play
   await db.save();
   return cacheStream(cacheKey, {
     source: dbr.name,
@@ -500,8 +603,9 @@ class DownloadQueue {
   async enqueue(anilistId: number, episode: number, userId: string): Promise<DownloadJob> {
     const user = db.getUser(userId);
     if (!user) throw new Error("unknown user");
-    await getOrCreateTitle(anilistId); // ensure shared metadata exists
-    const ep = getUserEp(user, anilistId, episode);
+    if (!validEpisode(episode)) throw new Error("invalid episode number");
+    const t = await getOrCreateTitle(anilistId); // ensure shared metadata exists
+    if (!episodeInRange(t, episode)) throw new Error("invalid episode number");
     const early = this.findActive(anilistId, episode, userId);
     if (early) return early;
 
@@ -513,6 +617,8 @@ class DownloadQueue {
       throw new Error(`Too many active downloads (max ${DownloadQueue.MAX_ACTIVE_PER_USER}) — wait for some to finish`);
     }
 
+    // Created only once the job is allowed, so a refused enqueue stores nothing.
+    const ep = getUserEp(user, anilistId, episode);
     ep.status = "queued";
     ep.updatedAt = new Date().toISOString();
     await db.save();

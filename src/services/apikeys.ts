@@ -50,15 +50,22 @@ export async function rotateApiKey(user: UserRecord): Promise<string> {
 /**
  * Resolve a presented API key to its owning user. Also honours the legacy
  * shared RENZO_PLUGIN_KEY (maps to the owner) so pre-existing single-key
- * installs keep working after the move to per-user keys.
+ * installs keep working after the move to per-user keys. `legacy` tells the
+ * caller which one matched: the legacy key is an env secret that cannot be
+ * rotated from the UI, so routes keep it to the plugin's read-only surface.
  */
-export function userByApiKey(key: string): UserRecord | undefined {
+export function resolveApiKey(key: string): { user: UserRecord; legacy: boolean } | undefined {
   if (!key || !key.length) return undefined;
   const users = db.users().filter((u) => u.id !== "system");
   const match = users.find((u) => u.apiKey && keyEquals(u.apiKey, key));
-  if (match) return match;
+  if (match) return { user: match, legacy: false };
   if (config.pluginKey && keyEquals(config.pluginKey, key)) {
-    return users.find((u) => u.role === "owner") ?? users[0];
+    const owner = users.find((u) => u.role === "owner") ?? users[0];
+    return owner ? { user: owner, legacy: true } : undefined;
   }
   return undefined;
+}
+
+export function userByApiKey(key: string): UserRecord | undefined {
+  return resolveApiKey(key)?.user;
 }

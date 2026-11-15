@@ -241,16 +241,21 @@ export async function importMal(user?: UserRecord): Promise<{ imported: number }
 
   // MAL doesn't give AniList ids; resolve each via an AniList search by title.
   let imported = 0;
-  for (const item of data.data.slice(0, 60)) {
-    try {
-      const [match] = await anilist.searchAnime(item.node.title);
-      if (!match) continue;
-      await mergeTitle(match, { watching: true });
-      imported++;
-    } catch (e) {
-      log.warn("mal import item", item.node.title, String(e));
+  // Debt mode (see anilist.asDebt): past an invited user's burst every
+  // remaining search used to fail instantly and be swallowed below, so the
+  // import silently stopped a third of the way through the list.
+  await anilist.asDebt(async () => {
+    for (const item of data.data.slice(0, 60)) {
+      try {
+        const [match] = await anilist.searchAnime(item.node.title);
+        if (!match) continue;
+        await mergeTitle(match, { watching: true });
+        imported++;
+      } catch (e) {
+        log.warn("mal import item", item.node.title, String(e));
+      }
     }
-  }
+  });
   log.info(`imported ${imported} titles from MAL${user ? ` for ${user.username}` : ""}`);
   return { imported };
 }

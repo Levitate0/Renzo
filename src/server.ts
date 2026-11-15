@@ -10,9 +10,9 @@ import { authRoutes, accountRoutes, userAdminRoutes, inviteRoutes, smtpRoutes } 
 import { requireAuth, requireStaff, requireOwner, downloadAuth, type AuthedRequest } from "./services/auth.js";
 import * as anilist from "./services/anilist.js";
 import * as captions from "./services/captions.js";
-import { queue } from "./services/downloader.js";
+import { queue, sharedCopy, readSharedSub } from "./services/downloader.js";
 import { jellyfinPluginRoutes } from "./routes/jellyfin.js";
-import { userRoot } from "./services/library.js";
+import { userRoot, mediaHeaders } from "./services/library.js";
 import * as apikeys from "./services/apikeys.js";
 import * as autodl from "./services/autodl.js";
 
@@ -100,12 +100,18 @@ async function main() {
   // Avatar uploads are small base64 images (client resizes to ~128px) but can
   // exceed the general 64kb cap; give that one route its own parser. Mounted
   // FIRST — the global parser below skips bodies that are already consumed.
-  app.use("/api/account/avatar", express.json({ limit: "512kb" }));
-  app.use(express.json({ limit: "64kb" }));
+  // inflate:false — the size limit counts bytes AFTER decompression, but the
+  // inflating itself runs before auth on any request; no client of ours sends
+  // a Content-Encoding'd body, so refuse them (415) instead of decompressing.
+  app.use("/api/account/avatar", express.json({ limit: "512kb", inflate: false }));
+  app.use(express.json({ limit: "64kb", inflate: false }));
   // Return JSON (not HTML) for malformed bodies / payloads that are too large.
   app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, next: NextFunction) => {
     if (err?.type === "entity.parse.failed" || err?.type === "entity.too.large") {
       return res.status(400).json({ error: "invalid request body" });
+    }
+    if (err?.type === "encoding.unsupported") {
+      return res.status(415).json({ error: "compressed request bodies are not accepted" });
     }
     next(err);
   });
@@ -124,12 +130,19 @@ async function main() {
   // have (an older server, a renamed endpoint) wrote HTML into whatever it was
   // expecting, e.g. a .vtt sidecar. The API must always answer as an API.
   app.use("/api", (_req, res) => { res.status(404).json({ error: "not found" }); });
-  // --- Jellyfin plugin API (public; guarded by RENZO_PLUGIN_KEY) ---
+  // --- Jellyfin plugin API (public; guarded by per-user API keys / stream tokens) ---
   app.use("/jellyfin", jellyfinPluginRoutes);
 
   // Caption download for native offline savers — accepts a ?dtoken= (downloads
   // only) so Capacitor's downloader can fetch subtitles without the session cookie.
-  app.get("/dl/captions/:id.vtt", downloadAuth, (req: AuthedRequest, res) => {
+  app.get("/dl/captions/:id.vtt", downloadAuth, async (req: AuthedRequest, res) => {
+    // A household shared copy's track (same rule as /api/captions).
+    const shared = req.user ? await readSharedSub(req.params.id, req.user) : undefined;
+    if (shared !== undefined) {
+      if (shared) res.type("text/vtt").send(shared);
+      else res.status(404).type("text/vtt").send("");
+      return;
+    }
     captions.fetchAsVtt(req.params.id, req.user?.jimakuKey, (rel) => req.user ? captions.readUserVtt(req.user.id, rel) : Promise.resolve(null))
       .then((vtt) => res.type("text/vtt").send(vtt))
       .catch(() => res.status(502).type("text/vtt").send(""));
@@ -157,7 +170,11 @@ async function main() {
         // URL for every account with different bytes behind it. A `public`
         // response in front of a CDN is a cross-user content leak waiting to
         // happen, and this hostname sits behind Cloudflare.
-        setHeaders: (res) => { res.setHeader("Cache-Control", "private, no-store"); },
+        // mediaHeaders also forces anything that is not video/subtitle/artwork
+        // to an octet-stream attachment, so a stray .html can't run here.
+        setHeaders: (res, p) => {
+          for (const [k, v] of Object.entries(mediaHeaders(p))) res.setHeader(k, v);
+        },
       });
       userStatic.set(uid, handler);
     }
@@ -173,24 +190,37 @@ async function main() {
   });
 
   // Cross-account read-only media sharing (household dedupe): stream another
-  // user's DOWNLOADED episode instead of re-resolving it through debrid. Only
-  // the exact file paths recorded on the owner's episode records are served —
-  // this is a whitelist, not a browse surface; sendFile's root option also
-  // contains any traversal attempt.
-  app.use("/sharedfiles", downloadAuth, (req, res) => {
+  // user's DOWNLOADED episode instead of re-resolving it through debrid.
+  //   /sharedfiles/ep/<titleId>/<ep>/<name> — what resolveStream hands out. It
+  //     names only the episode; the copy is re-resolved here with sharedCopy(),
+  //     so no other account's id or folder names reach the client. <name> is
+  //     cosmetic (players like a file extension) and ignored.
+  //   /sharedfiles/<ownerId>/<path> — the old form, still answered so offline
+  //     entries saved before the change keep playing. Only exact file paths
+  //     recorded on the owner's episode records are served — a whitelist, not
+  //     a browse surface.
+  // Either way sendFile's root option also contains any traversal attempt.
+  app.use("/sharedfiles", downloadAuth, async (req, res) => {
     const segs = req.path.split("/").filter(Boolean).map((s) => decodeURIComponent(s));
-    const ownerId = segs.shift();
-    const rel = segs.join("/");
-    const owner = ownerId ? db.users().find((u) => u.id === ownerId) : undefined;
-    if (!owner || !rel) { res.status(404).json({ error: "not found" }); return; }
-    const known = Object.values(owner.eps ?? {}).some(
-      (e) => e.status === "downloaded" && e.filePath === rel,
-    );
-    if (!known) { res.status(404).json({ error: "not found" }); return; }
+    let ownerId: string | undefined, rel = "";
+    if (segs[0] === "ep") { // user ids are UUIDs, so "ep" can't be an owner id
+      const copy = await sharedCopy(Number(segs[1]), Number(segs[2]), (req as AuthedRequest).user!.id);
+      if (copy) { ownerId = copy.owner.id; rel = copy.ownerEp.filePath!; }
+    } else {
+      ownerId = segs.shift();
+      rel = segs.join("/");
+      const owner = ownerId ? db.users().find((u) => u.id === ownerId) : undefined;
+      const known = owner && Object.values(owner.eps ?? {}).some(
+        (e) => e.status === "downloaded" && e.filePath === rel,
+      );
+      if (!known) ownerId = undefined;
+    }
+    if (!ownerId || !rel) { res.status(404).json({ error: "not found" }); return; }
     res.sendFile(rel, {
-      root: userRoot(owner.id), acceptRanges: true, dotfiles: "deny",
-      // Same reasoning as /files: per-user content on a shareable URL.
-      headers: { "Cache-Control": "private, no-store" },
+      root: userRoot(ownerId), acceptRanges: true, dotfiles: "deny",
+      // Same reasoning as /files: per-user content on a shareable URL, and no
+      // non-media file served inline.
+      headers: mediaHeaders(rel),
     }, (err) => {
       if (err && !res.headersSent) res.status(404).json({ error: "not found" });
     });
@@ -261,7 +291,14 @@ async function main() {
   app.listen(config.port, () => {
     log.info(`Renzo listening on ${config.publicUrl} (port ${config.port})`);
     log.info(`library: ${config.libraryDir}  |  data: ${config.dataDir}`);
-    if (config.authDisabled) log.warn("AUTH_DISABLED=true — no login required (trusted-LAN mode)");
+    if (config.authDisabled) {
+      // Loud on purpose: every LAN caller is the OWNER in this mode.
+      log.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+      log.warn("AUTH_DISABLED=true — NO LOGIN: every caller on this host/LAN acts as the owner.");
+      log.warn("Requests from public addresses or through the Cloudflare tunnel are refused (403).");
+      log.warn("Unset AUTH_DISABLED before exposing this server anywhere you do not fully trust.");
+      log.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    }
   });
 }
 

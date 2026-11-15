@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { logger } from "../logger.js";
 import type { MediaType, Title } from "../types.js";
 
@@ -113,6 +114,116 @@ async function acquireSlot(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Per-user share of the budget
+// ---------------------------------------------------------------------------
+// The bucket above is the WHOLE server's AniList quota, and every account
+// draws on it: one invited user typing random searches or walking uncached
+// ids could hold everyone else (the auto-downloader included) at 503 for as
+// long as they liked. So each request is tagged with its user (asUser, set by
+// the API routers) and an upstream request is also charged to that user's
+// own smaller bucket. Cache hits and coalesced duplicates cost nothing; only
+// the owner and untagged background work are exempt.
+//
+// On top of that, every non-owner charge also comes out of ONE shared guest
+// bucket refilling at half the server's rate: per-user shares alone let two
+// invited users together hold the whole server quota empty, so the owner (and
+// the auto-downloader) always keeps at least the other half.
+//
+// Some work cannot sensibly stop half-way: a season-chain walk that runs out
+// mid-franchise returns a chain with seasons missing, and a MAL import that
+// runs out silently imports half the list. Those run in DEBT mode (asDebt):
+// they may only START while the caller has a token, and their remaining
+// requests then borrow against future refills, down to DEBT_LIMIT. The debt
+// is repaid by refill time like any spend, so the sustained rate is unchanged
+// and a user deep in debt is refused until it is paid back.
+const USER_BURST = 20;
+const USER_REFILL_MS = 4_000; // ~15/min sustained: half the server's quota
+const GUEST_BURST = 40; // two users' bursts; the sustained rate is what protects the owner
+const GUEST_REFILL_MS = 4_400; // ~13.6/min for ALL invited users together
+const DEBT_LIMIT = 40; // a 32-node chain walk, or a 60-item MAL import past the burst
+interface Caller { userId: string; debt: boolean }
+const caller = new AsyncLocalStorage<Caller>();
+interface Bucket { tokens: number; last: number }
+const userBuckets = new Map<string, Bucket>();
+const guestBucket: Bucket = { tokens: GUEST_BURST, last: Date.now() };
+
+/** Run `fn` (and every async continuation of it) charged to `userId`. */
+export function asUser<T>(userId: string, fn: () => T): T {
+  return caller.run({ userId, debt: false }, fn);
+}
+
+/**
+ * Run `fn` in debt mode for the current caller (see above). A caller with no
+ * token left is NOT put in debt: `fn` then runs as usual and its requests are
+ * refused as before, which every debt-mode user already tolerates.
+ */
+export function asDebt<T>(fn: () => T): T {
+  const who = caller.getStore();
+  if (!who || who.debt) return fn();
+  const now = Date.now();
+  if (refill(userBucket(who.userId, now), USER_BURST, USER_REFILL_MS, now).tokens <= 0 ||
+      refill(guestBucket, GUEST_BURST, GUEST_REFILL_MS, now).tokens <= 0) return fn();
+  return caller.run({ userId: who.userId, debt: true }, fn);
+}
+
+/**
+ * Run `fn` detached from the caller, for work that outlives the request (a
+ * background refresh pass). It is then neither charged to nor refused for the
+ * user who happened to start it, so its caller must bound it some other way.
+ */
+export function detached<T>(fn: () => T): T {
+  return caller.exit(fn);
+}
+
+function userBucket(userId: string, now: number): Bucket {
+  let b = userBuckets.get(userId);
+  if (!b) { b = { tokens: USER_BURST, last: now }; userBuckets.set(userId, b); }
+  return b;
+}
+
+function refill(b: Bucket, burst: number, everyMs: number, now: number): Bucket {
+  const gained = Math.floor((now - b.last) / everyMs);
+  if (gained > 0) {
+    b.tokens = Math.min(burst, b.tokens + gained);
+    b.last += gained * everyMs;
+  }
+  if (b.tokens >= burst) b.last = now; // a full bucket doesn't bank time
+  return b;
+}
+
+function waitSec(b: Bucket, everyMs: number, now: number): number {
+  // Time until the bucket is back to one whole token (debt included).
+  const ms = b.last + (1 - b.tokens) * everyMs - now;
+  return Math.max(1, Math.ceil(ms / 1000));
+}
+
+function chargeCaller(): void {
+  const who = caller.getStore();
+  if (!who) return;
+  const now = Date.now();
+  const mine = refill(userBucket(who.userId, now), USER_BURST, USER_REFILL_MS, now);
+  const guests = refill(guestBucket, GUEST_BURST, GUEST_REFILL_MS, now);
+  const floor = who.debt ? -DEBT_LIMIT : 0;
+  if (mine.tokens <= floor || guests.tokens <= floor) {
+    // Same error as a real 429, so every caller's existing handling (503 +
+    // Retry-After in the routes, rethrow in getById) applies unchanged.
+    throw new AniListRateLimited(Math.max(
+      mine.tokens <= floor ? waitSec(mine, USER_REFILL_MS, now) : 0,
+      guests.tokens <= floor ? waitSec(guests, GUEST_REFILL_MS, now) : 0,
+    ));
+  }
+  mine.tokens--;
+  guests.tokens--;
+}
+
+/** Test hook: forget every user's and the guests' spend. */
+export function resetUserBudgets(): void {
+  userBuckets.clear();
+  guestBucket.tokens = GUEST_BURST;
+  guestBucket.last = Date.now();
+}
+
 async function gql<T>(
   query: string,
   variables: Record<string, unknown>,
@@ -131,6 +242,7 @@ async function gql<T>(
     const key = `${token ?? "anon"}|${query}|${JSON.stringify(variables)}`;
     const running = inFlight.get(key) as Promise<T> | undefined;
     if (running) return running;
+    chargeCaller(); // throws AniListRateLimited when this user's share is spent
     const p = gql<T>(query, variables, 1, token).finally(() => inFlight.delete(key));
     inFlight.set(key, p);
     return p;
@@ -246,13 +358,31 @@ function matchScore(m: AniListMedia, q: string): number {
 // uncached — every keystroke burst past the debounce was an upstream request,
 // and going back to a previous query paid again. Results do not move in ten
 // minutes.
+// Bounded: keyed by whatever text users type, so without a ceiling it grew by
+// one ~30-title entry per distinct query for the life of the process. Map
+// order doubles as LRU order (a hit is re-inserted at the end).
 const searchCache = new Map<string, { at: number; data: AniListMedia[] }>();
 const SEARCH_TTL = 10 * 60_000;
+const SEARCH_CACHE_MAX = 500;
+/** Longest query sent upstream (and kept as a cache key). Titles are shorter. */
+const SEARCH_MAX_LEN = 120;
 
-export async function searchAnime(search: string, type?: MediaType): Promise<AniListMedia[]> {
+/** Insert into a Map used as an LRU, evicting the oldest past `max`. */
+function lruSet<K, V>(m: Map<K, V>, k: K, v: V, max: number): void {
+  m.delete(k);
+  while (m.size >= max) m.delete(m.keys().next().value as K);
+  m.set(k, v);
+}
+
+export async function searchAnime(rawSearch: string, type?: MediaType): Promise<AniListMedia[]> {
+  const search = rawSearch.slice(0, SEARCH_MAX_LEN);
   const cacheKey = `${search.trim().toLowerCase()}|${type ?? "all"}`;
   const cached = searchCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < SEARCH_TTL) return cached.data;
+  if (cached && Date.now() - cached.at < SEARCH_TTL) {
+    lruSet(searchCache, cacheKey, cached, SEARCH_CACHE_MAX);
+    return cached.data;
+  }
+  if (cached) searchCache.delete(cacheKey);
   const formats =
     type === "movie" ? ["MOVIE"] : type === "series" ? ["TV", "TV_SHORT", "ONA", "OVA", "SPECIAL"] : null;
   // AniList returns HTTP 500 on an explicit `format_in: null`, so only declare and
@@ -284,7 +414,7 @@ export async function searchAnime(search: string, type?: MediaType): Promise<Ani
         .sort((a, b) => b.s - a.s || a.i - b.i)
         .map((x) => x.m)
         .slice(0, 30);
-  if (ranked.length) searchCache.set(cacheKey, { at: Date.now(), data: ranked });
+  if (ranked.length) lruSet(searchCache, cacheKey, { at: Date.now(), data: ranked }, SEARCH_CACHE_MAX);
   return ranked;
 }
 
@@ -676,6 +806,12 @@ async function buildSeasonChain(startId: number): Promise<{ nodes: Map<number, S
   if (cached && Date.now() - cached.at < (cached.complete ? CHAIN_TTL : CHAIN_TTL_INCOMPLETE)) {
     return { nodes: cached.nodes, complete: cached.complete };
   }
+  // In debt mode for an invited user: a walk that ran dry part-way handed them
+  // a franchise with seasons missing (see asDebt).
+  return asDebt(() => walkSeasonChain(startId));
+}
+
+async function walkSeasonChain(startId: number): Promise<{ nodes: Map<number, SeasonNode>; complete: boolean }> {
   const found = new Map<number, SeasonNode>();
   const visited = new Set<number>();
   const queue: number[] = [startId];

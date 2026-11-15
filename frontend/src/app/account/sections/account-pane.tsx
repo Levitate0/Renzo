@@ -33,6 +33,10 @@ export function AccountPane() {
   const { data: health } = useHealthQuery();
 
   const [email, setEmail] = useState(user?.email ?? "");
+  // The server requires the current password to change the email (it is where
+  // reset links go), so a session alone can't redirect them.
+  const [emailPass, setEmailPass] = useState("");
+  const emailPassMask = useMaskedInput();
   const [curPass, setCurPass] = useState("");
   const [newPass, setNewPass] = useState("");
   const emailGuard = useAutofillGuard();
@@ -48,8 +52,9 @@ export function AccountPane() {
     try {
       const u = await api<PublicUser>("/account/email", {
         method: "POST",
-        body: JSON.stringify({ email: email.trim() }),
+        body: JSON.stringify({ email: email.trim(), currentPassword: emailPass }),
       });
+      setEmailPass("");
       updateUser({ email: u.email });
       toast(u.email ? "Email saved" : "Email cleared");
     } catch (e) {
@@ -127,10 +132,21 @@ export function AccountPane() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
-              <Button className="shrink-0" disabled={email.trim() === (user?.email ?? "")} onClick={() => void saveEmail()}>
+              <Button className="shrink-0" disabled={email.trim() === (user?.email ?? "") || !emailPass} onClick={() => void saveEmail()}>
                 Save
               </Button>
             </div>
+            {email.trim() !== (user?.email ?? "") && (
+              <Input
+                id="acctEmailPass"
+                aria-label="Current password"
+                {...emailPassMask}
+                className={cn("w-full sm:w-1/2", emailPassMask.className)}
+                placeholder="Current password (required to change email)"
+                value={emailPass}
+                onChange={(e) => setEmailPass(e.target.value)}
+              />
+            )}
             <p className="text-xs text-muted-foreground">
               Password-reset links are sent here. Leave empty to disable email reset for this account.
             </p>

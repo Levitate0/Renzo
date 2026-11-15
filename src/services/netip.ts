@@ -140,3 +140,52 @@ export function clientIp(req: Request): string {
   const viaProxy = normalizeIp(req.ip); // proxy-addr, walking X-Forwarded-For right-to-left
   return viaProxy && isIP(viaProxy) !== 0 ? viaProxy : peer;
 }
+
+/**
+ * Loopback, RFC 1918 / ULA or link-local: an address that can only be a device
+ * on this host or its own network. AUTH_DISABLED is honoured only for these.
+ */
+export function isLanAddress(addr: string): boolean {
+  const ip = normalizeIp(addr);
+  if (!ip || isIP(ip) === 0) return false;
+  return isLoopback(ip) || isUniqueLocal(ip) || isLinkLocal(ip);
+}
+
+/**
+ * The key a per-client limiter should use for `addr`. An IPv4 address is its
+ * own bucket, but one IPv6 subscriber is routinely handed a whole /64 (2^64
+ * addresses), so keying on the full address let a single attacker step to a
+ * fresh, unlimited key on every request. IPv6 is bucketed by its /64 prefix.
+ */
+export function limiterBucket(addr: string): string {
+  const ip = normalizeIp(addr);
+  if (isIP(ip) !== 6) return ip || "unknown";
+  return v6Prefix(ip, 4) + "::/64";
+}
+
+/**
+ * The /48 an IPv6 address sits in (null for IPv4). A /48 is one customer site
+ * — a free tunnel broker hands out a whole one, which is 65,536 /64 buckets —
+ * so a coarser limiter keys on this to stop one site from multiplying itself.
+ */
+export function siteBucket(addr: string): string | null {
+  const ip = normalizeIp(addr);
+  return isIP(ip) === 6 ? v6Prefix(ip, 3) + "::/48" : null;
+}
+
+function v6Prefix(ip: string, keep: number): string {
+  // Expand "::" so the leading groups are the real prefix. A dotted
+  // IPv4 tail (64:ff9b::1.2.3.4) occupies two groups.
+  const groupsOf = (part: string) =>
+    part ? part.split(":").flatMap((g) => (g.includes(".") ? ["0", "0"] : [g])) : [];
+  const dbl = ip.indexOf("::");
+  let groups: string[];
+  if (dbl < 0) {
+    groups = groupsOf(ip);
+  } else {
+    const head = groupsOf(ip.slice(0, dbl));
+    const tail = groupsOf(ip.slice(dbl + 2));
+    groups = [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill("0"), ...tail];
+  }
+  return groups.slice(0, keep).map((g) => Number.parseInt(g, 16).toString(16)).join(":");
+}

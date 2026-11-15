@@ -81,7 +81,15 @@ export async function addAndPrepare(
   let info = await pollUntil(token, id, (i) => i.files.length > 0 || i.status === "downloaded", 20_000);
 
   const videoFiles = info.files.filter((f) => VIDEO_EXT.test(f.path));
-  const pool = videoFiles.length ? videoFiles : info.files;
+  // A torrent that lists files but no video is never selected wholesale: its
+  // other files (.html, .exe, …) would be downloaded and served from this
+  // origin. An empty listing (metadata still loading) keeps the old "all"
+  // path; library.targetFor refuses a non-video file at save time regardless.
+  if (info.files.length && !videoFiles.length) {
+    await deleteTorrent(token, id);
+    throw new Error("torrent has no video files");
+  }
+  const pool = videoFiles;
 
   // File selection within batches:
   //  - `episodes` (a season grab): select every still-wanted episode so ONE

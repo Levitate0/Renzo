@@ -6,30 +6,51 @@ import { db } from "../db.js";
 import * as anilist from "../services/anilist.js";
 import * as apikeys from "../services/apikeys.js";
 import * as library from "../services/library.js";
-import { getOrCreateTitle, resolveStream, availableEpisodes, userFolders, folderOf } from "../services/downloader.js";
+import { mintStreamToken, userFromStreamToken } from "../services/auth.js";
+import { getOrCreateTitle, resolveStream, availableEpisodes, userFolders, folderOf, peekUserEp, sharedCopy } from "../services/downloader.js";
 import type { UserRecord, Title } from "../types.js";
 
 // Public API consumed by the Renzo Jellyfin plugin (catalog / search / episodes /
 // stream). Every request under /api carries a PER-USER API key: it resolves to
 // a specific Renzo account and streams through THAT user's Real-Debrid and their
-// isolated library — no shared/owner identity. The repo manifest + zip are
-// served statically from public/jellyfin/.
+// isolated library — no shared/owner identity. /play/:id/:ep is the one route
+// outside /api: it takes a short-lived per-episode token instead of the key.
+// The repo manifest + zip are served statically from public/jellyfin/.
 const log = logger("jf-plugin");
 export const jellyfinPluginRoutes = Router();
 
 // The API key identifies which Renzo user this request runs as.
 interface KeyedRequest extends Request {
   renzoUser?: UserRecord;
-  renzoKey?: string;
 }
 
+// Routes the legacy shared RENZO_PLUGIN_KEY may reach: the plugin's read-only
+// browse + playback surface, named explicitly so a route added here later does
+// not silently become reachable with an env secret nobody can rotate from the
+// UI. Per-user keys are not limited by this list.
+const LEGACY_KEY_ROUTES = new Set(["/groups", "/library", "/catalog", "/episodes", "/stream", "/streamurl", "/file"]);
+let legacyKeyWarned = false;
+
 function requireKey(req: Request, res: Response, next: NextFunction): void {
-  const key = String(req.query.key ?? req.get("X-Renzo-Key") ?? "");
-  const user = apikeys.userByApiKey(key);
-  if (!user) { res.status(401).json({ error: "invalid or missing Renzo API key" }); return; }
-  (req as KeyedRequest).renzoUser = user;
-  (req as KeyedRequest).renzoKey = key;
-  next();
+  // Header first: a key in the query string ends up in Jellyfin's DB, ffmpeg
+  // command lines and proxy logs. ?key= stays accepted for plugin <= 1.0.3.
+  const key = String(req.get("X-Renzo-Key") ?? req.query.key ?? "");
+  const hit = apikeys.resolveApiKey(key);
+  if (!hit) { res.status(401).json({ error: "invalid or missing Renzo API key" }); return; }
+  if (hit.legacy) {
+    if ((req.method !== "GET" && req.method !== "HEAD") || !LEGACY_KEY_ROUTES.has(req.path)) {
+      res.status(403).json({ error: "the legacy RENZO_PLUGIN_KEY cannot use this route; use a per-user API key" });
+      return;
+    }
+    if (!legacyKeyWarned) {
+      legacyKeyWarned = true;
+      log.warn("legacy RENZO_PLUGIN_KEY in use (acts as the owner): switch the plugin to a per-user API key and unset RENZO_PLUGIN_KEY");
+    }
+  }
+  (req as KeyedRequest).renzoUser = hit.user;
+  // Same per-user AniList share as the /api router (owner exempt).
+  if (hit.user.role !== "owner") anilist.asUser(hit.user.id, next);
+  else next();
 }
 
 function toItem(m: anilist.AniListMedia) {
@@ -122,32 +143,72 @@ jellyfinPluginRoutes.get("/api/episodes", async (req, res) => {
   } catch (e) { log.warn("episodes", String(e)); res.status(404).json({ error: "not found" }); }
 });
 
-// Resolve a playable URL (this user's RD/local) and redirect Jellyfin to it.
-jellyfinPluginRoutes.get("/api/stream", async (req, res) => {
-  const id = Number(req.query.id);
-  const ep = Math.max(1, Number(req.query.ep) || 1);
-  const user = (req as KeyedRequest).renzoUser!;
-  const key = (req as KeyedRequest).renzoKey!;
+// Ranged read of a file on disk. Content-Type stays video/mp4 whatever the
+// container (what Jellyfin has always been given; it probes the stream itself),
+// and nosniff is set globally, so no file under a library root renders here.
+async function sendRanged(req: Request, res: Response, abs: string): Promise<void> {
+  const info = await stat(abs);
+  res.setHeader("Accept-Ranges", "bytes");
+  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Cache-Control", "private, no-store");
+  const m = req.headers.range ? /bytes=(\d*)-(\d*)/.exec(req.headers.range) : null;
+  if (m && (m[1] || m[2])) {
+    let start: number, end: number;
+    if (m[1]) {
+      start = parseInt(m[1], 10);
+      end = m[2] ? Math.min(parseInt(m[2], 10), info.size - 1) : info.size - 1;
+    } else { // suffix range: the last N bytes
+      start = Math.max(0, info.size - parseInt(m[2], 10));
+      end = info.size - 1;
+    }
+    if (start > end || start >= info.size) {
+      res.status(416).setHeader("Content-Range", `bytes */${info.size}`);
+      res.end();
+      return;
+    }
+    res.statusCode = 206;
+    res.setHeader("Content-Range", `bytes ${start}-${end}/${info.size}`);
+    res.setHeader("Content-Length", String(end - start + 1));
+    createReadStream(abs, { start, end }).pipe(res);
+  } else {
+    res.setHeader("Content-Length", String(info.size));
+    createReadStream(abs).pipe(res);
+  }
+}
+
+/** The on-disk file behind a "local" resolve: this user's own copy, else the
+ *  household shared copy resolveStream picked (same lookup, same order). */
+async function localAbs(user: UserRecord, id: number, ep: number): Promise<string | null> {
+  const mine = peekUserEp(user, id, ep);
+  if (mine?.status === "downloaded" && mine.filePath
+      && (await library.exists(library.userAbs(user.id, mine.filePath)))) {
+    return library.userAbs(user.id, mine.filePath);
+  }
+  const shared = await sharedCopy(id, ep, user.id);
+  return shared ? library.userAbs(shared.owner.id, shared.ownerEp.filePath!) : null;
+}
+
+// Resolve a playable source for this user and hand it to Jellyfin: a local file
+// (theirs or a household copy) is streamed from THIS response; a debrid one is
+// a 302 to the provider's own https link. The server never builds a URL that
+// carries the caller's credential — local files used to be redirected to
+// /jellyfin/api/file?p=…&key=<the API key>.
+async function playEpisode(req: Request, res: Response, user: UserRecord, id: number, ep: number): Promise<void> {
   // No debrid pre-check here: resolveStream() serves an already-downloaded local
   // file without any debrid at all, and only then falls back to requireDebrid(),
   // which accepts Real-Debrid OR AllDebrid. Gating on realDebridToken blocked
   // AllDebrid accounts outright — and even their own local files.
   try {
     const r = await resolveStream(id, ep, user);
-    if (r.source === "local" && r.url.startsWith("/files/")) {
-      // /files/<enc path> -> serve directly (ranged) through the key-protected
-      // file route; carry the SAME per-user key so it stays this user's file.
-      const rel = r.url.slice("/files/".length);
-      res.redirect(302, `/jellyfin/api/file?p=${rel}&key=${encodeURIComponent(key)}`);
-    } else if (r.source === "local") {
-      // A household shared copy resolves to /sharedfiles/<ownerId>/… — another
-      // user's file, which the per-user /jellyfin/api/file route cannot serve.
-      // A blind prefix-strip used to build a broken redirect here.
-      res.status(409).json({ error: "episode is only available as another account's copy; download it on this account to stream it through the plugin" });
+    if (r.source === "local") {
+      const abs = await localAbs(user, id, ep);
+      if (!abs) { res.status(404).json({ error: "file not found" }); return; }
+      await sendRanged(req, res, abs);
     } else {
-      res.redirect(302, r.url); // direct Real-Debrid https link
+      res.redirect(302, r.url); // direct Real-Debrid / AllDebrid https link
     }
   } catch (e) {
+    if (res.headersSent) return;
     // Map the "no debrid connected" sentinel to a provider-neutral 402, matching
     // the browser API, instead of a raw 502 that says nothing actionable.
     if (String(e).includes("realdebrid_required")) {
@@ -156,32 +217,52 @@ jellyfinPluginRoutes.get("/api/stream", async (req, res) => {
     }
     log.warn("stream", String(e)); res.status(502).json({ error: String(e) });
   }
+}
+
+function episodeOf(src: Record<string, unknown>): { id: number; ep: number } {
+  return { id: Number(src.id), ep: Math.max(1, Number(src.ep) || 1) };
+}
+
+// Key-authenticated playback: what plugin <= 1.0.3 put in MediaSourceInfo.Path
+// (with ?key=). Kept so existing installs still play; newer plugins ask
+// /api/streamurl at playback time instead.
+jellyfinPluginRoutes.get("/api/stream", async (req, res) => {
+  const { id, ep } = episodeOf(req.query);
+  if (!id) { res.status(400).json({ error: "id required" }); return; }
+  await playEpisode(req, res, (req as KeyedRequest).renzoUser!, id, ep);
 });
 
-// Ranged file streaming of a local library file (this user's), for Jellyfin playback.
+// Mint a playback path for one episode (key sent in the X-Renzo-Key header).
+// The plugin puts the returned path — never its API key — into
+// MediaSourceInfo.Path, which Jellyfin stores and hands to ffmpeg/clients.
+jellyfinPluginRoutes.get("/api/streamurl", (req, res) => {
+  const { id, ep } = episodeOf(req.query);
+  if (!id) { res.status(400).json({ error: "id required" }); return; }
+  const path = `/jellyfin/play/${id}/${ep}`;
+  const st = mintStreamToken((req as KeyedRequest).renzoUser!.id, path);
+  res.set("Cache-Control", "no-store").json({ path: `${path}?st=${encodeURIComponent(st)}` });
+});
+
+// Token-authenticated playback: ?st= is bound to this exact id/ep path and
+// expires (auth.mintStreamToken), so a leaked URL plays one episode for a few
+// hours and reaches nothing else. Lives outside /api, so requireKey never runs.
+jellyfinPluginRoutes.get("/play/:id/:ep", async (req, res) => {
+  const path = req.originalUrl.split("?")[0];
+  const user = userFromStreamToken(typeof req.query.st === "string" ? req.query.st : undefined, path);
+  if (!user) { res.status(401).json({ error: "invalid or expired stream link" }); return; }
+  const { id, ep } = episodeOf(req.params);
+  if (!id) { res.status(400).json({ error: "id required" }); return; }
+  await playEpisode(req, res, user, id, ep);
+});
+
+// Ranged streaming of one of this user's library files. Nothing links here any
+// more (local playback is served by playEpisode itself); kept, key-protected,
+// for a redirect an older server handed out just before an upgrade.
 jellyfinPluginRoutes.get("/api/file", async (req, res) => {
   const user = (req as KeyedRequest).renzoUser!;
   const rel = decodeURIComponent(String(req.query.p ?? "")).replace(/\\/g, "/");
   if (!rel || rel.includes("..")) { res.status(400).end(); return; }
-  const abs = library.userAbs(user.id, rel);
   try {
-    const info = await stat(abs);
-    const range = req.headers.range;
-    res.setHeader("Accept-Ranges", "bytes");
-    res.setHeader("Content-Type", "video/mp4");
-    if (range) {
-      const m = /bytes=(\d*)-(\d*)/.exec(range);
-      const start = m && m[1] ? parseInt(m[1], 10) : 0;
-      const end = m && m[2] ? parseInt(m[2], 10) : info.size - 1;
-      res.statusCode = 206;
-      res.setHeader("Content-Range", `bytes ${start}-${end}/${info.size}`);
-      res.setHeader("Content-Length", String(end - start + 1));
-      createReadStream(abs, { start, end }).pipe(res);
-    } else {
-      res.setHeader("Content-Length", String(info.size));
-      createReadStream(abs).pipe(res);
-    }
-  } catch { res.status(404).end(); }
+    await sendRanged(req, res, library.userAbs(user.id, rel));
+  } catch { if (!res.headersSent) res.status(404).end(); }
 });
-
-// The plugin key handler applies to /api only; the file route lives under /api so it's covered.

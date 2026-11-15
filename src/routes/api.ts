@@ -15,7 +15,7 @@ import * as captions from "../services/captions.js";
 import * as library from "../services/library.js";
 import * as watch from "../services/watch.js";
 import * as mal from "../services/mal.js";
-import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, refreshTitle, requireToken, userDownloadedCount, peekUserEp, sharedCopy, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream } from "../services/downloader.js";
+import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, refreshTitle, requireToken, userDownloadedCount, peekUserEp, sharedCopy, readSharedSub, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream, validEpisode, episodeInRange } from "../services/downloader.js";
 import type { ResolvedStream } from "../services/downloader.js";
 import * as previews from "../services/previews.js";
 import { airDatesFor } from "../services/airdates.js";
@@ -27,6 +27,15 @@ import type { Title } from "../types.js";
 
 const log = logger("api");
 export const api = Router();
+
+// Charge this request's AniList lookups to the signed-in user's own share of
+// the server-wide quota (see anilist.asUser). The owner is exempt: it is their
+// server and their budget, and the cap exists to protect them from invitees.
+api.use((req, _res, next) => {
+  const user = (req as AuthedRequest).user;
+  if (user && user.role !== "owner") anilist.asUser(user.id, next);
+  else next();
+});
 
 function wrap(fn: (req: AuthedRequest, res: Response) => Promise<unknown>) {
   return (req: Request, res: Response) => {
@@ -50,6 +59,10 @@ function wrap(fn: (req: AuthedRequest, res: Response) => Promise<unknown>) {
             .set("Retry-After", String(secs))
             .json({ error: `AniList is rate-limiting this server — try again in about ${secs}s` });
         }
+        return;
+      }
+      if (msg === "invalid episode number") { // validEpisode() in the downloader
+        if (!res.headersSent) res.status(400).json({ error: msg });
         return;
       }
       log.error(req.method, req.path, msg);
@@ -100,6 +113,14 @@ function safeListName(raw: unknown): string | null {
   return name;
 }
 // Folder names keep original case (they become directory names) but stay safe.
+// Per-user caps on things a request can mint new keys for. Each one is a few
+// bytes in db.json, but uncapped any account could grow the file (rewritten
+// whole on every save) without limit. Existing data above a cap is kept; only
+// creating MORE is refused.
+const MAX_FOLDERS = 100;
+const MAX_LISTS = 50;
+const MAX_RESUME_POINTS = 2000;
+
 function safeFolderName(raw: unknown): string | null {
   const name = String(raw ?? "").trim().replace(/\s+/g, " ").slice(0, 48);
   if (!name || RESERVED_KEYS.has(name.toLowerCase()) || !/^[A-Za-z0-9 _-]+$/.test(name)) return null;
@@ -499,6 +520,9 @@ api.post("/folders", wrap(async (req, res) => {
   if (user.folders.some((f) => f.toLowerCase() === name.toLowerCase())) {
     return res.status(409).json({ error: "folder already exists" });
   }
+  if (user.folders.length >= MAX_FOLDERS) {
+    return res.status(400).json({ error: `folder limit reached (${MAX_FOLDERS})` });
+  }
   user.folders.push(name);
   await db.save();
   res.json({ name });
@@ -527,9 +551,13 @@ api.post("/titles/:id/folder", wrap(async (req, res) => {
   const user = req.user!;
   const folder = safeFolderName(req.body?.folder);
   if (!folder) return res.status(400).json({ error: "invalid folder name" });
-  const t = await getOrCreateTitle(Number(req.params.id));
   user.folders ??= [DEFAULT_FOLDER];
-  if (!user.folders.some((f) => f.toLowerCase() === folder.toLowerCase())) user.folders.push(folder);
+  const isNew = !user.folders.some((f) => f.toLowerCase() === folder.toLowerCase());
+  if (isNew && user.folders.length >= MAX_FOLDERS) {
+    return res.status(400).json({ error: `folder limit reached (${MAX_FOLDERS})` });
+  }
+  const t = await getOrCreateTitle(Number(req.params.id));
+  if (isNew) user.folders.push(folder);
   const canonical = user.folders.find((f) => f.toLowerCase() === folder.toLowerCase()) ?? folder;
   // Folder choice applies to every season of the series (moves each one's files).
   for (const sid of await seasonChainIds(t.id)) {
@@ -558,8 +586,12 @@ api.post("/titles/:id/lists", wrap(async (req, res) => {
   const list = safeListName(req.body?.list);
   if (!list) return res.status(400).json({ error: "invalid list name" });
   user.lists ??= {};
-  const cur = new Set(user.lists[list] ?? []);
   const on = Boolean(req.body?.on);
+  if (on && !Object.prototype.hasOwnProperty.call(user.lists, list)
+      && Object.keys(user.lists).length >= MAX_LISTS) {
+    return res.status(400).json({ error: `list limit reached (${MAX_LISTS})` });
+  }
+  const cur = new Set(user.lists[list] ?? []);
   // List/favorite membership applies to every season of the series.
   for (const sid of await seasonChainIds(t.id)) {
     const st = await getOrCreateTitle(sid);
@@ -778,7 +810,17 @@ api.get("/titles/:id/preview/:ep", wrap(async (req: AuthedRequest, res) => {
     if (shared) abs = library.userAbs(shared.owner.id, shared.ownerEp.filePath!);
   }
   if (!abs) { res.status(404).json({ error: "no local file" }); return; }
-  const jpg = await previews.frame(abs, id, ep, bucket);
+  let jpg: string | null;
+  try {
+    jpg = await previews.frame(abs, id, ep, bucket, user.id);
+  } catch (e) {
+    if (!(e instanceof previews.PreviewBusyError)) throw e;
+    // ffmpeg limiter full: a soft miss the player already handles (it keeps
+    // the static thumbnail); no-store so no cache pins the refusal.
+    res.set({ "Cache-Control": "no-store", "Retry-After": "2" });
+    res.status(503).json({ error: "busy" });
+    return;
+  }
   if (!jpg) { res.status(404).json({ error: "no frame" }); return; }
   res.set("Cache-Control", "private, max-age=86400, immutable");
   res.sendFile(jpg);
@@ -861,6 +903,9 @@ api.post("/titles/:id/watched/:ep", wrap(async (req: AuthedRequest, res) => {
   const id = Number(req.params.id);
   const ep = Math.max(1, Number(req.params.ep) || 1);
   const t = await getOrCreateTitle(id);
+  // Bounded by the title's length: an absurd number was stored as progress (so
+  // the title read as finished for ever) and scrobbled to the user's trackers.
+  if (!episodeInRange(t, ep)) return res.status(400).json({ error: "invalid episode number" });
   setWatched(req.user!, id, ep);   // powers "up next"
   clearResume(req.user!, id, ep);  // or a finished episode reopens at the credits
   logHistory(req.user!, id, ep);
@@ -889,6 +934,18 @@ function clearResume(user: UserRecord, titleId: number, episode: number): void {
   if (Object.keys(byEp).length === 0) delete user.resume![String(titleId)];
 }
 
+/** Keep at most MAX_RESUME_POINTS saved positions, dropping the stalest —
+ *  a resume point is a convenience, so evicting beats refusing the write. */
+function trimResume(user: UserRecord): void {
+  const all: { tid: string; ep: string; at: string }[] = [];
+  for (const [tid, byEp] of Object.entries(user.resume ?? {})) {
+    for (const [ep, p] of Object.entries(byEp ?? {})) all.push({ tid, ep, at: p?.updatedAt ?? "" });
+  }
+  if (all.length <= MAX_RESUME_POINTS) return;
+  all.sort((a, b) => a.at.localeCompare(b.at));
+  for (const { tid, ep } of all.slice(0, all.length - MAX_RESUME_POINTS)) clearResume(user, Number(tid), Number(ep));
+}
+
 api.get("/titles/:id/resume", wrap(async (req: AuthedRequest, res) => {
   res.json(req.user!.resume?.[String(Number(req.params.id))] ?? {});
 }));
@@ -897,6 +954,11 @@ api.post("/titles/:id/resume/:ep", wrap(async (req: AuthedRequest, res) => {
   const user = req.user!;
   const id = Number(req.params.id);
   const ep = Math.max(1, Number(req.params.ep) || 1);
+  // Only titles this server already knows (anything played has gone through
+  // resolveStream -> getOrCreateTitle) and real episode numbers: otherwise
+  // every (id, ep) pair a client invents became a stored entry.
+  if (!db.getTitle(id)) return res.status(404).json({ error: "unknown title" });
+  if (!validEpisode(ep)) return res.status(400).json({ error: "invalid episode number" });
   const positionMs = Math.max(0, Math.floor(Number(req.body?.positionMs) || 0));
   const durationMs = Math.max(0, Math.floor(Number(req.body?.durationMs) || 0));
 
@@ -915,6 +977,7 @@ api.post("/titles/:id/resume/:ep", wrap(async (req: AuthedRequest, res) => {
   user.resume[String(id)] ??= {};
   const point: ResumePoint = { positionMs, durationMs, updatedAt: new Date().toISOString() };
   user.resume[String(id)]![String(ep)] = point;
+  trimResume(user);
   await db.save();
   res.json({ ok: true, saved: point });
 }));
@@ -1047,12 +1110,20 @@ api.get("/updates", wrap(async (req, res) => {
 // so without this its count went stale. getById's cache makes a fresh title
 // free, and anilist.isCachedFresh skips even the db write; a pass that runs
 // long finishes in the background and is picked up by the next poll.
+//
+// For an invited user the pass is detached from their AniList share and capped
+// at GUEST_REFRESH_PER_POLL titles instead: it finishes after the response is
+// sent, so charging it to them let a background Hub poll spend the tokens their
+// next interactive search needed. The cap keeps it bounded (a few lookups per
+// poll, each title at most once per cache lifetime) without being charged.
 const airingRefreshing = new Set<number>();
-async function refreshAiring(titles: Title[], budgetMs: number): Promise<void> {
-  const due = titles.filter((t) =>
+const GUEST_REFRESH_PER_POLL = 5;
+async function refreshAiring(titles: Title[], budgetMs: number, guest = false): Promise<void> {
+  let due = titles.filter((t) =>
     (t.airingStatus !== "FINISHED" || !t.episodeCount) &&
     !airingRefreshing.has(t.id) && !anilist.isCachedFresh(t.id));
-  const pass = (async () => {
+  if (guest) due = due.slice(0, GUEST_REFRESH_PER_POLL);
+  const pass = anilist.detached(async () => {
     for (const t of due) {
       if (airingRefreshing.has(t.id)) continue;
       airingRefreshing.add(t.id);
@@ -1060,14 +1131,14 @@ async function refreshAiring(titles: Title[], budgetMs: number): Promise<void> {
       finally { airingRefreshing.delete(t.id); }
       await new Promise((r) => setTimeout(r, 300)); // AniList: 30 req/min
     }
-  })();
+  });
   await Promise.race([pass, new Promise((r) => setTimeout(r, budgetMs))]);
 }
 
 api.get("/library/release-heads", wrap(async (req: AuthedRequest, res) => {
   const user = req.user!;
   const titles = (user.library ?? []).map((id) => db.getTitle(id)).filter((t): t is Title => !!t);
-  await refreshAiring(titles, 6_000);
+  await refreshAiring(titles, 6_000, user.role !== "owner");
   res.json({
     now: new Date().toISOString(),
     titles: titles.map((t) => ({
@@ -1113,6 +1184,9 @@ api.get("/jobs", wrap(async (req, res) => {
 // without the session cookie. Only works once the episode is in the library.
 api.get("/titles/:id/offline/:ep", wrap(async (req, res) => {
   const user = req.user!;
+  // Saving a copy off the server IS a download: a denied account may stream,
+  // but not take files away (userFromDownloadToken already refuses its tokens).
+  if (downloadBlocked(user, res)) return;
   const id = Number(req.params.id);
   const ep = Math.max(1, Number(req.params.ep) || 1);
   const r = await resolveStream(id, ep, user);
@@ -1155,20 +1229,13 @@ api.post("/titles/:id/retry/:ep", wrap(async (req, res) => {
 
 // --- Captions proxy: remote sub -> WebVTT ----------------------------------
 api.get("/captions/:id.vtt", wrap(async (req: AuthedRequest, res) => {
-  // lshare::<ownerId>::<relpath> — a shared-copy stream's subtitle track (see
-  // downloader.sharedCopy): serve ANOTHER user's extracted sidecar, but only
-  // when that exact file is recorded on one of the owner's episode records.
-  const decoded = Buffer.from(req.params.id, "base64url").toString("utf8");
-  if (decoded.startsWith("lshare::")) {
-    const [, ownerId, ...relParts] = decoded.split("::");
-    const rel = relParts.join("::");
-    const owner = db.users().find((u) => u.id === ownerId);
-    const known = owner && Object.values(owner.eps ?? {}).some(
-      (e) => (e.subs ?? []).some((s) => s.file === rel),
-    );
-    const vtt = known ? await captions.readUserVtt(ownerId, rel) : null;
-    if (!vtt) { res.status(404).json({ error: "not found" }); return; }
-    res.type("text/vtt").send(vtt);
+  // A household shared copy's subtitle track (downloader.readSharedSub): another
+  // account's extracted sidecar, served only when it is recorded on their
+  // episode record.
+  const shared = await readSharedSub(req.params.id, req.user!);
+  if (shared !== undefined) {
+    if (!shared) { res.status(404).json({ error: "not found" }); return; }
+    res.type("text/vtt").send(shared);
     return;
   }
   // A sidecar that has been deleted or renamed is NOT a server fault: answer
