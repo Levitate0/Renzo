@@ -641,6 +641,12 @@ export async function reconcilePendingDownloads(): Promise<void> {
 
 const FALLBACK_POSTER = "/android-chrome-512x512.png";
 
+/** "… 2nd Season" / "… Season 2 Part 2" -> "…" (same rule as api.ts baseSeriesName). */
+function baseSeriesName(name: string): string {
+  const stripped = name.replace(/\s+(?:(?:season\s+\d+|\d+(?:st|nd|rd|th)\s+season)(?:\s+part\s+\d+)?|part\s+\d+)\s*$/i, "").trim();
+  return stripped || name;
+}
+
 /**
  * Group saved episodes by title id, then collapse seasons of the same series
  * (shared seriesKey) into one card — the latest season's real poster/title,
@@ -666,7 +672,13 @@ export function offlineLibrary(): OfflineLibraryGroup[] {
     const poster = (rep && (rep.poster || rep.banner)) || FALLBACK_POSTER;
     const firstEntry = (byTitle[ids[0]!] || [])[0];
     const fallbackTitle = (firstEntry?.label || `Title ${ids[0]}`).split(" · ")[0] || `Title ${ids[0]}`;
-    const title = rep ? rep.english || rep.romaji || fallbackTitle : fallbackTitle;
+    // Franchise name, as the online library (api.ts seriesName): English from
+    // ANY saved season — AniList often has it for S1 only — with the season
+    // suffix stripped; romaji only when no season has an English title.
+    const byAge = metas.filter((m) => m !== rep).sort((a, b) => (a.seasonNum || 0) - (b.seasonNum || 0));
+    const named = rep ? [rep, ...byAge] : [];
+    const name = named.find((m) => m.english)?.english || rep?.romaji;
+    const title = name ? baseSeriesName(name) : fallbackTitle;
     return {
       repId,
       ids,

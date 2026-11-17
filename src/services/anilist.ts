@@ -21,6 +21,9 @@ export interface AniListMedia {
   synonyms: string[];
   coverImage: { extraLarge: string | null; large: string | null } | null;
   bannerImage: string | null;
+  /** Direct relation edges — only requested by searchAnime, so a result page
+   *  can be collapsed into one card per franchise without a walk per hit. */
+  relations?: { edges: { relationType: string; node: { id: number; type: string | null; format: string | null } }[] } | null;
 }
 
 const MEDIA_FIELDS = `
@@ -396,6 +399,7 @@ export async function searchAnime(rawSearch: string, type?: MediaType): Promise<
       Page(perPage: 50) {
         media(search: $search, type: ANIME${fmtArg}, sort: SEARCH_MATCH) {
           ${MEDIA_FIELDS}
+          relations { edges { relationType node { id type format } } }
         }
       }
     }`;
@@ -677,7 +681,7 @@ function isExtraFormat(fmt: string | null | undefined): boolean {
 /** Whether a relation edge joins the same series. Side-story/parent edges are
  *  followed ONLY to attach an OVA/special to its parent — never between two full
  *  shows, so a TV spin-off keeps its own identity instead of being swallowed. */
-function followsChain(from: SeasonNode, relation: string, to: SeasonNode): boolean {
+function followsChain(from: { format: string | null }, relation: string, to: { format: string | null }): boolean {
   if (relation === "PREQUEL" || relation === "SEQUEL") return true;
   if (relation === "SIDE_STORY") return isExtraFormat(to.format);   // series -> its extra
   if (relation === "PARENT") return isExtraFormat(from.format);      // extra -> its series
@@ -931,6 +935,55 @@ export async function seasonSiblings(id: number): Promise<{ ids: number[]; compl
   const { nodes, complete } = await buildSeasonChain(id);
   const ids = [...nodes.values()].map((n) => n.id);
   return { ids: ids.length ? ids : [id], complete };
+}
+
+/** Collapse a ranked result page into franchises, best-ranked group first.
+ *
+ *  Search used to map every AniList hit to its own card, so a franchise whose
+ *  seasons don't share a display name split in two: "Gushing Over Magical
+ *  Girls" (S1, English title) next to "Mahou Shoujo ni Akogarete 2nd Season"
+ *  (S2 has no English title). Grouping is by RELATIONS, never by name: the
+ *  page's own direct edges (requested by searchAnime) under the same
+ *  followsChain rules as the chain walk, joined through neighbours that are
+ *  not themselves results (S1 -> OVA -> S2), plus any franchise already walked
+ *  this hour (chainCache) and any persisted seriesKey (`keyOf`). Each of those
+ *  is a subset of the full walk, so a search group never disagrees with the
+ *  library's — it can only be smaller when a bridge is several hops deep. No
+ *  AniList requests are made here. */
+export function groupFranchises(
+  media: AniListMedia[],
+  keyOf: (id: number) => number | undefined = () => undefined,
+): AniListMedia[][] {
+  const parent = new Map<number, number>();
+  const find = (x: number): number => {
+    let r = x;
+    while (parent.has(r) && parent.get(r) !== r) r = parent.get(r)!;
+    parent.set(x, r);
+    return r;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(rb, ra);
+  };
+  for (const m of media) {
+    find(m.id);
+    for (const e of m.relations?.edges ?? []) {
+      if (e.node.type !== "ANIME" || !TRAVERSE_FORMATS.includes(e.node.format ?? "")) continue;
+      if (!CHAIN_RELATIONS.includes(e.relationType)) continue;
+      if (followsChain(m, e.relationType, e.node)) union(m.id, e.node.id);
+    }
+    const walked = chainCache.get(m.id);
+    if (walked?.complete) for (const id of walked.nodes.keys()) union(m.id, id);
+    const key = keyOf(m.id);
+    if (key) union(m.id, key);
+  }
+  const groups = new Map<number, AniListMedia[]>(); // insertion order = best rank
+  for (const m of media) {
+    const r = find(m.id);
+    const g = groups.get(r) ?? groups.set(r, []).get(r)!;
+    g.push(m);
+  }
+  return [...groups.values()];
 }
 
 /** Convert an AniList record into a library Title skeleton (no episodes yet). */

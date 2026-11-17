@@ -310,8 +310,19 @@ function isSeasonTitle(t: Title): boolean {
   return t.format ? anilist.isSeasonFormat(t.format) : t.type !== "movie";
 }
 function baseSeriesName(name: string): string {
-  const stripped = name.replace(/\s+(?:season\s+\d+(?:\s+part\s+\d+)?|\d+(?:st|nd|rd|th)\s+season|part\s+\d+)\s*$/i, "").trim();
+  const stripped = name.replace(/\s+(?:(?:season\s+\d+|\d+(?:st|nd|rd|th)\s+season)(?:\s+part\s+\d+)?|part\s+\d+)\s*$/i, "").trim();
   return stripped || name;
+}
+/** The name one card shows for a whole franchise. `names` is the
+ *  representative entry first, then the rest of the group. English wins from
+ *  ANY entry, not just the representative: AniList often has an English title
+ *  for S1 only, so taking the latest season's `english ?? romaji` titled the
+ *  card in romaji ("Mahou Shoujo ni Akogarete") although the series is known
+ *  everywhere else by its English name ("Gushing Over Magical Girls"). */
+function seriesName(names: { english?: string | null; romaji?: string | null; native?: string | null }[]): string {
+  const english = names.find((n) => n.english)?.english;
+  const r = names[0];
+  return baseSeriesName(english ?? r?.romaji ?? r?.native ?? names.find((n) => n.romaji)?.romaji ?? "");
 }
 
 // Collapse a library/list into ONE card per series: group titles by their season
@@ -365,7 +376,9 @@ async function groupLibraryBySeries(titles: Title[], user?: UserRecord): Promise
     const rep = grp.slice().sort((a, b) =>
       (isSeasonTitle(a) ? 0 : 1) - (isSeasonTitle(b) ? 0 : 1)
       || (b.year ?? 0) - (a.year ?? 0) || b.id - a.id)[0];
-    return { ...cardFromTitle(rep, user), title: baseSeriesName(rep.english ?? rep.romaji),
+    // English from any season, earliest first (the base title) after the rep.
+    const byAge = grp.filter((t) => t !== rep).sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999) || a.id - b.id);
+    return { ...cardFromTitle(rep, user), title: seriesName([rep, ...byAge]),
       seasonCount: grp.filter(isSeasonTitle).length || 1 };
   });
 }
@@ -481,8 +494,30 @@ api.get("/discover/search", wrap(async (req, res) => {
   const type = req.query.type === "movie" ? "movie" : req.query.type === "series" ? "series" : undefined;
   if (!q) return res.json([]);
   const media = await anilist.searchAnime(q, type);
-  res.json(media.map(cardFromMedia));
+  // The Movies filter lists films one by one; collapsing them into their
+  // series would leave it showing a single card per franchise.
+  res.json(type === "movie" ? media.map(cardFromMedia) : searchCards(media));
 }));
+
+// One card per franchise, like the library: group the hits by relation (see
+// anilist.groupFranchises), show the latest released numbered season under
+// the franchise's name. Groups keep the rank of their best-matching entry.
+function searchCards(media: AniListMedia[]): unknown[] {
+  const keyOf = (id: number) => {
+    const t = db.getTitle(id);
+    return t?.seriesKey && t.seriesKeyV === anilist.SERIES_CHAIN_VERSION ? t.seriesKey : undefined;
+  };
+  return anilist.groupFranchises(media, keyOf).map((grp) => {
+    if (grp.length === 1) return cardFromMedia(grp[0]);
+    const rep = grp.slice().sort((a, b) =>
+      (anilist.isSeasonFormat(a.format) ? 0 : 1) - (anilist.isSeasonFormat(b.format) ? 0 : 1)
+      || (a.status === "NOT_YET_RELEASED" ? 1 : 0) - (b.status === "NOT_YET_RELEASED" ? 1 : 0)
+      || (b.seasonYear ?? 0) - (a.seasonYear ?? 0) || b.id - a.id)[0];
+    const byAge = grp.filter((m) => m !== rep)
+      .sort((a, b) => (a.seasonYear ?? 9999) - (b.seasonYear ?? 9999) || a.id - b.id);
+    return { ...cardFromMedia(rep), title: seriesName([rep.title, ...byAge.map((m) => m.title)]) };
+  });
+}
 
 // --- Library (per-user; files & metadata are shared, membership is not) -----
 api.get("/library", wrap(async (req, res) => {

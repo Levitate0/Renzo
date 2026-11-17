@@ -3,14 +3,15 @@
 // Topbar — Renzo's chrome in Shiori's command-bar style. Keeps the literal
 // `topbar` class (tvnav chrome root). Layout (old index.html header):
 //   [hamburger·mobile] [brand banner] [pill tabs·desktop] [search] [mode pill]
-//   [status] [avatar menu]
+//   [status] [avatar menu] — below lg the search is Shiori's icon-that-opens-
+//   a-field, so the phone bar matches Shiori's.
 // The mobile drawer (Sheet) mirrors the tabs; the offline bar sits above and
 // the purge prompt floats — all offline chrome hides itself on TV.
 
-import { Menu } from "lucide-react";
+import { Menu, Search, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 import { AccountMenu } from "@/components/shell/account-menu";
 import { useRibbonMount } from "@/components/shell/ribbon";
@@ -19,7 +20,9 @@ import { ModePill, OfflineBar, PurgePrompt } from "@/components/shell/offline-st
 import { useHealthQuery } from "@/components/shell/queries";
 import { SearchBox } from "@/components/shell/search-box";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { useSearch } from "@/contexts/search-context";
 import { ApiError } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { DebridHealth } from "@/lib/types";
 
 const RD_SHORT: Record<DebridHealth, string> = {
@@ -66,6 +69,17 @@ export function Topbar() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
   const { setTarget: setRibbonTarget, active: ribbonActive } = useRibbonMount();
+  // Phones get Shiori's mobile search (command-bar.tsx <lg): an icon that
+  // opens a focused field. Typing elsewhere navigates to `/`, which remounts
+  // the shell, so a live query keeps the field open across that jump.
+  const { query, setQuery } = useSearch();
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(() => query.trim() !== "");
+  const toggledSearch = useRef(false);
+  useEffect(() => {
+    // Only a tap on the icon focuses; a remount with a live query must not
+    // steal focus (SearchBox restores it itself after a typing jump).
+    if (mobileSearchOpen && toggledSearch.current) document.getElementById("search")?.focus();
+  }, [mobileSearchOpen]);
 
   // Close the drawer on navigation (Shiori's command-bar behavior).
   useEffect(() => {
@@ -134,8 +148,27 @@ export function Topbar() {
           </div>
           <div className="flex-1" />
 
-          <SearchBox />
-          <ModePill />
+          {/* One SearchBox (it owns the ⌘K handler and the focus hand-off):
+              always shown at lg, only while opened below it. */}
+          <div className={cn(mobileSearchOpen ? "flex" : "hidden", "min-w-0 lg:flex")}>
+            <SearchBox />
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (mobileSearchOpen && query) setQuery("");
+              toggledSearch.current = true;
+              setMobileSearchOpen((v) => !v);
+            }}
+            aria-label={mobileSearchOpen ? "Close search" : "Open search"}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden"
+          >
+            {mobileSearchOpen ? <X className="h-5 w-5" /> : <Search className="h-5 w-5" />}
+          </button>
+          {/* The open field needs the room, as on Shiori: the pill steps aside. */}
+          <div className={mobileSearchOpen ? "hidden lg:contents" : "contents"}>
+            <ModePill />
+          </div>
           <StatusLine />
           <AccountMenu />
         </div>
