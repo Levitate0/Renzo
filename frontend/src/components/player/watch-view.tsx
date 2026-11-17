@@ -1048,7 +1048,7 @@ export function WatchView() {
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <Topbar />
+      <Topbar sticky={false} />
       <main className="w-full flex-1 overflow-x-hidden">
         <div id="view-watch" className="view active watch flex flex-col">
           {/* ------- stage ------- */}

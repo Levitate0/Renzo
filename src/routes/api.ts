@@ -15,7 +15,7 @@ import * as captions from "../services/captions.js";
 import * as library from "../services/library.js";
 import * as watch from "../services/watch.js";
 import * as mal from "../services/mal.js";
-import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, refreshTitle, requireToken, userDownloadedCount, peekUserEp, sharedCopy, readSharedSub, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream, validEpisode, episodeInRange } from "../services/downloader.js";
+import { queue, resolveStream, getOrCreateTitle, downloadSeason, availableEpisodes, episodeTotal, refreshTitle, requireToken, userDownloadedCount, peekUserEp, sharedCopy, readSharedSub, userFolders, folderOf, DEFAULT_FOLDER, providerFor, listProviders, upNextFor, watchedEp, setWatched, invalidateStream, validEpisode, episodeInRange } from "../services/downloader.js";
 import type { ResolvedStream } from "../services/downloader.js";
 import * as previews from "../services/previews.js";
 import { airDatesFor } from "../services/airdates.js";
@@ -383,8 +383,7 @@ async function groupLibraryBySeries(titles: Title[], user?: UserRecord): Promise
   });
 }
 function detailFromTitle(t: Title, user?: UserRecord) {
-  const known = t.episodeCount ?? (t.nextAiringEpisode ? t.nextAiringEpisode - 1 : undefined);
-  const count = t.type === "movie" ? 1 : known ?? 12;
+  const count = episodeTotal(t);
   // 0 aired is a real state (premiere pending); only fall back to `count` when
   // airing data is genuinely unknown.
   const hasAiringData = t.nextAiringEpisode !== undefined || t.airingStatus !== undefined;
@@ -407,7 +406,23 @@ function detailFromTitle(t: Title, user?: UserRecord) {
     episodesTotal: count,
     airedEpisodes: aired,
     episodeList: episodes,
+    resumePoint: lastResume(t, user, count),
   };
+}
+
+/** Where this user last stopped in this title: the most recently saved point
+ *  (watching an episode to the end clears its point), for the "Resume E3 ·
+ *  12:04" button. Undefined when there's nothing to resume. */
+function lastResume(t: Title, user: UserRecord | undefined, count: number) {
+  let best: { episode: number; positionMs: number; durationMs: number; updatedAt: string } | undefined;
+  for (const [k, p] of Object.entries(user?.resume?.[String(t.id)] ?? {})) {
+    const episode = Number(k);
+    if (!Number.isInteger(episode) || episode < 1 || (count && episode > count)) continue;
+    if (!best || String(p.updatedAt ?? "") > best.updatedAt) {
+      best = { episode, positionMs: p.positionMs, durationMs: p.durationMs ?? 0, updatedAt: String(p.updatedAt ?? "") };
+    }
+  }
+  return best;
 }
 
 // --- Health / status -------------------------------------------------------

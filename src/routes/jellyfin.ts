@@ -7,7 +7,7 @@ import * as anilist from "../services/anilist.js";
 import * as apikeys from "../services/apikeys.js";
 import * as library from "../services/library.js";
 import { mintStreamToken, userFromStreamToken } from "../services/auth.js";
-import { getOrCreateTitle, resolveStream, availableEpisodes, userFolders, folderOf, peekUserEp, sharedCopy } from "../services/downloader.js";
+import { getOrCreateTitle, resolveStream, availableEpisodes, episodeTotal, userFolders, folderOf, peekUserEp, sharedCopy } from "../services/downloader.js";
 import type { UserRecord, Title } from "../types.js";
 
 // Public API consumed by the Renzo Jellyfin plugin (catalog / search / episodes /
@@ -133,7 +133,7 @@ jellyfinPluginRoutes.get("/api/episodes", async (req, res) => {
     const t = await getOrCreateTitle(id);
     const extra = await anilist.detailExtra(id).catch(() => ({ episodes: [] as { title: string; thumbnail: string | null }[] }));
     const aired = availableEpisodes(t);
-    const count = t.type === "movie" ? 1 : (t.episodeCount ?? Math.max(aired, extra.episodes.length)) || 12;
+    const count = Math.max(episodeTotal(t), aired, t.episodeCount ? 0 : extra.episodes.length);
     const episodes = [];
     for (let n = 1; n <= count && n <= aired; n++) {
       const meta = extra.episodes[n - 1];

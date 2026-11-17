@@ -65,7 +65,12 @@ function StatusLine() {
   );
 }
 
-export function Topbar() {
+export function Topbar({ sticky = true }: {
+  /** The watch page passes false: a sticky, translucent bar left the video
+   *  sliding up underneath it whenever the page scrolled (short windows,
+   *  episode list below), so there the bar scrolls away with the page. */
+  sticky?: boolean;
+} = {}) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
   const { setTarget: setRibbonTarget, active: ribbonActive } = useRibbonMount();
@@ -90,7 +95,7 @@ export function Topbar() {
     <>
       <OfflineBar />
       <header
-        className="topbar sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-xl backdrop-saturate-150"
+        className={cn("topbar z-30 border-b border-border bg-background/85 backdrop-blur-xl backdrop-saturate-150", sticky ? "sticky top-0" : "relative")}
         style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
       >
         <div className="relative flex h-14 w-full items-center gap-3 px-3 lg:px-5">

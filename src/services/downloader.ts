@@ -224,7 +224,38 @@ export function availableEpisodes(t: Title): number {
   // nextAiringEpisode === 1 means the premiere hasn't aired: 0 available.
   if (t.nextAiringEpisode) return t.nextAiringEpisode - 1;
   if (t.airingStatus === "NOT_YET_RELEASED") return 0;
-  return t.episodeCount ?? 0;
+  // Between cours AniList can drop the schedule while the count is still
+  // unknown; the dated episodes up to today are the ones that have aired.
+  return t.episodeCount ?? datedEpisodes(t, new Date().toISOString().slice(0, 10));
+}
+
+/** Highest episode number with a known air date (on or before `upTo`, a
+ *  "YYYY-MM-DD", when given); 0 when none. */
+function datedEpisodes(t: Title, upTo?: string): number {
+  let best = 0;
+  for (const [k, date] of Object.entries(t.airDates ?? {})) {
+    const n = Number(k);
+    if (Number.isInteger(n) && n > best && (!upTo || date <= upTo)) best = n;
+  }
+  return best;
+}
+
+/** How many episodes a title has, as far as anything actually says. Seasons
+ *  run anywhere from 1 to 24+ episodes, so an unknown total is never guessed:
+ *  AniList's count, else what has aired while it is releasing, else the
+ *  highest episode with a known air date (MAL/AniList schedule), else 0 for a
+ *  season that hasn't premiered. A released title with no data at all still
+ *  has its first episode (or whatever was already downloaded). This replaced a
+ *  flat 12, which gave an unaired 1-episode special or a 24-episode season the
+ *  same twelve placeholder episodes. */
+export function episodeTotal(t: Title): number {
+  if (t.type === "movie") return 1;
+  if (t.episodeCount) return t.episodeCount;
+  if (t.nextAiringEpisode) return t.nextAiringEpisode - 1;
+  const dated = datedEpisodes(t);
+  if (dated) return dated;
+  if (t.airingStatus === "NOT_YET_RELEASED") return 0;
+  return Math.max(1, ...(t.episodes ?? []).map((e) => e.number));
 }
 
 /** A debrid provider (Real-Debrid or AllDebrid) is mandatory: none -> hard stop. */

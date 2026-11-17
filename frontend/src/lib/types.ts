@@ -295,6 +295,8 @@ export interface TitleDetail {
   episodesTotal: number;
   airedEpisodes: number;
   episodeList: EpisodeInfo[];
+  /** Where you last stopped in this title (most recent saved point), if any. */
+  resumePoint?: ResumePoint & { episode: number };
   seasons: SeasonRef[];
   seasonNum: number;
   seasonPart: number | null;

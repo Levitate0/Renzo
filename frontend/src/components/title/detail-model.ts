@@ -38,6 +38,8 @@ export interface DetailModel {
   airingStatus: string | null;
   isAdult: boolean;
   nextUpId: number | null;
+  /** Online only: where you last stopped (the hero's "Resume E3 · 12:04"). */
+  resumePoint?: { episode: number; positionMs: number };
 }
 
 export function modelFromOnline(d: TitleDetail): DetailModel {
@@ -69,6 +71,7 @@ export function modelFromOnline(d: TitleDetail): DetailModel {
     airingStatus: d.airingStatus ?? null,
     isAdult: !!d.isAdult,
     nextUpId: d.nextUp?.id ?? null,
+    resumePoint: d.resumePoint,
   };
 }
 

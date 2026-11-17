@@ -26,6 +26,8 @@ import {
 import { api } from "@/lib/api";
 import type { TitleDetail } from "@/lib/types";
 
+import { fmtTime } from "@/components/player/season-utils";
+
 import type { DetailModel } from "./detail-model";
 import { TrackingRow } from "./tracking-row";
 
@@ -64,6 +66,14 @@ export function TitleHero({ d, offline, denied, onPlay, onOpenLightbox }: HeroPr
   const aired = d.episodeList.filter((e) => e.aired !== false);
   const next = aired.find((e) => e.number > (d.watchedThrough || 0)) || aired[0] || { number: 1 };
   const continuing = isSeries && (d.watchedThrough || 0) > 0 && next.number > 1;
+  // …unless you stopped part-way through an episode: then Play resumes THAT
+  // episode (the watch page seeks to the saved point) and says where.
+  const resume = d.resumePoint && (!isSeries || aired.some((e) => e.number === d.resumePoint!.episode))
+    ? d.resumePoint : undefined;
+  const playEp = isSeries ? (resume?.episode ?? next.number) : 1;
+  const playLabel = resume
+    ? `Resume${isSeries ? ` E${resume.episode}` : ""} · ${fmtTime(resume.positionMs / 1000)}`
+    : isSeries ? `${continuing ? "Continue" : "Play"} E${next.number}` : "Play";
 
   const inW = d.lists.includes("watchlist");
   const inF = d.lists.includes("favorites");
@@ -229,11 +239,9 @@ export function TitleHero({ d, offline, denied, onPlay, onOpenLightbox }: HeroPr
 
             {/* Action toolbar */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
-              <Button className="play-btn px-0 w-9 sm:w-auto sm:px-4" onClick={() => onPlay(isSeries ? next.number : 1)}>
+              <Button className="play-btn px-0 w-9 sm:w-auto sm:px-4" onClick={() => onPlay(playEp)} title={playLabel}>
                 <Play className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">
-                  {isSeries ? `${continuing ? "Continue" : "Play"} E${next.number}` : "Play"}
-                </span>
+                <span className="hidden sm:inline">{playLabel}</span>
               </Button>
               {!offline && (
                 <>
